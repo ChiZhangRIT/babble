@@ -1,0 +1,23 @@
+# 梦话原文、录音和备份都是私人内容：只放在自己的设备和私有同步仓库（babble-data）里，这个仓库是公开的，不要提交
+*.m4a
+*.mp4
+*.webm
+*.wav
+*.zip
+*.private.*
+/private/
+# 其它录音格式（语音备忘录的 .qta、.caf、.aac、.mp3 等）
+*.qta
+*.caf
+*.aac
+*.ogg
+*.opus
+*.mp3
+# 备份解压出来的 babble.json / 梦话.md，从备忘录复制出来的文字；仓库里没有正经的 .txt
+babble*.json
+梦话*.md
+夢話*.md
+sleep-talk*.md
+*.txt
+.DS_Store
+node_modules/

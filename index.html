@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://api.github.com; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f8f3ee">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="牙牙呓语">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<script src="src/boot.js"></script>
+<style>
+  /* 样式表还没到时先刷底色：深色外观下（夜里）不闪白。src/boot.js 先按设置写好 data-theme，app.js 启动后再定 */
+  html { background: #f8f3ee; }
+  @media (prefers-color-scheme: dark) { html:not([data-theme="light"]) { background: #141216; } }
+  html[data-theme="dark"] { background: #141216; }
+  html[data-boot="rec"] { background: #0b0c12; }
+</style>
+<link rel="stylesheet" href="styles.css">
+<title>牙牙呓语</title>
+</head>
+<body>
+<div class="app">
+  <aside id="side"></aside>
+  <main id="main"></main>
+</div>
+<nav id="tabs" aria-label="主导航"></nav>
+<div id="toast" role="status" aria-live="polite" inert></div>
+<noscript><p style="padding:24px">牙牙呓语需要开启 JavaScript。 · Babble needs JavaScript.</p></noscript>
+<script type="module" src="src/app.js"></script>
+</body>
+</html>
