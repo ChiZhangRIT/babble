@@ -3,7 +3,7 @@
 //      IndexedDB babble-history（单独一个库，不动录音库；只在这台设备上，不同步）。和上一份一模一样就不存；每条最多留 100 版。
 //      记录本只排队、不等写完，出错只打日志——绝不影响保存数据（见 state.js 的 setJournal）。
 //   2. 云端历史：按需从 GitHub 上 babble.json 的提交记录里，一个版本一个版本地找这一条以前的样子（sync.js 的 commits / fileAt）。
-//   3. 比较两版：改了哪些（标题 / 原话 / 背景 / 录音 / 收藏 / 状态 / 日期 / 草稿 / 删除），原话按行比较。
+//   3. 比较两版：改了哪些（原话 / 背景 / 录音 / 收藏 / 状态 / 日期 / 草稿 / 删除），原话按行比较。
 // 记录本里的一项：{ id, entryId, at（被换掉的时刻）, version（那一版的条目 JSON）, cause, replacedBy（换掉它的人 { who, device }） }
 // cause：'edit' 修改 | 'delete' 删除 | 'restore' 从最近删除恢复 | 'undo' 撤销 | 'import' 导入备份 | 'sync' 同步合并 | 'revert' 恢复旧版本
 import { canon, normalizeEntry } from './store.js';

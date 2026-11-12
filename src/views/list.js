@@ -97,6 +97,16 @@ export function foldLines(items, open = false) {
 }
 
 /**
+ * 长卡片一开始展不展开：搜索命中在折起来的那部分 → 展开（以前点过「收起」也展开，不然标出来的字看不到）；
+ * 别的看这次打开 App 期间是不是点过「展开全部」（remembered：true / false / undefined）
+ */
+export function startOpen(items, q, remembered) {
+  const f = foldLines(items, false);
+  if (f.long && q && q.trim() && items.slice(f.shown.length).some(x => hasHit(x.content, q))) return true;
+  return !!remembered;
+}
+
+/**
  * 搜索时原话里没有命中、是背景 / 草稿 / 录音名命中的：卡片上多一行说明命中了什么 → { label: 'note'|'draft'|'clip', text } | null
  */
 export function cardExtra(e, q, items) {
@@ -128,7 +138,7 @@ export function entryCard(e, ctx, { q = '', selected = false, players = [] } = {
     players.push(player);
   }
   const names = { nn: sp.nn.name || 'NN', me: sp.me.name || t('edit.me') };
-  const who = (w) => [h('span.c-emoji', { 'aria-hidden': 'true' }, sp[w].emoji), h('span.sr-only', null, names[w] + '：')];
+  const who = (w) => [h('span.c-emoji', { 'aria-hidden': 'true' }, sp[w].emoji), h('span.sr-only', null, names[w] + (lang === 'en' ? ': ' : '：'))];
   const line = (x) => {
     if (x.kind === 'gap') return h('div.c-gap', { 'aria-hidden': 'true' });
     if (x.kind === 'narr') return h('p.c-line.narr', null, sayNodes(x.content, q));
@@ -137,10 +147,8 @@ export function entryCard(e, ctx, { q = '', selected = false, players = [] } = {
     return h('p.c-line.' + (x.kind === 'act' ? 'act' : 'kai'), null, who(x.who), sayNodes(x.content, q));   // .act：整行都是动作
   };
 
-  // 长的：先看这次是不是点过；没点过、搜索命中在折起来的那部分 → 直接展开
+  let open = startOpen(items, q, opened.get(e.id));
   const folded = foldLines(items, false);
-  let open = opened.has(e.id) ? opened.get(e.id)
-    : folded.long && !!q.trim() && items.slice(folded.shown.length).some(x => hasHit(x.content, q));
   const linesEl = h('div.c-lines');
   const moreBtn = folded.long ? h('button.c-more', { type: 'button', onclick: (ev) => {
     ev.preventDefault(); ev.stopPropagation();

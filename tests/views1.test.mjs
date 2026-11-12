@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { filterEntries, groupByMonth, totalDuration, cardLines, foldLines, cardExtra, CARD_FOLD, CARD_SHOW } from '../src/views/list.js';
+import { filterEntries, groupByMonth, totalDuration, cardLines, foldLines, cardExtra, startOpen, CARD_FOLD, CARD_SHOW } from '../src/views/list.js';
 import { chatRuns, shareText } from '../src/views/entry.js';
 import { deletedEntries } from '../src/views/deleted.js';
 import { REACTIONS, workingCopy, savedFields } from '../src/views/editor.js';
@@ -90,6 +90,16 @@ test('长条目折起来：超过 16 行先显示前 12 行（空行不算），
   assert.equal(g.shown.filter(x => x.kind !== 'gap').length, 12);
   assert.notEqual(g.shown[g.shown.length - 1].kind, 'gap');
   assert.equal(foldLines(gappy.filter(x => x.kind !== 'gap').slice(0, 16).concat([{ kind: 'gap' }])).long, false);
+});
+
+test('长条目一开始展不展开：搜到的字在折起来的部分 → 展开（点过「收起」也展开）；否则看点没点过', () => {
+  const items = cardLines(Array.from({ length: 20 }, (_, i) => `${NN}“第${i + 1}句${i === 15 ? '彈鋼琴' : ''}”`).join('\n'), SP);
+  assert.equal(startOpen(items, '', undefined), false);
+  assert.equal(startOpen(items, '', true), true);
+  assert.equal(startOpen(items, '弹钢琴', undefined), true);                 // 简繁都算
+  assert.equal(startOpen(items, '弹钢琴', false), true);                     // 以前收起过：搜到折起来的部分还是展开
+  assert.equal(startOpen(items, '第1句', false), false);                     // 命中在看得到的部分：照旧
+  assert.equal(startOpen(items.slice(0, 16), '弹钢琴', false), false);       // 不长：没有折起来的部分
 });
 
 test('搜索时只命中背景 / 草稿 / 录音名：卡片上多一行说明；原话里命中了就不用；存着的标题不算', () => {

@@ -51,7 +51,7 @@ export function speakerOf(line, speakers, ms = matchers(speakers)) {
 
 // 只有表情、标点、空白（？？？ ❔ 🤯 😂😂）→ 画成大表情，不画气泡
 const WORDY = /[^\p{P}\p{S}\p{Z}\s\p{Cf}\p{M}]/u;
-// 只有一对引号（工具栏插进来还没写字的「👰🏻‍♀️ “”」）不算反应：照原样画成小气泡，列表预览、标题后备跳过它
+// 只有一对引号（工具栏插进来还没写字的「👰🏻‍♀️ “”」）不算反应：照原样画成小气泡，列表卡片、文件名后备跳过它
 const QUOTES_ONLY = /^[\s“”‘’「」『』"'＂＇﹁﹂﹃﹄]+$/u;
 export const isEmptyQuote = s => !!s && QUOTES_ONLY.test(s);
 export const isReactionOnly = s => !!s && !WORDY.test(s) && !isEmptyQuote(s);
@@ -91,7 +91,7 @@ export function previewLines(text, speakers, n = 2) {
   return parseDialogue(text, speakers).filter(b => b.type !== 'gap' && !b.reactionOnly && !b.emptyQuote && b.content).slice(0, n);
 }
 
-/** 第一句 NN 的话（标题的后备）；没有 → '' */
+/** 第一句 NN 的话（分享、备份时录音没名字就用它起文件名）；没有 → '' */
 export function firstNNLine(text, speakers) {
   const b = parseDialogue(text, speakers).find(x => x.type === 'line' && x.who === 'nn' && x.content && !x.reactionOnly && !x.emptyQuote);
   return b ? b.content : '';
