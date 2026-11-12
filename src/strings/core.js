@@ -17,7 +17,7 @@ export const STRINGS = {
     'common.recovered': '找回 {n} 段上次没保存完的录音，放在「待整理」里。', 'common.recoverFail': '有录音没能找回：{msg}',
     'common.dropHint': '松开以导入录音',
 
-    'nav.label': '主导航', 'nav.list': '梦话', 'nav.rec': '录音', 'nav.settings': '设置', 'nav.import': '导入录音',
+    'nav.label': '主导航', 'nav.list': '呓语', 'nav.rec': '录音', 'nav.settings': '设置', 'nav.import': '导入录音',
     'nav.importNotes': '从备忘录迁移', 'nav.deleted': '最近删除', 'nav.new': '记一条', 'nav.diag': '录音诊断',
 
     'player.play': '播放', 'player.pause': '暂停', 'player.loading': '下载中…', 'player.error': '这段录音放不出来。',
@@ -71,7 +71,7 @@ export const STRINGS = {
     'common.recovered': '找回 {n} 段上次沒儲存完的錄音，放在「待整理」裡。', 'common.recoverFail': '有錄音沒能找回：{msg}',
     'common.dropHint': '放開以匯入錄音',
 
-    'nav.label': '主要導覽', 'nav.list': '夢話', 'nav.rec': '錄音', 'nav.settings': '設定', 'nav.import': '匯入錄音',
+    'nav.label': '主要導覽', 'nav.list': '囈語', 'nav.rec': '錄音', 'nav.settings': '設定', 'nav.import': '匯入錄音',
     'nav.importNotes': '從備忘錄遷移', 'nav.deleted': '最近刪除', 'nav.new': '記一則', 'nav.diag': '錄音診斷',
 
     'player.play': '播放', 'player.pause': '暫停', 'player.loading': '下載中…', 'player.error': '這段錄音無法播放。',

@@ -1,6 +1,6 @@
 // 离线缓存：有网时取最新版本（3 秒内没响应就先用缓存，夜里信号差也能马上打开），没网时用缓存。
 // 只管本网站的文件。同步（api.github.com）不经过这里，也不进缓存；录音存在 IndexedDB，不在这里。
-const CACHE = 'babble-v3';
+const CACHE = 'babble-v4';
 // 程序文件全部预先缓存（tests/sw.test.mjs 检查这张表和磁盘上的文件、index.html、import 关系一致），第一次打开之后就能离线用
 const CORE = [
   './', './index.html', './styles.css',

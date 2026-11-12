@@ -69,7 +69,7 @@ test('英文数量分单复数', () => {
 
 test('台灣用語；變數內容（使用者的字）不轉換', () => {
   setLang('zh-Hant-TW');
-  const want = { 'nav.settings': '設定', 'common.save': '儲存', 'common.undo': '復原', 'sync.repo': '儲存庫', 'sync.token': '存取權杖', 'nav.import': '匯入錄音', 'nav.list': '夢話', 'common.appName': '牙牙囈語' };
+  const want = { 'nav.settings': '設定', 'common.save': '儲存', 'common.undo': '復原', 'sync.repo': '儲存庫', 'sync.token': '存取權杖', 'nav.import': '匯入錄音', 'nav.list': '囈語', 'common.appName': '牙牙囈語' };
   for (const [key, value] of Object.entries(want)) assert.equal(t(key), value, key);
   assert.equal(t('sync.partner', { nn: '简体名字' }).startsWith('简体名字'), true);
   setLang('zh-Hans');
