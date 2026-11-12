@@ -299,3 +299,27 @@ test('state：applyRemote 返回有没有存进本机；saveOk() 记着最近一
   state.mutate(s => { s.data.entries.r2.fav = true; });
   assert.equal(state.saveOk(), true);
 });
+
+test('签名跟着整条走：合并取赢家的 updatedBy；恢复去掉 deletedBy；没删除的条目不留 deletedBy', () => {
+  const a = withEntry(blankState(), 'e1', { text: '旧', updatedAt: 100, updatedBy: { who: 'me', device: 'Mac', at: 100 } });
+  const b = withEntry(blankState(), 'e1', { text: '新', updatedAt: 200, updatedBy: { who: 'nn', device: 'iPad', at: 200 } });
+  for (const m of [mergeStates(a, b), mergeStates(b, a)]) assert.deepEqual(m.data.entries.e1.updatedBy, { who: 'nn', device: 'iPad', at: 200 });
+  const gone = { ...normalizeState(b).data.entries.e1, deleted: true, deletedAt: 300, updatedAt: 300, deletedBy: { who: 'nn', device: 'iPad', at: 300 } };
+  assert.equal(normalizeState({ data: { entries: { e1: gone } } }).data.entries.e1.deletedBy.device, 'iPad');
+  const back = restoredRecord(gone, 400);
+  assert.equal(back.deletedBy, undefined);
+  assert.equal(normalizeState({ data: { entries: { e1: { ...back, deletedBy: { who: 'me', device: 'Mac' } } } } }).data.entries.e1.deletedBy, undefined);
+});
+
+test('state：mutate 给改过的条目签名（谁、哪台设备），设置的修改不签', () => {
+  const st = fakeStorage();
+  st.setItem(state.LKEY, JSON.stringify({ who: 'me', device: '测试 Mac' }));
+  state.load({ storage: st });
+  const e = makeEntry({ text: '“今天吃什么”' });
+  state.mutate(s => { s.data.entries[e.id] = e; });
+  const cur = state.getState().data.entries[e.id];
+  assert.deepEqual(cur.updatedBy, { who: 'me', device: '测试 Mac', at: cur.updatedAt });
+  state.mutate(s => setSetting(s, 'nightStart', '22:00'));
+  assert.equal(state.getState().settings.updatedBy, undefined);
+  assert.deepEqual(state.getState().data.entries[e.id], cur, '没动的条目不重新签');
+});

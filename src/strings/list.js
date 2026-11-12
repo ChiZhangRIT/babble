@@ -1,4 +1,4 @@
-// 文案（列表、详情、编辑、最近删除）：list.* / entry.* / edit.* / deleted.*。
+// 文案（列表、详情、编辑、最近删除）：list.* / entry.* / clip.*（录音的名字）/ edit.* / deleted.*。
 // 繁體（台灣）用台灣用語（則、搜尋、檔案、還原…）；{nn} 是设置里 TA 的称呼，用户写的字不转换。
 // 英文单复数：en(一个, 多个)
 const en = (one, many) => (v) => (Number(v.n) === 1 ? one : many).replace('{n}', v.n);
@@ -6,7 +6,7 @@ const en = (one, many) => (v) => (Number(v.n) === 1 ? one : many).replace('{n}',
 export const STRINGS = {
   'zh-Hans': {
     'list.count': '共 {n} 条', 'list.since': '自 {month}',
-    'list.inbox': '待整理 {n} 条', 'list.noTitle': '标题待填', 'list.noText': '还没写原话',
+    'list.inbox': '待整理 {n} 条', 'list.noText': '还没写原话',
     'list.search': '搜原话、标题、背景', 'list.searchLabel': '搜索梦话', 'list.clearSearch': '清除搜索',
     'list.filters': '筛选', 'list.fFav': '收藏', 'list.fAudio': '有录音', 'list.fInbox': '待整理',
     'list.inboxTag': '待整理', 'list.fav': '收藏', 'list.unfav': '取消收藏', 'list.hasAudio': '有录音',
@@ -24,6 +24,8 @@ export const STRINGS = {
     'entry.note': '那天的背景', 'entry.draft': '草稿', 'entry.draftSrc': '来源：{src}',
     'entry.done': '整理好了', 'entry.doneToast': '已整理好', 'entry.markInbox': '放回待整理', 'entry.inboxToast': '已放回待整理',
     'entry.cue': '录音', 'entry.cueNone': '这里原本有一段录音，还没附上',
+    'clip.fallback': '录音 {n}', 'clip.rename': '改名', 'clip.renameLabel': '给录音「{name}」改名', 'clip.renameTitle': '录音的名字',
+    'clip.renameHint': '分享、备份时也用这个名字当文件名。空着保存就用默认的「{name}」。', 'clip.origName': '原来的文件名：{name}', 'clip.renamed': '录音已改名',
     'entry.addAudio': '添加录音（文件）', 'entry.recordNow': '现在录一段', 'entry.deleted': '这条梦话已经删除了。',
     'entry.created': '记于 {time}', 'entry.shareFail': '没能分享：{msg}', 'entry.textCopied': '原话已复制。',
     'entry.shareCopied': '原话已复制，录音已下载。', 'entry.shareReady': '录音准备好了。', 'entry.shareMissing': '有录音还没下载到这台设备，只分享原话。',
@@ -34,7 +36,7 @@ export const STRINGS = {
 
     'edit.date': '日期', 'edit.dateHelp': '凌晨说的也记在当天：3月8日凌晨2点就写 3月8日。', 'edit.badDate': '请填一个日期',
     'edit.time': '时间', 'edit.optional': '可不填', 'edit.now': '现在', 'edit.clearTime': '清除',
-    'edit.title': '标题', 'edit.titlePh': '可不填，列表里显示第一句',
+    'edit.title': '标题', 'edit.titlePh': '标题（可不填）',
     'edit.text': '原话', 'edit.textHint': '照原样保存，不会被改动', 'edit.textPh': '边听边写下 {nn} 的原话……',
     'edit.insert': '插入一行', 'edit.me': '我', 'edit.reactions': '插入反应',
     'edit.note': '那天的背景', 'edit.notePh': '那天发生了什么（可不填）',
@@ -52,7 +54,7 @@ export const STRINGS = {
 
   'zh-Hant-TW': {
     'list.count': '共 {n} 則', 'list.since': '自 {month}',
-    'list.inbox': '待整理 {n} 則', 'list.noTitle': '標題待填', 'list.noText': '還沒寫原話',
+    'list.inbox': '待整理 {n} 則', 'list.noText': '還沒寫原話',
     'list.search': '搜尋原話、標題、背景', 'list.searchLabel': '搜尋夢話', 'list.clearSearch': '清除搜尋',
     'list.filters': '篩選', 'list.fFav': '收藏', 'list.fAudio': '有錄音', 'list.fInbox': '待整理',
     'list.inboxTag': '待整理', 'list.fav': '收藏', 'list.unfav': '取消收藏', 'list.hasAudio': '有錄音',
@@ -70,6 +72,8 @@ export const STRINGS = {
     'entry.note': '那天的背景', 'entry.draft': '草稿', 'entry.draftSrc': '來源：{src}',
     'entry.done': '整理好了', 'entry.doneToast': '已整理好', 'entry.markInbox': '放回待整理', 'entry.inboxToast': '已放回待整理',
     'entry.cue': '錄音', 'entry.cueNone': '這裡原本有一段錄音，還沒附上',
+    'clip.fallback': '錄音 {n}', 'clip.rename': '改名', 'clip.renameLabel': '幫錄音「{name}」改名', 'clip.renameTitle': '錄音的名稱',
+    'clip.renameHint': '分享、備份時也用這個名稱當檔名。留空儲存就用預設的「{name}」。', 'clip.origName': '原本的檔名：{name}', 'clip.renamed': '錄音已改名',
     'entry.addAudio': '加入錄音（檔案）', 'entry.recordNow': '現在錄一段', 'entry.deleted': '這則夢話已經刪除了。',
     'entry.created': '記於 {time}', 'entry.shareFail': '無法分享：{msg}', 'entry.textCopied': '原話已複製。',
     'entry.shareCopied': '原話已複製，錄音已下載。', 'entry.shareReady': '錄音準備好了。', 'entry.shareMissing': '有錄音還沒下載到這臺裝置，只分享原話。',
@@ -80,7 +84,7 @@ export const STRINGS = {
 
     'edit.date': '日期', 'edit.dateHelp': '凌晨說的也記在當天：3月8日凌晨2點就寫 3月8日。', 'edit.badDate': '請填一個日期',
     'edit.time': '時間', 'edit.optional': '可不填', 'edit.now': '現在', 'edit.clearTime': '清除',
-    'edit.title': '標題', 'edit.titlePh': '可不填，列表裡顯示第一句',
+    'edit.title': '標題', 'edit.titlePh': '標題（可不填）',
     'edit.text': '原話', 'edit.textHint': '照原樣儲存，不會被改動', 'edit.textPh': '邊聽邊寫下 {nn} 的原話……',
     'edit.insert': '插入一行', 'edit.me': '我', 'edit.reactions': '插入反應',
     'edit.note': '那天的背景', 'edit.notePh': '那天發生了什麼（可不填）',
@@ -98,7 +102,7 @@ export const STRINGS = {
 
   en: {
     'list.count': en('{n} entry', '{n} entries'), 'list.since': 'since {month}',
-    'list.inbox': en('{n} to tidy', '{n} to tidy'), 'list.noTitle': 'No title yet', 'list.noText': 'No words written yet',
+    'list.inbox': en('{n} to tidy', '{n} to tidy'), 'list.noText': 'No words written yet',
     'list.search': 'Search words, titles, notes', 'list.searchLabel': 'Search entries', 'list.clearSearch': 'Clear search',
     'list.filters': 'Filters', 'list.fFav': 'Starred', 'list.fAudio': 'With audio', 'list.fInbox': 'To tidy',
     'list.inboxTag': 'To tidy', 'list.fav': 'Star', 'list.unfav': 'Unstar', 'list.hasAudio': 'Has audio',
@@ -116,6 +120,8 @@ export const STRINGS = {
     'entry.note': 'Context', 'entry.draft': 'Draft', 'entry.draftSrc': 'Source: {src}',
     'entry.done': 'Tidied', 'entry.doneToast': 'Marked as tidied', 'entry.markInbox': 'Back to To tidy', 'entry.inboxToast': 'Moved back to To tidy',
     'entry.cue': 'Recording', 'entry.cueNone': 'There was a recording here; it is not attached yet',
+    'clip.fallback': 'Recording {n}', 'clip.rename': 'Rename', 'clip.renameLabel': 'Rename recording “{name}”', 'clip.renameTitle': 'Recording name',
+    'clip.renameHint': 'Also used as the file name when you share or back up. Save it empty to use the default “{name}”.', 'clip.origName': 'Original file name: {name}', 'clip.renamed': 'Recording renamed',
     'entry.addAudio': 'Add audio file', 'entry.recordNow': 'Record now', 'entry.deleted': 'This entry has been deleted.',
     'entry.created': 'Written {time}', 'entry.shareFail': "Couldn't share: {msg}", 'entry.textCopied': 'Words copied.',
     'entry.shareCopied': 'Words copied and audio downloaded.', 'entry.shareReady': 'The audio is ready.', 'entry.shareMissing': "Some audio isn't on this device yet, so only the words are shared.",
@@ -126,7 +132,7 @@ export const STRINGS = {
 
     'edit.date': 'Date', 'edit.dateHelp': 'Early-morning talk keeps that calendar date: 2 AM on Mar 8 is Mar 8.', 'edit.badDate': 'Please enter a date',
     'edit.time': 'Time', 'edit.optional': 'optional', 'edit.now': 'Now', 'edit.clearTime': 'Clear',
-    'edit.title': 'Title', 'edit.titlePh': 'Optional; the list shows the first line',
+    'edit.title': 'Title', 'edit.titlePh': 'Title (optional)',
     'edit.text': 'Words', 'edit.textHint': 'Kept exactly as you type it', 'edit.textPh': 'Listen and write down what {nn} said…',
     'edit.insert': 'Insert a line', 'edit.me': 'Me', 'edit.reactions': 'Insert a reaction',
     'edit.note': 'Context', 'edit.notePh': 'What happened that day (optional)',

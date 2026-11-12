@@ -116,3 +116,74 @@ export function insertSpeakerLine(text, cursor, who, speakers, body = '“”') 
   const back = body === '“”' ? 1 : 0;
   return { text: before + ins + after, cursor: before.length + ins.length - back };
 }
+
+// ---------- 引号里是说的话，引号外是动作 / 环境（只拆开给界面换字体，原话不动） ----------
+// 开引号 “ 「 『 " ＂ ‘；关引号 ” 」 』 " ＂ ’。双引号一家（“ " ＂ / ” " ＂）可以混着配（“好的" 也算一对）。
+const OPEN = { '“': '”', '「': '」', '『': '』', '"': '"', '＂': '＂', '‘': '’' };
+const CLOSE = new Set(['”', '」', '』', '"', '＂', '’']);
+const DOUBLE_OPEN = new Set(['“', '"', '＂']), DOUBLE_CLOSE = new Set(['”', '"', '＂']);
+const closes = (open, c) => OPEN[open] === c || (DOUBLE_OPEN.has(open) && DOUBLE_CLOSE.has(c));
+const LATIN = /[A-Za-zÀ-ɏ]/;
+const SPACE = /\s/;
+
+/**
+ * 一行原话拆成「说的话」和「动作 / 描述」：[{ kind: 'speech' | 'desc', text }]，所有 text 连起来就是原文（一个字不差），引号留在说的话里。
+ * 用户的实际写法不总是规整的：
+ * - 只有开引号 → 说的话一直到这一行末尾
+ * - 只有关引号（他说了”）→ 从上一个分界（行首 / 上一句话结束的地方，跳过空格）到这个关引号都算说的话
+ * - 前面什么都没开着、在开头或空格后面、后面还有字的 ” → 当开引号用（”下雨了”）
+ * - 「」里套『』、引号里有表情都没问题；英文的撇号（don’t）不算引号
+ * - 整行没有引号 → 一段 desc；空字符串 → []
+ * @param {string} content
+ * @returns {Array<{kind: 'speech'|'desc', text: string}>}
+ */
+export function segments(content) {
+  const s = String(content ?? '');
+  const out = [];
+  const push = (kind, text) => {
+    if (!text) return;
+    const last = out[out.length - 1];
+    if (last && last.kind === kind) last.text += text; else out.push({ kind, text });
+  };
+  let stack = [], from = 0, start = 0;           // from：还没归类的文字从哪里开始；start：说的话从哪里开始
+  // 这一行后面（i 之后、换行之前）还有没有字
+  const textAfter = (i) => { for (let j = i + 1; j < s.length && s[j] !== '\n'; j++) if (!SPACE.test(s[j])) return true; return false; };
+  const apostrophe = (i) => s[i] === '’' && i > 0 && LATIN.test(s[i - 1]) && LATIN.test(s[i + 1] || '');
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\n' || c === '\r') {                 // 换行：没关上的引号到这里为止
+      if (stack.length) { push('speech', s.slice(start, i)); stack = []; from = i; }
+      continue;
+    }
+    if (stack.length) {
+      if (apostrophe(i)) continue;
+      // 关上最近的、能配上的那一层（「他说『好」→ 」把两层都关上）；配不上的关引号当普通字
+      let k = stack.length - 1;
+      while (k >= 0 && !closes(stack[k], c)) k--;
+      if (k >= 0 && (k === stack.length - 1 || OPEN[stack[k]] === c)) {
+        stack.length = k;
+        if (!stack.length) { push('speech', s.slice(start, i + 1)); from = i + 1; }
+      } else if (OPEN[c] && !CLOSE.has(c)) stack.push(c);
+      continue;
+    }
+    // 外面（动作 / 描述里）
+    const before = i === 0 || SPACE.test(s[i - 1]);
+    const asOpen = (OPEN[c] && (!CLOSE.has(c) || textAfter(i))) || (c === '”' && before && textAfter(i));
+    if (asOpen) {
+      push('desc', s.slice(from, i));
+      stack = [c === '”' ? '“' : c]; start = i;
+    } else if (CLOSE.has(c) && !apostrophe(i)) {
+      let b = from;                                  // 只有关引号：从上一个分界（跳过空格）到这里都是说的话
+      while (b < i && SPACE.test(s[b])) b++;
+      push('desc', s.slice(from, b));
+      push('speech', s.slice(b, i + 1));
+      from = i + 1;
+    }
+  }
+  if (stack.length) push('speech', s.slice(start));
+  else push('desc', s.slice(from));
+  return out;
+}
+
+/** 整行都是动作 / 描述（没有说的话）：画成浅浅的「动作」气泡 */
+export const isDescOnly = (content) => { const g = segments(content); return g.length > 0 && g.every(x => x.kind === 'desc'); };

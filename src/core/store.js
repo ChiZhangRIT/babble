@@ -66,7 +66,13 @@ export function normalizeEntry(rec, id = rec && rec.id) {
   r.audio = normAudio(r.audio);
   r.source = isObj(r.source) && typeof r.source.kind === 'string' ? r.source : { ...(isObj(r.source) ? r.source : {}), kind: 'app' };
   if (r.deleted) { r.deleted = true; r.deletedAt = Number(r.deletedAt) || updatedAt; }
-  else { delete r.deleted; delete r.deletedAt; }
+  else { delete r.deleted; delete r.deletedAt; delete r.deletedBy; }
+  // 谁改的 / 谁删的：{ who: 'me'|'nn'|null, device, at }（at = 签名时的 updatedAt / deletedAt）。老数据没有就没有
+  for (const k of ['updatedBy', 'deletedBy']) {
+    if (r[k] === undefined) continue;
+    if (isObj(r[k])) r[k] = { ...r[k], who: r[k].who === 'me' || r[k].who === 'nn' ? r[k].who : null, device: str(r[k].device) };
+    else delete r[k];
+  }
   return r;
 }
 
@@ -150,7 +156,7 @@ export function deletedRecord(rec, now = Date.now()) {
 /** 恢复：去掉删除标记，修改时间晚于删除（别的设备上旧的删除不会再盖过来） */
 export function restoredRecord(rec, now = Date.now()) {
   if (!rec || !rec.deleted) return null;
-  const { deleted, deletedAt, ...r } = rec;
+  const { deleted, deletedAt, deletedBy, ...r } = rec;
   return stamp(r, rec, now);
 }
 

@@ -21,7 +21,10 @@ export const STRINGS = {
     'nav.importNotes': '从备忘录迁移', 'nav.deleted': '最近删除', 'nav.new': '记一条', 'nav.diag': '录音诊断',
 
     'player.play': '播放', 'player.pause': '暂停', 'player.loading': '下载中…', 'player.error': '这段录音放不出来。',
-    'player.missing': '录音还没下载到这台设备。', 'player.rate': '播放速度', 'player.seek': '播放进度',
+    'player.missing': '录音还没下载到这台设备。', 'player.seek': '播放进度',
+    'player.mode': '音量均衡', 'player.orig': '原声', 'player.level': '均衡', 'player.processing': '处理中…',
+    'player.levelHint': '每句话调到差不多的音量：小声的放大，大声的压低。只影响播放，不改录音。',
+    'player.levelFail': '这段录音没法均衡，先放原声。',
 
     'sync.off': '未设置同步', 'sync.error': '同步出错', 'sync.offline': '离线 · 有修改待上传', 'sync.pending': '待同步', 'sync.syncing': '同步中…',
     'sync.ok': '已同步 · {time}', 'sync.ok0': '已同步', 'sync.last': '上次同步：{time}',
@@ -75,7 +78,10 @@ export const STRINGS = {
     'nav.importNotes': '從備忘錄遷移', 'nav.deleted': '最近刪除', 'nav.new': '記一則', 'nav.diag': '錄音診斷',
 
     'player.play': '播放', 'player.pause': '暫停', 'player.loading': '下載中…', 'player.error': '這段錄音無法播放。',
-    'player.missing': '錄音還沒下載到這臺裝置。', 'player.rate': '播放速度', 'player.seek': '播放進度',
+    'player.missing': '錄音還沒下載到這臺裝置。', 'player.seek': '播放進度',
+    'player.mode': '音量均衡', 'player.orig': '原聲', 'player.level': '均衡', 'player.processing': '處理中…',
+    'player.levelHint': '每句話調到差不多的音量：小聲的放大、大聲的壓低。只影響播放，不會更動錄音。',
+    'player.levelFail': '這段錄音無法均衡，先播放原聲。',
 
     'sync.off': '未設定同步', 'sync.error': '同步出錯', 'sync.offline': '離線 · 有修改待上傳', 'sync.pending': '待同步', 'sync.syncing': '同步中…',
     'sync.ok': '已同步 · {time}', 'sync.ok0': '已同步', 'sync.last': '上次同步：{time}',
@@ -130,7 +136,10 @@ export const STRINGS = {
     'nav.importNotes': 'Move from Notes', 'nav.deleted': 'Recently deleted', 'nav.new': 'New entry', 'nav.diag': 'Recording diagnostics',
 
     'player.play': 'Play', 'player.pause': 'Pause', 'player.loading': 'Downloading…', 'player.error': "This recording can't be played.",
-    'player.missing': "This recording hasn't been downloaded to this device yet.", 'player.rate': 'Playback speed', 'player.seek': 'Playback position',
+    'player.missing': "This recording hasn't been downloaded to this device yet.", 'player.seek': 'Playback position',
+    'player.mode': 'Volume leveling', 'player.orig': 'Original', 'player.level': 'Leveled', 'player.processing': 'Processing…',
+    'player.levelHint': 'Brings every sentence to about the same volume: whispers up, loud parts down. Playback only; the recording is unchanged.',
+    'player.levelFail': "Couldn't level this recording; playing the original.",
 
     'sync.off': 'Sync off', 'sync.error': 'Sync error', 'sync.offline': 'Offline · changes pending', 'sync.pending': 'Pending', 'sync.syncing': 'Syncing…',
     'sync.ok': 'Synced · {time}', 'sync.ok0': 'Synced', 'sync.last': 'Last sync: {time}',

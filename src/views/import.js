@@ -11,7 +11,8 @@ import { localParts, today, systemTz, isISODate, isTime, fmtTime, fmtDate, fmtDu
 import { splitExt, fmtBytes, uniq } from '../core/util.js';
 import { firstNNLine } from '../core/dialogue.js';
 import { parseNote, parsePathList, suggestPairs, fileTitle, isDefaultRecordingName, recordedOnDate } from '../core/notesImport.js';
-import { probeDuration, AUDIO_ACCEPT } from './entry.js';
+import { probeDuration, AUDIO_ACCEPT, sayNodes } from './entry.js';
+import { ownName } from '../core/clips.js';
 import { entryLabel } from './record.js';
 import { backupBox } from './settings.js';
 import { t } from '../i18n.js';
@@ -41,6 +42,13 @@ export async function readAudioFile(f) {
     const durationSec = round1(meta.durationSec || await probeDuration(blob));
     return { name: nfc(f.name), size: f.size, lastModified: f.lastModified || null, mime, sha256, blob, createdAt: meta.createdAt || null, durationSec };
   } catch (e) { return { name: f.name, bad: 'fail', msg: (e && e.message) || String(e) }; }
+}
+
+/** 「已经在哪一条里」：条目的简称；那段录音改过名的话把名字也带上（「… · 🎙 名字」） */
+function clipWhere(e, sha, speakers, lang) {
+  const c = e && (e.audio || []).find(a => a.sha256 === sha);
+  const own = ownName(c);
+  return entryLabel(e, speakers, lang) + (own ? ' · 🎙 ' + own : '');
 }
 
 /** 拖放区（只管样子）：文件由 catchDrops 在整个窗口上接 */
@@ -100,7 +108,7 @@ function audioView(main, params, ctx) {
   function where(sha) {
     const ids = clipIndex(ctx.state, { includeDeleted: true }).get(sha) || [];
     const live = ids.map(id => ctx.entry(id)).find(e => e && !e.deleted);
-    if (live) return { why: 'dup', where: entryLabel(live, sp(), lang) };
+    if (live) return { why: 'dup', where: clipWhere(live, sha, sp(), lang) };
     return ids.length ? { why: 'dupDeleted' } : null;
   }
 
@@ -489,24 +497,25 @@ function notesView(main, params, ctx) {
     h('div.group.im-group', null, rows));
 
   const firstLine = (e) => firstNNLine(e.text, sp()) || (e.text.split('\n').find(l => l.trim()) || '').trim();
+  const firstText = (e) => { const l = firstLine(e); return h('span.kai', null, l ? sayNodes(l) : t('imp.r.empty')); };   // 说的话楷体、动作普通字体
   function noteLine(x, p) {
     const multi = x.e.audioSlots > 1;
     return h('p.im-r-note', null, h('small', null, '↔ ', t('imp.r.note')), h('span.im-dt', null, x.e.dateText),
-      h('span.kai', null, firstLine(x.e) || t('imp.r.empty')),
+      firstText(x.e),
       multi ? h('small.im-slotn', null, t('imp.r.slotN', { n: p.entrySlot + 1 })) : null);
   }
   function entryLine(x, tag) {
     return h('div.im-r.im-r-plain', null,
       h('div.im-r-body', null,
         h('p.im-r-file', null, x.date ? fmtDate(x.date, lang) : x.e.dateText, tag ? h('span.tag.neutral', null, tag) : null),
-        h('p.im-r-note', null, h('span.kai', null, firstLine(x.e) || t('imp.r.empty')))));
+        h('p.im-r-note', null, firstText(x.e))));
   }
   function badDateRow(x) {
     const inp = h('input.im-date', { type: 'date', value: dateFix.get(x.e.key) || '', 'aria-label': t('imp.date'),
       onchange: () => { if (inp.value) dateFix.set(x.e.key, inp.value); else dateFix.delete(x.e.key); drawReview(); } });
     return h('div.im-r', null, h('div.im-r-body', null,
       h('p.im-r-file', null, x.e.dateText, ' ', h('span.ev.ev-flag', null, t('imp.warn.' + (x.e.warnings.includes('noYear') ? 'noYear' : 'badDate')))),
-      h('p.im-r-note', null, h('span.kai', null, firstLine(x.e) || t('imp.r.empty'))),
+      h('p.im-r-note', null, firstText(x.e)),
       h('label.im-f', null, h('span', null, t('imp.date')), inp)));
   }
 
@@ -526,7 +535,7 @@ function notesView(main, params, ctx) {
     if (isMoved) chips.push(h('span.ev.ev-flag', null, f ? t('imp.r.moved') : t('imp.r.movedNone')));
     if (f && isDefaultRecordingName(f.name)) chips.push(h('span.ev.ev-flag', null, t('imp.r.defaultName')));
     const dupIds = f ? (m.clips.get(f.sha256) || []) : [];
-    if (dupIds.length) chips.push(h('span.ev.ev-flag', null, t('imp.r.dupClip', { where: entryLabel(ctx.entry(dupIds[0]), sp(), lang) })));
+    if (dupIds.length) chips.push(h('span.ev.ev-flag', null, t('imp.r.dupClip', { where: clipWhere(ctx.entry(dupIds[0]), f.sha256, sp(), lang) })));
     let why = null;
     if (!isManual && !isMoved && uncertain) {
       if (!f) why = t('imp.r.why.none');

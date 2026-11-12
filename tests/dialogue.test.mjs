@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseDialogue, previewLines, firstNNLine, insertSpeakerLine, speakerOf, isReactionOnly, DEFAULT_SPEAKERS } from '../src/core/dialogue.js';
+import { parseDialogue, previewLines, firstNNLine, insertSpeakerLine, speakerOf, isReactionOnly, DEFAULT_SPEAKERS, segments, isDescOnly } from '../src/core/dialogue.js';
 
 // 全是编的例子（仓库是公开的，不放真的梦话）
 const SP = { nn: { name: 'NN', emoji: '👰🏻‍♀️', aliases: [] }, me: { name: '', emoji: '🥷🏻', aliases: [] } };
@@ -139,4 +139,80 @@ test('insertSpeakerLine：别的内容（反应表情）光标放在最后；用
   assert.equal(r.cursor, r.text.length);
   const sp = { nn: { emoji: '🐷' }, me: { emoji: '🐻' } };
   assert.equal(insertSpeakerLine('', 0, 'nn', sp).text, '🐷 “”');
+});
+
+// ---------- 说的话 / 动作：segments ----------
+const S = (text) => ({ kind: 'speech', text }), D = (text) => ({ kind: 'desc', text });
+const joined = (s) => segments(s).map(x => x.text).join('');
+
+test('segments：引号里是说的话、引号外是动作（引号留在说的话里）', () => {
+  assert.deepEqual(segments('揉了揉眼睛'), [D('揉了揉眼睛')]);
+  assert.deepEqual(segments('指着窗外 “下雨了”'), [D('指着窗外 '), S('“下雨了”')]);
+  assert.deepEqual(segments('“明天 去看海..”'), [S('“明天 去看海..”')]);
+  assert.deepEqual(segments('摇摇头 “不要” 翻过去了'), [D('摇摇头 '), S('“不要”'), D(' 翻过去了')]);
+  assert.deepEqual(segments('「為什麼……？」'), [S('「為什麼……？」')]);
+  assert.deepEqual(segments('“好” “嗯”'), [S('“好”'), D(' '), S('“嗯”')]);
+  assert.deepEqual(segments('说"好"'), [D('说'), S('"好"')]);
+  assert.deepEqual(segments('翻身 ＂别动＂'), [D('翻身 '), S('＂别动＂')]);
+  assert.deepEqual(segments('‘好’'), [S('‘好’')]);
+  assert.deepEqual(segments('“”'), [S('“”')]);
+  assert.deepEqual(segments(''), []);
+  assert.deepEqual(segments(null), []);
+});
+
+test('segments：不配对的引号（照用户的习惯猜，原文不动）', () => {
+  // 只有开引号：说的话到行尾
+  assert.deepEqual(segments('指着窗外 “下雨了'), [D('指着窗外 '), S('“下雨了')]);
+  assert.deepEqual(segments('“没说完\n揉了揉眼睛'), [S('“没说完'), D('\n揉了揉眼睛')]);
+  // 只有关引号：从上一个分界到关引号都是说的话
+  assert.deepEqual(segments('她说了”'), [S('她说了”')]);
+  assert.deepEqual(segments('到时候 我们一起 ”'), [S('到时候 我们一起 ”')], '后面没字了的 ” 是关引号');
+  assert.deepEqual(segments('她说了”然后又睡了'), [S('她说了”'), D('然后又睡了')]);
+  assert.deepEqual(segments('“好” 知道了”'), [S('“好”'), D(' '), S('知道了”')], '分界后面的空格不算进去');
+  assert.deepEqual(segments('“好”的”'), [S('“好”的”')]);
+  // 开头、空格后面、后面还有字的 ” 当开引号
+  assert.deepEqual(segments('”下雨了”'), [S('”下雨了”')]);
+  assert.deepEqual(segments('指着窗外 ”下雨了”'), [D('指着窗外 '), S('”下雨了”')]);
+  assert.deepEqual(segments('指着窗外 ”下雨了'), [D('指着窗外 '), S('”下雨了')]);
+  // 双引号一家可以混着配
+  assert.deepEqual(segments('“好的" 嗯'), [S('“好的"'), D(' 嗯')]);
+  // 只有一个 "：后面有字是开引号，没有字是关引号
+  assert.deepEqual(segments('翻身 "别走'), [D('翻身 '), S('"别走')]);
+  assert.deepEqual(segments('别走"'), [S('别走"')]);
+});
+
+test('segments：套引号、引号里有表情、英文撇号', () => {
+  assert.deepEqual(segments('「他说『好』然后」走了'), [S('「他说『好』然后」'), D('走了')]);
+  assert.deepEqual(segments('「他说『好」 翻身'), [S('「他说『好」'), D(' 翻身')], '」把没关上的『也一起关上');
+  assert.deepEqual(segments('「他说"好"」'), [S('「他说"好"」')]);
+  assert.deepEqual(segments('笑 “😂哈哈🫨”'), [D('笑 '), S('“😂哈哈🫨”')]);
+  assert.deepEqual(segments(`${NN} 指着 “🌧️”`), [D(`${NN} 指着 `), S('“🌧️”')]);
+  assert.deepEqual(segments('I don’t know'), [D('I don’t know')]);
+  assert.deepEqual(segments('“I don’t know”'), [S('“I don’t know”')]);
+  assert.deepEqual(segments('‘don’t go’'), [S('‘don’t go’')]);
+});
+
+test('segments：连起来就是原文（随机拼的各种字符）', () => {
+  const parts = ['“', '”', '「', '」', '『', '』', '"', '＂', '‘', '’', ' ', '\n', '好', '下雨了', '😂', NN, 'a', 'don', '..', '？'];
+  let seed = 12345;
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  for (let k = 0; k < 3000; k++) {
+    let s = '';
+    for (let j = rnd(14); j >= 0; j--) s += parts[rnd(parts.length)];
+    const g = segments(s);
+    assert.equal(joined(s), s, JSON.stringify(s));
+    for (let i = 0; i < g.length; i++) {
+      assert.ok(g[i].text.length > 0, '没有空段');
+      if (i) assert.notEqual(g[i].kind, g[i - 1].kind, '相邻的段种类不同');
+    }
+  }
+});
+
+test('isDescOnly：整行都是动作才算；反应、录音提示、只有引号的行照旧', () => {
+  assert.equal(isDescOnly('揉了揉眼睛'), true);
+  assert.equal(isDescOnly('指着窗外 “下雨了”'), false);
+  assert.equal(isDescOnly('“嗯”'), false);
+  assert.equal(isDescOnly(''), false);
+  assert.deepEqual(parseDialogue(`${NN} 🤯\n${NN}：\n${NN} “”`, SP).map(b => [b.reactionOnly, !!b.audioCue, !!b.emptyQuote]),
+    [[true, false, false], [false, true, false], [false, false, true]]);
 });

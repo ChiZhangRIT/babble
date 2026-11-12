@@ -7,6 +7,7 @@ import { extForMime } from './audioStore.js';
 import { fmtEntryDate, fmtDuration, fmtDate, today } from './dates.js';
 import { firstNNLine } from './dialogue.js';
 import { isObj, sanitizeFileName, splitExt } from './util.js';
+import { clipFileStem } from './clips.js';
 
 export const BACKUP_JSON = 'babble.json';
 const MIME_BY_EXT = { m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', webm: 'audio/webm', ogg: 'audio/ogg', wav: 'audio/wav' };
@@ -33,9 +34,9 @@ export function backupFileName(date = new Date(), lang = 'zh-Hans') {
 }
 
 const QUOTES = /[“”‘’「」『』"'«»„‟‹›〝〞＂＇]/g;
-/** 录音在备份里的文件名：「2026-11-04 标题或第一句 (sha前8位).m4a」（去掉引号和文件名里不能用的字符） */
+/** 录音在备份里的文件名：「2026-11-04 录音的名字 (sha前8位).m4a」；录音没起名（原文件名也是默认的）→ 用标题或第一句（去掉引号和文件名里不能用的字符） */
 export function clipFileName(entry, clip, speakers) {
-  const words = sanitizeFileName(String(entry.title || firstNNLine(entry.text || '', speakers) || '').replace(QUOTES, ''), 24);
+  const words = clipFileStem(clip) || sanitizeFileName(String(entry.title || firstNNLine(entry.text || '', speakers) || '').replace(QUOTES, ''), 24);
   return `${entry.date}${words ? ' ' + words : ''} (${clip.sha256.slice(0, 8)}).${extForMime(clip.mime)}`;
 }
 
@@ -115,7 +116,9 @@ export function backupMarkdown(state, { lang = 'zh-Hans', files = {}, now = new 
     const clips = e.audio || [];
     if (clips.length) {
       clips.forEach((a, i) => {
-        const label = `🎙 ${T.audio}${clips.length > 1 ? ' ' + (i + 1) : ''}${a.durationSec != null ? ' · ' + fmtDuration(a.durationSec) : ''}`;
+        // eslint-disable-next-line no-control-regex
+        const name = clipFileStem(a).replace(/[\u0000-\u001f\u007f\s]+/g, ' ').replace(/[[\]<\\]/g, '\\$&');   // 录音的名字（链接文字里 [ ] < 要转义）
+        const label = `🎙 ${T.audio}${clips.length > 1 ? ' ' + (i + 1) : ''}${name ? ' · ' + name : ''}${a.durationSec != null ? ' · ' + fmtDuration(a.durationSec) : ''}`;
         out.push((files[a.sha256] ? `[${label}](<${files[a.sha256]}>)` : `${label}（${T.missing}）`) + '  ');
       });
       out.push('');

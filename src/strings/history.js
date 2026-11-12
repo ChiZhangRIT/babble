@@ -1,0 +1,82 @@
+// 文案（修改记录、这台设备）：hist.* / dev.*。
+// 繁體（台灣）用台灣用語（紀錄、裝置、雲端、還原…）；{by} 是「🥷🏻 名字 · 裝置名」，用户写的名字不转换。
+// 英文单复数：en(一个, 多个)
+const en = (one, many) => (v) => (Number(v.n) === 1 ? one : many).replace('{n}', v.n);
+
+export const STRINGS = {
+  'zh-Hans': {
+    'hist.title': '修改记录', 'hist.lastBy': '最后修改：{by} · {when}', 'hist.deletedBy': '由 {by} 删除 · {when}', 'hist.cloudFrom': '{device} 上传',
+    'hist.justNow': '刚刚', 'hist.minAgo': '{n} 分钟前', 'hist.hrAgo': '{n} 小时前', 'hist.today': '今天 {time}', 'hist.yesterday': '昨天 {time}',
+    'hist.current': '现在的版本', 'hist.local': '本机记录', 'hist.cloud': '云端', 'hist.cloudAt': '云端 · {time}', 'hist.oldest': '能找到的最早一版',
+    'hist.unknownBy': '不知道是谁改的',
+    'hist.f.title': '标题', 'hist.f.text': '原话', 'hist.f.note': '背景', 'hist.f.audio': '录音', 'hist.f.fav': '收藏', 'hist.f.status': '状态',
+    'hist.f.date': '日期', 'hist.f.draft': '草稿', 'hist.f.deleted': '删除', 'hist.f.restored': '恢复', 'hist.f.none': '内容没变',
+    'hist.titleChange': '标题：{from} → {to}', 'hist.audioChange': '录音：{from} 段 → {to} 段', 'hist.clipRename': '录音改名：{from} → {to}', 'hist.dateChange': '日期：{from} → {to}',
+    'hist.emptyValue': '（空）', 'hist.skip': '…… {n} 行没变', 'hist.moreLines': '还有 {n} 行改动，点开看',
+    'hist.empty': '这台设备上还没有这条梦话的旧版本。以后在这里修改、删除，或者同步来别人的改动，都会留一份旧的。',
+    'hist.localNote': '旧版本只存在这台设备上（每条最多 100 版），不会同步。',
+    'hist.cloudBtn': '从云端历史找更早的版本', 'hist.cloudOff': '开启同步以后，还能从云端历史里找更早的版本。',
+    'hist.cloudChecking': '正在看云端第 {n} 个版本…', 'hist.cloudStop': '停止', 'hist.cloudMore': '更早',
+    'hist.cloudChecked': '已经看了云端 {n} 个版本。', 'hist.cloudStart': '已经找到最早的版本了。', 'hist.cloudNothing': '云端没有更多不同的版本。',
+    'hist.preview': '{time} 的版本', 'hist.restore': '恢复这个版本', 'hist.restoring': '正在找录音…', 'hist.isCurrent': '这就是现在的版本。',
+    'hist.restored': '已恢复到 {time} 的版本', 'hist.clipMissing': '有 {n} 段录音在这台设备和云端都找不到，没有恢复。',
+    'hist.versionDeleted': '这一版是删除后的样子（恢复它会把这条梦话放回列表）。', 'hist.loading': '读取修改记录…',
+    'hist.loadFail': '读不到这台设备上的修改记录：{msg}', 'hist.noText': '（这一版还没有原话）', 'hist.clipLocalMissing': '这台设备上没有',
+
+    'dev.h': '这台设备', 'dev.name': '设备名', 'dev.who': '谁在用', 'dev.whoNone': '不设定', 'dev.me': '我',
+    'dev.foot': '修改梦话时会记下是谁、用哪台设备改的，在每条梦话的「修改记录」里能看到，删除的也看得到是谁删的。名字和表情用上面「称呼与表情」里的。',
+    'dev.askTitle': '这台设备是谁在用？', 'dev.askText': '以后在这台设备上改梦话，「修改记录」里会写上是谁改的。随时可以在「设置 → 这台设备」里改。',
+    'dev.later': '以后再说', 'dev.saved': '记住了：{by}',
+  },
+
+  'zh-Hant-TW': {
+    'hist.title': '修改紀錄', 'hist.lastBy': '最後修改：{by} · {when}', 'hist.deletedBy': '由 {by} 刪除 · {when}', 'hist.cloudFrom': '{device} 上傳',
+    'hist.justNow': '剛剛', 'hist.minAgo': '{n} 分鐘前', 'hist.hrAgo': '{n} 小時前', 'hist.today': '今天 {time}', 'hist.yesterday': '昨天 {time}',
+    'hist.current': '現在的版本', 'hist.local': '本機紀錄', 'hist.cloud': '雲端', 'hist.cloudAt': '雲端 · {time}', 'hist.oldest': '能找到的最早一版',
+    'hist.unknownBy': '不知道是誰改的',
+    'hist.f.title': '標題', 'hist.f.text': '原話', 'hist.f.note': '背景', 'hist.f.audio': '錄音', 'hist.f.fav': '收藏', 'hist.f.status': '狀態',
+    'hist.f.date': '日期', 'hist.f.draft': '草稿', 'hist.f.deleted': '刪除', 'hist.f.restored': '還原', 'hist.f.none': '內容沒變',
+    'hist.titleChange': '標題：{from} → {to}', 'hist.audioChange': '錄音：{from} 段 → {to} 段', 'hist.clipRename': '錄音改名：{from} → {to}', 'hist.dateChange': '日期：{from} → {to}',
+    'hist.emptyValue': '（空）', 'hist.skip': '…… {n} 行沒變', 'hist.moreLines': '還有 {n} 行改動，點開看',
+    'hist.empty': '這臺裝置上還沒有這則夢話的舊版本。以後在這裡修改、刪除，或者同步來別人的改動，都會留一份舊的。',
+    'hist.localNote': '舊版本只存在這臺裝置上（每則最多 100 版），不會同步。',
+    'hist.cloudBtn': '從雲端歷史找更早的版本', 'hist.cloudOff': '開啟同步以後，還能從雲端歷史裡找更早的版本。',
+    'hist.cloudChecking': '正在看雲端第 {n} 個版本…', 'hist.cloudStop': '停止', 'hist.cloudMore': '更早',
+    'hist.cloudChecked': '已經看了雲端 {n} 個版本。', 'hist.cloudStart': '已經找到最早的版本了。', 'hist.cloudNothing': '雲端沒有更多不同的版本。',
+    'hist.preview': '{time} 的版本', 'hist.restore': '還原這個版本', 'hist.restoring': '正在找錄音…', 'hist.isCurrent': '這就是現在的版本。',
+    'hist.restored': '已還原到 {time} 的版本', 'hist.clipMissing': '有 {n} 段錄音在這臺裝置和雲端都找不到，沒有還原。',
+    'hist.versionDeleted': '這一版是刪除後的樣子（還原它會把這則夢話放回列表）。', 'hist.loading': '讀取修改紀錄…',
+    'hist.loadFail': '讀不到這臺裝置上的修改紀錄：{msg}', 'hist.noText': '（這一版還沒有原話）', 'hist.clipLocalMissing': '這臺裝置上沒有',
+
+    'dev.h': '這臺裝置', 'dev.name': '裝置名稱', 'dev.who': '誰在用', 'dev.whoNone': '不設定', 'dev.me': '我',
+    'dev.foot': '修改夢話時會記下是誰、用哪臺裝置改的，在每則夢話的「修改紀錄」裡看得到，刪除的也看得到是誰刪的。名字和表情符號用上面「稱呼與表情符號」裡的。',
+    'dev.askTitle': '這臺裝置是誰在用？', 'dev.askText': '以後在這臺裝置上改夢話，「修改紀錄」裡會寫上是誰改的。隨時可以在「設定 → 這臺裝置」裡改。',
+    'dev.later': '以後再說', 'dev.saved': '記住了：{by}',
+  },
+
+  en: {
+    'hist.title': 'Edit history', 'hist.lastBy': 'Last edited: {by} · {when}', 'hist.deletedBy': 'Deleted by {by} · {when}', 'hist.cloudFrom': 'uploaded by {device}',
+    'hist.justNow': 'just now', 'hist.minAgo': en('1 minute ago', '{n} minutes ago'), 'hist.hrAgo': en('1 hour ago', '{n} hours ago'),
+    'hist.today': 'today {time}', 'hist.yesterday': 'yesterday {time}',
+    'hist.current': 'Current version', 'hist.local': 'This device', 'hist.cloud': 'Cloud', 'hist.cloudAt': 'Cloud · {time}', 'hist.oldest': 'Oldest version found',
+    'hist.unknownBy': 'Unknown editor',
+    'hist.f.title': 'Title', 'hist.f.text': 'Words', 'hist.f.note': 'Context', 'hist.f.audio': 'Audio', 'hist.f.fav': 'Favorite', 'hist.f.status': 'Status',
+    'hist.f.date': 'Date', 'hist.f.draft': 'Draft', 'hist.f.deleted': 'Deleted', 'hist.f.restored': 'Restored', 'hist.f.none': 'No content change',
+    'hist.titleChange': 'Title: {from} → {to}', 'hist.audioChange': 'Audio: {from} → {to} clips', 'hist.clipRename': 'Recording renamed: {from} → {to}', 'hist.dateChange': 'Date: {from} → {to}',
+    'hist.emptyValue': '(empty)', 'hist.skip': en('… 1 line unchanged', '… {n} lines unchanged'), 'hist.moreLines': en('1 more changed line, tap to see', '{n} more changed lines, tap to see'),
+    'hist.empty': 'No older versions of this entry on this device yet. From now on, edits, deletes and changes synced from other devices each keep a copy of the old version here.',
+    'hist.localNote': 'Old versions are kept on this device only (up to 100 per entry) and are not synced.',
+    'hist.cloudBtn': 'Look for older versions in the cloud history', 'hist.cloudOff': 'With sync on, you can also look for older versions in the cloud history.',
+    'hist.cloudChecking': 'Checking cloud version {n}…', 'hist.cloudStop': 'Stop', 'hist.cloudMore': 'Older',
+    'hist.cloudChecked': en('Checked 1 cloud version.', 'Checked {n} cloud versions.'), 'hist.cloudStart': 'Reached the oldest version.', 'hist.cloudNothing': 'No more different versions in the cloud.',
+    'hist.preview': 'Version from {time}', 'hist.restore': 'Restore this version', 'hist.restoring': 'Finding recordings…', 'hist.isCurrent': 'This is the current version.',
+    'hist.restored': 'Restored the version from {time}', 'hist.clipMissing': en("1 recording couldn't be found on this device or in the cloud, so it wasn't restored.", "{n} recordings couldn't be found on this device or in the cloud, so they weren't restored."),
+    'hist.versionDeleted': 'This version is the deleted state (restoring it puts the entry back in the list).', 'hist.loading': 'Loading history…',
+    'hist.loadFail': "Couldn't read this device's history: {msg}", 'hist.noText': '(no words in this version yet)', 'hist.clipLocalMissing': 'not on this device',
+
+    'dev.h': 'This device', 'dev.name': 'Device name', 'dev.who': 'Who uses it', 'dev.whoNone': 'Not set', 'dev.me': 'Me',
+    'dev.foot': "Edits record who made them and on which device. You can see it in each entry's Edit history, and Recently deleted shows who deleted what. Names and emoji come from Names & emoji above.",
+    'dev.askTitle': 'Who uses this device?', 'dev.askText': 'Edits made on this device will show who made them in Edit history. You can change this any time in Settings → This device.',
+    'dev.later': 'Not now', 'dev.saved': 'Got it: {by}',
+  },
+};

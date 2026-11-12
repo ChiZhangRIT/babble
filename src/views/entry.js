@@ -1,16 +1,25 @@
-// 梦话详情（#/e/<id>）：日期、时间来源、录音、对话气泡（原话一个字不改）、那天的背景、草稿、「整理好了」。
+// 梦话详情（#/e/<id>）：日期、时间来源、录音（每段下面可以「转成文字（草稿）」）、草稿、对话气泡（原话一个字不改）、那天的背景、「整理好了」。
 // 气泡：NN 在左（浅玫瑰底 + 头像表情），我在右（卡片底）；只有表情的反应画成大表情；旁白居中；空行是分段；
+// 引号里是说的话（楷体），引号外是动作 / 环境（普通字体、小一点、淡一点）；整行都是动作的画成浅浅的「动作」气泡（sayNodes，列表卡片也用）。
 // 「👰🏻‍♀️：」后面跟着录音的地方画成「🎙 录音」小标签，点了滚到播放器。
+// 每段录音上面是它的名字（clips.js 的显示名），点了改名（renameClipSheet，编辑页也用）。
 // 自己管更新（返回 onChange）：数据变了原地重画、保留滚动；删除后正在离开时不重画。
-// 也导出给编辑页用的：readClipFiles（选来的录音文件 → 存进本机录音库）、chatView。
+// 也导出给别的页面用的：readClipFiles（选来的录音文件 → 存进本机录音库）、chatView、sayNodes、clipCaption、renameClipSheet。
+// #/e/<id>/history（params.sub === 'history'）是修改记录页，在 views/history.js。
 import { h, icon, copyText, download } from '../ui/dom.js';
 import { audioPlayer } from '../ui/player.js';
+import { clipTranscriber, draftView } from '../ui/stt.js';
 import { fmtEntryDate, fmtDate, fmtTime, fmtYear, fmtInstant, localParts, systemTz } from '../core/dates.js';
-import { parseDialogue, firstNNLine } from '../core/dialogue.js';
+import { parseDialogue, firstNNLine, segments, isDescOnly } from '../core/dialogue.js';
+import { highlight } from '../core/search.js';
+import { clipLabel, clipFileStem, ownName, origBase, renameClip, CLIP_NAME_MAX } from '../core/clips.js';
 import { readMp4Meta } from '../core/mp4meta.js';
 import { mimeForFile, baseMime, extForMime } from '../core/audioStore.js';
 import { splitExt, sanitizeFileName } from '../core/util.js';
 import { t } from '../i18n.js';
+import { render as renderHistory, lastEditedLine, fmtAgo } from './history.js';
+import { deletionBy } from '../core/history.js';
+import { byLabel } from './device.js';
 
 /** 同一行里日期和时间之间：中文空格（11月4日 凌晨2:58），英文逗号（Nov 4, 2:58 AM） */
 const daySep = lang => (lang === 'en' ? ', ' : ' ');
@@ -33,6 +42,32 @@ export function chatRuns(blocks) {
 }
 
 /**
+ * 一行原话 → 节点（原文一个字不改，只是分段换字体）：引号里说的话 span.say（楷体），引号外的动作 / 环境 span.desc。
+ * q：搜索词，命中的地方包上 <mark>（可以跨过说的话和动作的分界）
+ */
+export function sayNodes(content, q = '') {
+  const s = String(content ?? '');
+  const marks = q && String(q).trim() ? highlight(s, q) : null;
+  let at = 0;
+  return segments(s).map(g => {
+    const a = at, b = (at += g.text.length);
+    return h(g.kind === 'speech' ? 'span.say' : 'span.desc', null, marks ? cutMarks(marks, a, b) : g.text);
+  });
+}
+/** highlight() 的结果里 [a, b) 这一段 → 文字和 <mark> */
+function cutMarks(marks, a, b) {
+  const out = [];
+  let at = 0;
+  for (const m of marks) {
+    const x = Math.max(a, at), y = Math.min(b, at + m.text.length);
+    if (x < y) { const piece = m.text.slice(x - at, y - at); out.push(m.hit ? h('mark', null, piece) : piece); }
+    at += m.text.length;
+    if (at >= b) break;
+  }
+  return out;
+}
+
+/**
  * 把原话画成聊天气泡
  * @param {string} text
  * @param {object} speakers   settings.speakers
@@ -43,7 +78,7 @@ export function chatView(text, speakers, { onCue = null, hasAudio = false } = {}
   let cues = 0;                                    // 第 k 个「录音」标签对应第 k 段录音（备忘录里就是这个顺序）
   return h('div.chat', null, chatRuns(parseDialogue(text, speakers)).map(r => {
     if (r.type === 'gap') return h('div.chat-gap', { 'aria-hidden': 'true' });
-    if (r.type === 'narration') return h('p.chat-narr', null, r.content);
+    if (r.type === 'narration') return h('p.chat-narr', null, sayNodes(r.content));
     const who = h('span.sr-only', null, names[r.who] + '：');
     return h('div.run.run-' + r.who, null,
       h('span.av', { 'aria-hidden': 'true', title: names[r.who] }, speakers[r.who].emoji),
@@ -53,7 +88,8 @@ export function chatView(text, speakers, { onCue = null, hasAudio = false } = {}
           return h('button.cue', { type: 'button', disabled: !hasAudio, title: hasAudio ? null : t('entry.cueNone'), onclick: () => onCue && onCue(k) },
             who.cloneNode(true), icon('mic'), t('entry.cue'));
         }
-        return h(b.reactionOnly ? 'p.react' : 'p.bubble', null, who.cloneNode(true), b.content);
+        if (b.reactionOnly) return h('p.react', null, who.cloneNode(true), b.content);
+        return h('p.bubble' + (isDescOnly(b.content) ? '.act' : ''), null, who.cloneNode(true), sayNodes(b.content));   // .act：整行都是动作
       })));
   }));
 }
@@ -109,9 +145,50 @@ export async function readClipFiles(files, ctx) {
 
 // ---------- 分享 ----------
 const QUOTES = /[“”‘’「」『』"'＂＇]/g;
-function shareName(e, clip, i, speakers) {
+/**
+ * 分享出去的录音文件名：录音有名字（起的名字 / 原文件名）→「名字.m4a」（几段同名的加 (2)）；
+ * 没有 → 「2026-11-04 标题或第一句.m4a」（几段的加 (2)）
+ */
+export function shareName(e, clip, i, speakers) {
+  const ext = '.' + extForMime(clip.mime);
+  const stem = clipFileStem(clip);
+  if (stem) {
+    const same = e.audio.filter((a, k) => k < i && clipFileStem(a) === stem).length;
+    return stem + (same ? ` (${same + 1})` : '') + ext;
+  }
   const words = sanitizeFileName(String(e.title || firstNNLine(e.text, speakers) || '').replace(QUOTES, ''), 24);
-  return sanitizeFileName(`${e.date}${words ? ' ' + words : ''}`, 60) + (e.audio.length > 1 ? ` (${i + 1})` : '') + '.' + extForMime(clip.mime);
+  return sanitizeFileName(`${e.date}${words ? ' ' + words : ''}`, 60) + (e.audio.length > 1 ? ` (${i + 1})` : '') + ext;
+}
+
+// ---------- 录音的名字 ----------
+const fallbackName = (n) => t('clip.fallback', { n });
+
+/** 播放器上面的一行：录音的名字 + ✎，点了改名 */
+export function clipCaption(clip, i, onRename) {
+  const name = clipLabel(clip, i, fallbackName);
+  return h('button.clip-cap', { type: 'button', 'aria-label': t('clip.renameLabel', { name }), title: t('clip.rename'), onclick: onRename },
+    h('span.clip-cap-name', null, name), icon('pencil'));
+}
+
+/**
+ * 改名的小窗（不在页面里，同步重画页面时不会打断输入）。点「保存」→ onSave(输入的名字)：
+ * 调用的地方用 renameClip(最新的 audio, sha, 名字) 改（空着 = 回到默认名：原文件名，没有就是「录音 1」；整理规则见 core/clips.js）
+ */
+export function renameClipSheet(ctx, clip, i, onSave) {
+  const def = origBase(clip) || fallbackName(i + 1);
+  const input = h('input.clip-name-in', { type: 'text', value: ownName(clip) || origBase(clip), placeholder: def, maxlength: CLIP_NAME_MAX,
+    autocomplete: 'off', enterkeyhint: 'done', 'aria-label': t('clip.renameTitle'),
+    onkeydown: (ev) => { if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); save(); } } });
+  const s = ctx.sheet(h('div.clip-ren', null, input,
+    h('p.f-help', null, t('clip.renameHint', { name: def })),
+    clip.origName && ownName(clip) ? h('p.f-help', null, t('clip.origName', { name: clip.origName })) : null), {
+    title: t('clip.renameTitle'), cls: 'clip-ren-sheet',
+    foot: [h('button.btn', { type: 'button', onclick: () => s.close() }, t('common.cancel')),
+      h('button.btn.primary', { type: 'button', onclick: () => save() }, t('common.save'))],
+  });
+  function save() { s.close(); onSave(input.value); }
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+  return s;
 }
 /** 分享出去的文字：日期行、标题、原话（原样） */
 export function shareText(e, lang) {
@@ -126,6 +203,7 @@ function weekday(date, lang) {
 
 // ---------- 页面 ----------
 export function render(main, params, ctx) {
+  if (params.sub === 'history') return renderHistory(main, params, ctx);
   const id = params.id;
   let players = [], leaving = false, share = { key: null, ready: null };
   const sp = () => ctx.state.settings.speakers;
@@ -142,11 +220,13 @@ export function render(main, params, ctx) {
     if (!e) return [navbar(), h('div.page', null, h('p.empty', null, t('common.notFound')))];
     if (e.deleted) {
       // 已删除（从「最近删除」点进来）：只读地看一眼原话，决定要不要恢复
+      const by = byLabel(deletionBy(e), sp());
       return [navbar(), h('article.page.entry.e-gone', null,
-        h('div.e-banner', { role: 'status' }, h('span', null, t('entry.deleted')),
+        h('div.e-banner', { role: 'status' }, h('span', null, t('entry.deleted'), by ? h('small.e-banner-by', null, t('hist.deletedBy', { by, when: fmtAgo(e.deletedAt, ctx.lang()) })) : null),
           h('button.btn.small.soft', { type: 'button', onclick: () => ctx.restore(id) }, t('common.restore'))),
         h('header.e-head', null, h('h1.e-big', null, fmtEntryDate(e, ctx.lang(), { sep: daySep(ctx.lang()) }))),
-        e.text.trim() ? chatView(e.text, sp()) : null)];
+        e.text.trim() ? chatView(e.text, sp()) : null,
+        h('p.e-foot.e-by', null, h('a', { href: '#/e/' + enc(id) + '/history' }, t('hist.title'))))];
     }
     const lang = ctx.lang();
     prepShare(e);
@@ -156,11 +236,11 @@ export function render(main, params, ctx) {
       h('button.icon-btn', { type: 'button', 'aria-label': t('common.share'), title: t('common.share'), onclick: () => doShare(e) }, icon('share')),
       h('button.icon-btn', { type: 'button', 'aria-label': t('common.more'), title: t('common.more'), onclick: () => menu(e) }, icon('more')));
 
-    // 标题区：有标题时标题最大；没有时日期 + 时间最大（和设计稿一样）
+    // 标题区：日期 + 时间最大；填了标题才在下面显示标题（不拿第一句顶替）
     const wd = weekday(e.date, lang);
     const titled = !!(e.title && e.title.trim());
-    const big = titled ? e.title : fmtDate(e.date, lang, { year: false }) + (e.time ? daySep(lang) + fmtTime(e.time, lang) : '');
-    const sub = titled ? fmtEntryDate(e, lang, { sep: daySep(lang) }) : fmtYear(e.date.slice(0, 4), lang);
+    const big = fmtDate(e.date, lang, { year: false }) + (e.time ? daySep(lang) + fmtTime(e.time, lang) : '');
+    const sub = fmtYear(e.date.slice(0, 4), lang);
     const chips = [
       e.timeSource ? h('span.pill', null, icon('clock'), t('entry.src.' + e.timeSource)) : null,
       e.status === 'inbox' ? h('span.pill.rose', null, t('entry.inbox')) : null,
@@ -173,10 +253,8 @@ export function render(main, params, ctx) {
     const clips = e.audio.map((c, i) => {
       const p = audioPlayer({ getBlob: () => ctx.clipBlob(c.sha256), durationSec: c.durationSec, key: c.sha256 });
       players.push(p);
-      const cap = e.audio.length > 1 || c.origName
-        ? h('p.e-clip-cap', null, e.audio.length > 1 ? h('b', null, t('entry.clipN', { n: i + 1 })) : null, e.audio.length > 1 && c.origName ? ' · ' : null, c.origName || null)
-        : null;
-      return h('div.e-clip', null, cap, p);
+      const cap = clipCaption(c, i, () => rename(c.sha256));
+      return h('div.e-clip', null, cap, p, clipTranscriber(ctx, e, c));     // 「转成文字（草稿）」
     });
 
     const nn = sp().nn.name || 'NN';
@@ -190,23 +268,22 @@ export function render(main, params, ctx) {
       navbar(actions),
       h('article.page.entry', null,
         h('header.e-head', null,
-          h('h1.e-big' + (titled ? '.titled' : ''), null, big),
+          h('h1.e-big', null, big),
           h('p.e-sub', null, h('span', null, [sub, wd].filter(Boolean).join(' · ')),
             h('a.e-edit', { href: '#/edit/' + enc(id), 'aria-label': t('entry.editDate'), title: t('entry.editDate') }, icon('pencil'))),
+          titled ? h('p.e-title', null, e.title) : null,
           chips.length ? h('div.e-chips', null, chips) : null),
         clips.length ? h('div.e-audio', null, clips) : null,
+        draftView(ctx, e),               // 草稿紧跟在录音下面：边听边改，「填进原话」
         words,
         e.note && e.note.trim() ? h('section.e-note', null, h('h2.e-h', null, t('entry.note')), h('div.e-note-body', null, e.note)) : null,
-        e.draft && e.draft.text && e.draft.text.trim() ? h('details.e-draft', null,
-          h('summary', null, icon('chev'), h('span', null, t('entry.draft')), e.draft.source ? h('small', null, t('entry.draftSrc', { src: draftSource(e.draft.source) })) : null),
-          h('div.e-draft-body', null, e.draft.text)) : null,
-        showCreated ? h('p.e-foot', null, t('entry.created', { time: fmtInstant(e.createdAt, lang, { year: true }) })) : null),
+        showCreated ? h('p.e-foot', null, t('entry.created', { time: fmtInstant(e.createdAt, lang, { year: true }) })) : null,
+        lastEditedLine(e, ctx)),
       e.status === 'inbox' ? h('div.bottom-bar.e-done', null,
         h('button.btn.primary.big', { type: 'button', onclick: () => ctx.update(id, { status: 'done' }, { undoLabel: t('entry.doneToast') }) }, icon('check'), t('entry.done'))) : null,
       fileInput,
     ];
   }
-  const draftSource = (s) => (s === 'paste' ? t('edit.draftSrc.paste') : s);
 
   function draw(first = false) {
     const sc = ctx.layout() === 'phone' ? document.scrollingElement : main;
@@ -227,6 +304,19 @@ export function render(main, params, ctx) {
     if (btn) btn.focus({ preventScroll: true });
   }
 
+  // ---------- 录音改名 ----------
+  function rename(sha) {
+    const e = ctx.entry(id);
+    const i = e ? e.audio.findIndex(a => a.sha256 === sha) : -1;
+    if (i < 0) return;
+    renameClipSheet(ctx, e.audio[i], i, (name) => {
+      const cur = ctx.entry(id);                 // 小窗开着的时候可能同步进来了新的录音列表：在最新的上面改
+      if (!cur || cur.deleted) return;
+      const next = renameClip(cur.audio, sha, name);
+      if (next !== cur.audio) ctx.update(id, { audio: next }, { undoLabel: t('clip.renamed') });
+    });
+  }
+
   // ---------- ⋯ 菜单 ----------
   function menu(e) {
     const lang = ctx.lang();
@@ -239,12 +329,13 @@ export function render(main, params, ctx) {
         e.status === 'inbox'
           ? row('check', t('entry.done'), () => ctx.update(id, { status: 'done' }, { undoLabel: t('entry.doneToast') }))
           : row('clock', t('entry.markInbox'), () => ctx.update(id, { status: 'inbox' }, { undoLabel: t('entry.inboxToast') })),
+        row('history', t('hist.title'), () => ctx.navigate('/e/' + enc(id) + '/history')),
         row('trash', t('common.delete'), remove, '.danger'));
     }, { title: fmtEntryDate(e, lang, { sep: daySep(lang) }), cls: 'e-menu-sheet' });
   }
   function remove() {
     leaving = true;                       // 删掉以后不在这页重画「已删除」，直接回列表（10 秒内可以撤销）
-    if (params.pane === 'detail') ctx.navigate('/', { replace: true }); else ctx.back('/');
+    if (params.pane === 'detail') ctx.navigate(ctx.home(), { replace: true }); else ctx.back('/');     // 双栏：回到列表或日历（看用户上次选的）
     ctx.remove(id);
   }
 
@@ -277,7 +368,7 @@ export function render(main, params, ctx) {
   // ---------- 分享 ----------
   // 本机有的录音进页面就读好：navigator.share 要在点按的那一刻调用，来不及先读数据库
   function prepShare(e) {
-    const key = e.audio.map(a => a.sha256).join(',');
+    const key = e.audio.map((a, i) => a.sha256 + '|' + shareName(e, a, i, sp())).join(',');   // 改了名也要重新准备（文件名变了）
     if (share.key === key) return;
     share = { key, ready: null };
     const mine = share;

@@ -4,15 +4,18 @@
 // export function render(main, params, ctx) → 清理函数 | { cleanup?(), onChange?(info) } | undefined
 //   main    空的容器（<section class="pane view view-<name>">），页面自己画顶栏和内容
 //   params  { name, path, id, sub, query, pane, selected, hash }
-//           name: 'list' | 'entry' | 'editor' | 'deleted' | 'record' | 'import' | 'settings' | 'diag'
-//           #/ → list；#/e/<id> → entry（id）；#/new → editor（sub 'new'，id null）；#/edit/<id> → editor（sub 'edit'）
+//           name: 'list' | 'calendar' | 'entry' | 'editor' | 'deleted' | 'record' | 'import' | 'settings' | 'diag'
+//           #/ → list；#/cal、#/cal/YYYY-MM、#/cal/YYYY-MM-DD → calendar（sub 是后面那段或 null）
+//           #/e/<id> → entry（id）；#/e/<id>/history → entry（sub 'history'，修改记录）
+//           #/new → editor（sub 'new'，id null）；#/edit/<id> → editor（sub 'edit'）
 //           #/rec、#/rec?attach=<id> → record（query.attach）；#/import → import（sub 'audio'）；#/import/notes → import（sub 'notes'）
 //           #/settings、#/settings/sync → settings（sub null | 'sync'）；#/deleted → deleted；#/diag → diag；不认识的地址 → list
 //           pane: 'main'（单栏）| 'list'（双栏左）| 'detail'（双栏右）；selected: 双栏时右栏正在看的条目 id（给列表高亮）
 //   数据变了：页面返回了 onChange 就只调 onChange(info)，页面自己更新（编辑页、录音页必须这样，免得打断输入和录音）；
 //            否则 app 把这个页面整个重画一遍（保留滚动位置；带 data-fid 的控件重画后恢复焦点）。
-//   双栏（≥1000px）：#/、#/e/<id>、#/new、#/edit/<id> 左栏是列表，右栏是详情 / 编辑（#/ 时右栏是提示）。
-//   手机：只有 #/ 和 #/settings 显示底栏；其他页面是「推入」的，自己画返回按钮（ctx.back）。#/rec 时侧栏也隐藏（全屏近黑）。
+//   双栏（≥1000px）：#/、#/cal…、#/e/<id>、#/new、#/edit/<id> 左栏是列表或日历，右栏是详情 / 编辑（#/、#/cal… 时右栏是提示）。
+//            看条目、编辑时左栏是哪个，按上次看的（babble.local.listMode：'list' | 'cal'；打开 #/ 或 #/cal… 时记下）。
+//   手机：只有 #/、#/cal… 和 #/settings 显示底栏；其他页面是「推入」的，自己画返回按钮（ctx.back）。#/rec 时侧栏也隐藏（全屏近黑）。
 //   换布局（转 iPad、拉窗口）：同一栏的页面原样保留；要换栏时，有 onChange 或有未保存修改（guard）的页面整个搬过去
 //            （params.pane / selected 原地更新），其余重画。要随布局变化的页面听 ctx.on('layout')。
 //
@@ -35,7 +38,10 @@
 //   ctx.editVersion            本机修改计数
 // 导航
 //   ctx.navigate(path, { replace })  path 如 '/e/abc'、'/rec?attach=abc'（前面的 # 可有可无）；同一地址 = 重画
-//   ctx.back(fallback = '/')   App 内有上一页就后退，否则换成 fallback
+//   ctx.replaceHash(path)      页面自己换了状态（日历翻月、选日子）：只换地址栏，不重画、不加历史记录
+//   ctx.back(fallback = '/')   App 内有上一页就后退，否则换成 fallback（'/' 指「呓语」：列表或日历，看上次用的哪个）
+//   ctx.home()                 「呓语」的地址：'/' 或 '/cal'（看上次用的哪个）
+//   ctx.setListMode('list'|'cal')  「列表 | 日历」切换：记下来；在列表 / 日历页就换过去，双栏看着条目时只换左栏
 //   ctx.route                  当前路由（同 params 的结构，不含 pane/selected）
 //   ctx.refresh()              重画当前所有页面
 //   ctx.guard(isDirty)         离开前检查：isDirty() 为 true 时先确认（路由切换、关闭标签页）；ctx.guard(null) 取消；页面清理时自动取消
@@ -48,8 +54,9 @@
 //   ctx.onChange(fn)           = ctx.on('change', fn)
 // 录音
 //   ctx.audio                  src/core/audioStore.js 整个模块（putClip、getClip、hasClip…）
-//   ctx.clipBlob(sha)          → Promise<Blob|null>：先找本机，没有且开了同步就按需下载（播放器的 getBlob 用它）
-//   ctx.recovered              Promise<string[]>：启动时找回的录音建成的条目 id
+//   ctx.clipBlob(sha, mime?)   → Promise<Blob|null>：先找本机，没有且开了同步就按需下载（播放器的 getBlob 用它；
+//                              已经没有条目引用的录音要给 mime，才找得到仓库里的文件）
+//   ctx.recovered              Promise<string[]>：启动时找回的录音（和边录边写没存完的字）放进的条目 id；录音页、编辑页要等它，再读草稿
 //   ctx.bootAt                 这次启动的时刻（毫秒）
 //   ctx.takeFiles()            拖进窗口的录音文件（File[]，取一次就清空；没有 → null）。导入页打开时调一下
 // 同步
@@ -59,35 +66,42 @@
 //   ctx.sync.checkRepo(repo, token) → Promise<仓库全名>（不是私有 / 没权限会抛 SyncError）
 //   ctx.sync.status()          { on, running, pendingUp, pendingDown, lastError, at, err, offline, dirty, repo }
 //   ctx.sync.getAudio(sha)     → Promise<Blob|null>
+// 修改记录
+//   ctx.history.list(id)       → Promise<[{ id, entryId, at, version, cause, replacedBy }]>：这台设备记下的旧版本，新的在前
+//   ctx.history.cloud          core/history.js 的 createCloudHistory：.session(id).run() 从云端的历史版本里找更早的
 // 其他
-//   ctx.device                 设备名（iPhone / iPad / Mac / Browser，或 babble.local.device）
+//   ctx.device                 设备名（babble.local.device，没填就是 iPhone / iPad / Mac / Browser）
 //   ctx.isNight()              现在是不是夜间时段（按设置）
 import * as state from './core/state.js';
 import { stamp, deletedRecord, restoredRecord, setSetting, live, byNewest, makeEntry, normalizeEntry, clipIndex, newId } from './core/store.js';
-import { isNight, localParts, today, fmtTime } from './core/dates.js';
+import { isNight, localParts, fmtTime } from './core/dates.js';
 import { debounce } from './core/util.js';
 import { createSync } from './core/sync.js';
+import { journal, createCloudHistory, platformDevice } from './core/history.js';
 import * as audio from './core/audioStore.js';
 import { recoverPending } from './core/recorder.js';
 import { t, setLang, getLang, guessLang, LANGS } from './i18n.js';
 import { h, $, icon, toast, sheet, confirmDialog, download } from './ui/dom.js';
 import * as list from './views/list.js';
+import * as calendar from './views/calendar.js';
 import * as entry from './views/entry.js';
 import * as editor from './views/editor.js';
-import { EDIT_PREFIX } from './views/editor.js';
+import { EDIT_PREFIX, REC_DRAFT, NEW_DRAFT, readDraft, writeDraft, applyRecovery } from './core/drafts.js';
 import * as deleted from './views/deleted.js';
 import * as record from './views/record.js';
 import * as importView from './views/import.js';
 import * as settings from './views/settings.js';
 import * as diagnostics from './views/diagnostics.js';
+import { askWho, shouldAskWho } from './views/device.js';
 
 const BOOT = Date.now();
-const VIEWS = { list, entry, editor, deleted, record, import: importView, settings, diag: diagnostics };
-const DEVICE = /iPad/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ? 'iPad'
-  : /iPhone|iPod/.test(navigator.userAgent) ? 'iPhone' : /Mac/.test(navigator.platform) ? 'Mac' : 'Browser';
+const VIEWS = { list, calendar, entry, editor, deleted, record, import: importView, settings, diag: diagnostics };
+const DEVICE = platformDevice();
 const THEME_COLOR = { light: '#f8f3ee', dark: '#141216', night: '#0b0c12' };
 
 state.load();
+state.setDefaultDevice(DEVICE);
+state.setJournal(journal.record);            // 条目被换掉前把旧版本记进 babble-history（只排队，不挡保存）
 const S = () => state.getState();
 const L = () => state.getLocal();
 
@@ -106,7 +120,8 @@ function parseRoute(hash) {
   const [a, b] = path;
   let r;
   if (!a) r = { name: 'list' };
-  else if (a === 'e' && b) r = { name: 'entry', id: b };
+  else if (a === 'cal') r = { name: 'calendar', sub: b || null };
+  else if (a === 'e' && b) r = { name: 'entry', id: b, sub: path[2] === 'history' ? 'history' : null };
   else if (a === 'edit' && b) r = { name: 'editor', id: b, sub: 'edit' };
   else if (a === 'new') r = { name: 'editor', sub: 'new' };
   else if (a === 'rec') r = { name: 'record' };
@@ -121,14 +136,18 @@ const route = () => parseRoute(location.hash);
 
 const mqSide = matchMedia('(min-width: 720px)'), mqTwo = matchMedia('(min-width: 1000px)');
 const layout = () => (mqTwo.matches ? 'two' : mqSide.matches ? 'side' : 'phone');
-const TOP_LEVEL = r => r.name === 'list' || (r.name === 'settings' && !r.sub);
+const HOME = r => r.name === 'list' || r.name === 'calendar';          // 「呓语」：列表或日历
+const TOP_LEVEL = r => HOME(r) || (r.name === 'settings' && !r.sub);
+const listMode = () => (L().listMode === 'cal' ? 'cal' : 'list');
+const home = () => (listMode() === 'cal' ? '/cal' : '/');
 
 /** 这个路由在这个布局下要画哪些栏 */
 function planPanes(r, lay) {
-  if (lay === 'two' && (r.name === 'list' || r.name === 'entry' || r.name === 'editor')) {
+  if (lay === 'two' && (HOME(r) || r.name === 'entry' || r.name === 'editor')) {
+    const left = r.name === 'calendar' || (r.name !== 'list' && listMode() === 'cal') ? 'calendar' : 'list';
     return [
-      { slot: 'list', name: 'list', params: { ...r, name: 'list', pane: 'list', selected: r.id } },
-      { slot: 'detail', name: r.name === 'list' ? 'empty' : r.name, params: { ...r, pane: 'detail', selected: r.id } },
+      { slot: 'list', name: left, params: { ...r, name: left, pane: 'list', selected: r.id } },
+      { slot: 'detail', name: HOME(r) ? 'empty' : r.name, params: { ...r, pane: 'detail', selected: r.id } },
     ];
   }
   return [{ slot: 'main', name: r.name, params: { ...r, pane: 'main', selected: r.id } }];
@@ -169,7 +188,16 @@ async function navigate(path, { replace = false } = {}) {
 }
 function back(fallback = '/') {
   if (navStack.length > 1) history.back();
-  else navigate(fallback, { replace: true });
+  else navigate(fallback === '/' ? home() : fallback, { replace: true });
+}
+/** 页面自己换了状态（日历翻月、选日子）：只换地址栏，不重画、不加历史记录；挂着的页面记下新地址（下次 render 不当成换页） */
+function replaceHash(path) {
+  const target = norm(path), before = route().hash;
+  if ((location.hash || '#/') === target) return;
+  history.replaceState(history.state, '', target);
+  currentHash = target;
+  if (navStack.length) navStack[navStack.length - 1] = target; else navStack.push(target);
+  for (const m of Object.values(mounted)) if (m.params.hash === before) { m.params.hash = target; m.key = m.slot + '|' + m.name + '|' + target; }
 }
 // 地址变了（点链接、后退前进）：hashchange 和 popstate 都听（WebKit 后退时有时只先来 popstate），同一个地址只处理一次
 async function onUrlChange() {
@@ -195,6 +223,7 @@ window.addEventListener('beforeunload', e => {
 
 // ---------- 衍生数据 ----------
 let cache = null;
+let askWhoPending = false;      // 要问「这台设备是谁在用」，等离开录音页 / 关掉面板再问（见 askWhoSoon）
 function entries() {
   if (!cache) cache = live(S()).sort(byNewest);
   return cache;
@@ -215,7 +244,7 @@ const syncer = createSync({
     syncChanged();
   },
   editVersion: state.editVersion,
-  device: L().device || DEVICE,
+  device: () => state.deviceName(),            // 设置里改了设备名，下一次上传就用新名字
   audioStore: audio,
   getLocal: L, saveLocal: state.saveLocal,
   onStatus: () => syncChanged(),
@@ -269,6 +298,8 @@ function pendingEdit() {
       if (!k || !k.startsWith(EDIT_PREFIX)) continue;
       const d = JSON.parse(localStorage.getItem(k) || 'null');
       if (!d || !(Date.now() - (Number(d.at) || 0) < 86400000)) continue;
+      // 录音页那份、「记一条」录到一半的那份：不用回去接着写，启动时 recover() 会把字和录音存进条目
+      if (k === REC_DRAFT || (k === NEW_DRAFT && d.rec)) continue;
       const id = k.slice(EDIT_PREFIX.length);
       return id === 'new' ? '#/new' : '#/edit/' + encodeURIComponent(id);
     }
@@ -278,7 +309,7 @@ function pendingEdit() {
 /** 夜间时段打开（冷启动，或在后台放了很久再回来）而且停在列表 → 直接进录音页 */
 function nightRedirect() {
   const st = S().settings;
-  if (!st.nightOpensRecorder || !isNight(new Date(), st) || route().name !== 'list') return false;
+  if (!st.nightOpensRecorder || !isNight(new Date(), st) || !HOME(route())) return false;
   history.replaceState(history.state, '', '#/rec');
   return true;
 }
@@ -320,7 +351,12 @@ const ctx = {
   mergeIn: (other) => state.mergeIn(other),
   setLocal: (patch) => state.setLocal(patch),
 
-  navigate, back, refresh: () => refresh(), layout,
+  navigate, back, replaceHash, home, refresh: () => refresh(), layout,
+  setListMode(mode) {
+    state.setLocal({ listMode: mode === 'cal' ? 'cal' : 'list' });
+    if (HOME(route())) navigate(home(), { replace: true });
+    else render();                                // 双栏看着条目：只换左栏，右栏不动（编辑中的不丢）
+  },
   guard: () => {},              // 每个页面拿到的是自己的版本（见 viewCtx）
   t, lang: getLang,
   setLang(l) { state.setLocal({ lang: l }); setLang(l); refresh(); },
@@ -331,17 +367,24 @@ const ctx = {
   on, onChange: (fn) => on('change', fn),
 
   audio,
-  clipBlob: async (sha) => {
+  clipBlob: async (sha, mime) => {
     const rec = await audio.getClip(sha).catch(() => null);
     if (rec && rec.blob) return rec.blob;
-    return L().sync ? (await syncer.getAudio(sha).catch(() => null)) || null : null;
+    return L().sync ? (await syncer.getAudio(sha, mime).catch(() => null)) || null : null;
   },
   recovered: null,
   bootAt: BOOT,
   takeFiles: () => { const f = droppedFiles; droppedFiles = null; return f; },
 
   sync: syncApi,
-  device: L().device || DEVICE,
+  history: {
+    list: async (id) => {                       // 等刚排队的旧版本写完再读（最多等 3 秒）
+      await Promise.race([journal.idle(), new Promise(r => setTimeout(r, 3000))]);
+      return journal.list(id);
+    },
+    cloud: createCloudHistory({ commits: (o) => syncer.commits(o), fileAt: (sha) => syncer.fileAt(sha) }),
+  },
+  get device() { return state.deviceName(); },
   isNight: () => isNight(new Date(), S().settings),
 };
 
@@ -370,13 +413,13 @@ function renderShell(r) {
   document.body.dataset.layout = layout();
   document.body.dataset.tabs = TOP_LEVEL(r) ? '1' : '0';
   document.body.dataset.drop = t('common.dropHint');
-  const cur = r.name === 'entry' || r.name === 'editor' ? 'list' : r.name === 'import' || r.name === 'deleted' || r.name === 'diag' ? 'settings' : r.name;
+  const cur = HOME(r) || r.name === 'entry' || r.name === 'editor' ? 'list' : r.name === 'import' || r.name === 'deleted' || r.name === 'diag' ? 'settings' : r.name;
   const side = r.name === 'import' ? 'import' : cur;          // 侧栏有「导入录音」这一项；手机底栏没有，算在设置下面
   const item = (id, href, ic, label) => h('a.nav-item' + (side === id ? '.on' : ''), { href, 'aria-current': side === id ? 'page' : null }, ic, h('span', null, label));
   $('#side').replaceChildren(
     h('div.brand', null, h('img', { src: 'icons/icon-180.png', alt: '', width: 32, height: 32, onerror: e => { e.target.style.visibility = 'hidden'; } }), h('b', null, t('common.appName'))),
     h('nav', { 'aria-label': t('nav.label') },
-      item('list', '#/', icon('bubble'), t('nav.list')),
+      item('list', '#' + home(), icon('bubble'), t('nav.list')),
       item('record', '#/rec', icon('snout'), t('nav.rec')),
       item('import', '#/import', icon('import'), t('nav.import')),
       item('settings', '#/settings', icon('gear'), t('nav.settings'))),
@@ -385,7 +428,7 @@ function renderShell(r) {
   const tabs = $('#tabs');
   tabs.setAttribute('aria-label', t('nav.label'));
   tabs.replaceChildren(
-    h('a.tab' + (cur === 'list' ? '.on' : ''), { href: '#/', 'aria-current': cur === 'list' ? 'page' : null }, icon('bubble'), h('span', null, t('nav.list'))),
+    h('a.tab' + (cur === 'list' ? '.on' : ''), { href: '#' + home(), 'aria-current': cur === 'list' ? 'page' : null }, icon('bubble'), h('span', null, t('nav.list'))),
     h('a.tab-rec', { href: '#/rec', 'aria-label': t('nav.rec'), title: t('nav.rec') }, icon('snout')),
     h('a.tab' + (cur === 'settings' ? '.on' : ''), { href: '#/settings', 'aria-current': cur === 'settings' ? 'page' : null }, icon('gear'), h('span', null, t('nav.settings'))),
   );
@@ -483,6 +526,7 @@ function migrate(plan) {
 function render() {
   delete document.documentElement.dataset.boot;      // src/boot.js 第一次绘制前刷的近黑底，app 画出来以后就不用了
   const r = route();
+  if (HOME(r) && listMode() !== (r.name === 'calendar' ? 'cal' : 'list')) state.setLocal({ listMode: r.name === 'calendar' ? 'cal' : 'list' });   // 记下「列表 | 日历」
   const plan = planPanes(r, layout());
   renderShell(r);
   applyTheme();
@@ -494,6 +538,7 @@ function render() {
   for (const p of plan) mount(p, main);
   // 面板顺序：左栏在前（只在顺序不对时移动，移动元素会丢滚动位置）
   plan.forEach((p, i) => { const el = mounted[p.slot].el; if (main.children[i] !== el) main.insertBefore(el, main.children[i] || null); });
+  if (askWhoPending) setTimeout(askWhoSoon, 0);
   if (changedMain && !document.querySelector('dialog[open]')) {
     const focusTo = mounted.detail || mounted.main;
     if (focusTo && !focusTo.el.contains(document.activeElement)) { focusTo.el.tabIndex = -1; focusTo.el.focus({ preventScroll: true }); }   // 换页后读屏、键盘从新页面开始
@@ -504,10 +549,21 @@ function refresh() {
   render();
 }
 
+// 第一次在这台设备上改梦话：问一次是谁在用（修改记录里显示）。录音页、编辑页（「录一段」接上录音时正在打字）不打扰，
+// 有面板开着也等一等，离开后再问
+function askWhoSoon() {
+  if (!shouldAskWho(L())) { askWhoPending = false; return; }
+  const busy = () => route().name === 'record' || route().name === 'editor' || !!document.querySelector('dialog[open]');
+  if (busy()) { askWhoPending = true; return; }
+  askWhoPending = false;
+  setTimeout(() => { if (!shouldAskWho(L())) return; if (busy()) askWhoPending = true; else askWho(ctx); }, 900);
+}
+
 // 数据变化 → 提示撤销 / 存储满 → 安排同步 → 页面更新
 let rerenderQueued = false;
 state.subscribe((st, info) => {
   cache = null;
+  if (info.source === 'local' && info.ids && info.ids.length) askWhoSoon();
   if (info.saved === false) toast(t('common.storageFull'), { ms: 10000 });
   else if (info.undoLabel) toast(info.undoLabel, { ms: 10000, action: { label: t('common.undo'), run: () => ctx.undo() } });
   if (info.source === 'local' || info.source === 'undo' || info.source === 'merge') syncSoon();
@@ -538,40 +594,42 @@ function safeMode(el, e) {
 }
 
 // ---------- 启动时找回没收尾的录音 ----------
-// 条目建好、真的存进本机以后才清恢复记录（clearRec）；存不下、出错就留着，下次启动再交回来
+// 条目建好、真的存进本机以后才清恢复记录（clearRec）；存不下、出错就留着，下次启动再交回来。
+// 边录边写的字（录音页那份草稿、「记一条」录到一半的草稿，见 core/drafts.js）和找回的录音放进同一条
 const clearRecs = (list) => { for (const c of list) if (c.recId) Promise.resolve(audio.clearRec(c.recId)).catch(() => {}); };
+/** 草稿要在第一个 await 之前拿：页面马上就画出来了，录音页、编辑页之后会接着写同一个键 */
+function takeDrafts() {
+  const one = (key) => { try { const raw = localStorage.getItem(key); return raw ? { key, raw, d: readDraft(localStorage, key) } : null; } catch (e) { return null; } };
+  return { rec: one(REC_DRAFT), fresh: one(NEW_DRAFT) };
+}
+/** 草稿还是启动时那份（页面没有接着写）才删掉 / 换掉 */
+function settleDraft(snap, next) {
+  try {
+    if (!snap || localStorage.getItem(snap.key) !== snap.raw) return;
+    if (next) writeDraft(localStorage, snap.key, next); else localStorage.removeItem(snap.key);
+  } catch (e) { /* 存不了就算了：下次启动再处理 */ }
+}
 async function recover() {
+  const snap = takeDrafts();
   let clips = [];
   try { clips = (await recoverPending({ audioStore: audio, before: BOOT })) || []; }
   catch (e) { toast(t('common.recoverFail', { msg: (e && e.message) || String(e) }), { ms: 8000 }); return []; }
-  const known = clipIndex(S(), { includeDeleted: true });
   const valid = clips.filter(c => c && c.sha256);
-  const fresh = valid.filter(c => !known.has(c.sha256));     // 已经在某条里的不再建
-  clearRecs(valid.filter(c => known.has(c.sha256)));
-  if (!fresh.length) return [];
-  let saved = true, ids = [];
+  const drafts = { rec: snap.rec && snap.rec.d, fresh: snap.fresh && snap.fresh.d && snap.fresh.d.rec ? snap.fresh.d : null };
+  const known = clipIndex(S(), { includeDeleted: true });
+  if (!drafts.rec && !drafts.fresh && valid.every(c => known.has(c.sha256))) { clearRecs(valid); if (snap.rec) settleDraft(snap.rec, null); return []; }   // 已经在某条里的不再建
+  let saved = true, res = null;
   const off = state.subscribe((st, info) => { if (info.saved === false) saved = false; });
-  try {
-    ids = state.mutate(s => fresh.map(c => {
-      const now = Date.now();
-      const clip = { sha256: c.sha256, mime: c.mime || 'audio/mp4', bytes: c.bytes ?? null, durationSec: c.durationSec ?? null, origName: '', addedAt: now };
-      const target = c.attachTo && s.data.entries[c.attachTo];
-      if (target && !target.deleted) { target.audio = [...(target.audio || []), clip]; return target.id; }
-      const parts = c.startedAt != null ? localParts(c.startedAt, c.tz || undefined) : null;
-      const e = makeEntry({
-        date: parts ? parts.date : today(), time: parts ? parts.time : null,
-        recordedAt: parts ? new Date(c.startedAt).toISOString() : null, tz: c.tz || null, timeSource: parts ? 'recorder' : null,
-        status: 'inbox', audio: [clip], source: { kind: 'recovered' },
-      }, now);
-      s.data.entries[e.id] = e;
-      return e.id;
-    }));
-  } catch (e) { saved = false; console.error(e); toast(t('common.recoverFail', { msg: (e && e.message) || String(e) }), { ms: 8000 }); }
+  try { res = state.mutate(s => applyRecovery(s, valid, drafts)); }
+  catch (e) { saved = false; console.error(e); toast(t('common.recoverFail', { msg: (e && e.message) || String(e) }), { ms: 8000 }); }
   off();
-  if (!saved) return ids;                    // 存不下已经提示过「空间满」
-  clearRecs(fresh);
-  toast(t('common.recovered', { n: fresh.length }), { ms: 8000 });
-  return ids;
+  if (!saved || !res) return res ? res.ids : [];          // 存不下已经提示过「空间满」：录音、草稿都留着，下次再来
+  clearRecs(valid);
+  if (res.dropRec) settleDraft(snap.rec, null);
+  if (res.dropFresh) settleDraft(snap.fresh, null); else if (res.fresh) settleDraft(snap.fresh, res.fresh);
+  if (res.clips) toast(t('common.recovered', { n: res.clips }), { ms: 8000 });
+  else if (res.texts) toast(t('rec.recoveredText'), { ms: 8000 });
+  return res.ids;
 }
 
 // ---------- 拖进窗口的录音（Mac） ----------
@@ -635,8 +693,9 @@ for (const mq of [mqSide, mqTwo]) mq.addEventListener('change', () => { render()
 setLang(L().lang && LANGS.includes(L().lang) ? L().lang : guessLang());
 // 冷启动：上次写到一半被系统关掉的编辑页优先（停在列表时直接回去接着写），否则按夜间设置
 const resumeEdit = pendingEdit();
-if (resumeEdit && route().name === 'list') history.replaceState(history.state, '', resumeEdit);
-else nightRedirect();
+if (resumeEdit && HOME(route())) history.replaceState(history.state, '', resumeEdit);
+else if (!nightRedirect() && route().name === 'list' && !route().path.length && listMode() === 'cal') history.replaceState(history.state, '', '#/cal');   // 上次用的是日历
+
 currentHash = location.hash || '#/';
 track(currentHash);
 ctx.recovered = recover();

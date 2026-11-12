@@ -21,3 +21,5 @@ sleep-talk*.md
 *.txt
 .DS_Store
 node_modules/
+# Claude Code 的工作目录（并行开发的 worktree 放在这里）
+.claude/

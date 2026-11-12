@@ -7,6 +7,8 @@ import { SyncError, syncCode, parseSyncCode } from '../core/sync.js';
 import { buildBackup, readBackup, restoreBackup, backupFileName } from '../core/backup.js';
 import { isTime, localParts, fmtTime, fmtDate, fmtInstant, daysAgo } from '../core/dates.js';
 import { fmtBytes, uniq } from '../core/util.js';
+import { deviceSec } from './device.js';
+import { sttSettings } from '../ui/stt.js';
 /** replaceChildren，但跳过 null / false（DOM 会把 null 写成文字「null」） */
 const fill = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter(k => k != null && k !== false));
 
@@ -84,6 +86,7 @@ function mainPage(main, params, ctx) {
       sec('sync', t('set.syncH'), [h('a.group-row.set-link', { href: '#/settings/sync' }, icon('share'), h('span', null, t('set.sync')), h('span.sp'), stateDot(syncState(st, lang)))],
         st.on ? (pend || (st.repo ? t('set.syncRepo', { repo: st.repo }) : null)) : t('set.syncOffFoot')),
       speakersSec(S),
+      deviceSec(ctx, { sec, row }),
       nightSec(S),
       sec('look', t('set.lookH'), [
         row(t('set.theme'), h('div.seg.set-seg', { role: 'group', 'aria-label': t('set.theme') }, THEMES.map(v => {
@@ -91,6 +94,7 @@ function mainPage(main, params, ctx) {
           return h('button', { type: 'button', class: on ? 'on' : null, 'aria-pressed': String(on), onclick: () => { ctx.setTheme(v); draw(); } }, t('set.theme.' + v));
         }))),
       ], S.nightForcesDark ? t('set.lookFoot') : null),
+      sttSettings(ctx),                // 语音转文字（模型、下载 / 删除）：自己跟着下载进度更新
       backupSec(L),
       storageSec(),
       sec('data', t('set.dataH'), [
@@ -199,8 +203,9 @@ function mainPage(main, params, ctx) {
   }
 
   function tipsSec() {
+    const nn = ctx.state.settings.speakers.nn.name || 'NN';
     return h('section.set-sec#set-tips', null, h('h2.group-h', null, t('set.tipsH')),
-      h('div.card.set-tips', null, h('ul', null, ['tip1', 'tip2', 'tip3', 'tip4', 'tip5'].map(k => h('li', null, t('set.' + k))))));
+      h('div.card.set-tips', null, h('ul', null, ['tip1', 'tip2', 'tip3', 'tip6', 'tip4', 'tip5'].map(k => h('li', null, t('set.' + k, { nn }))))));
   }
   function aboutSec() {
     return h('section.set-sec#set-about', null, h('h2.group-h', null, t('set.aboutH')),

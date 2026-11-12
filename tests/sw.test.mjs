@@ -13,6 +13,7 @@ const exists = f => fs.existsSync(path.join(root, f)) && fs.statSync(path.join(r
 const SW = read('sw.js');
 const CORE = [...SW.match(/const CORE = \[([\s\S]*?)\];/)[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
 const CACHE = SW.match(/const CACHE = '([^']+)';/)[1];
+const VENDOR_CACHE = SW.match(/const VENDOR_CACHE = '([^']+)';/)[1];
 const inCore = (f, from) => assert.ok(CORE.includes(f), `${f}（${from}）没有写进 sw.js 的 CORE`);
 const isLocal = u => !/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(u);
 /** 相对 from 文件解析成 './a/b.js' 的形式（去掉 ?query #hash） */
@@ -82,6 +83,20 @@ test('程序文件全都在 CORE 里：src/ 下所有 .js、根目录的样式�
   for (const f of filesUnder('icons')) inCore(f, 'icons/');
 });
 
+test('语音转文字：worker 在 CORE 里；vendor/ 的大文件不预先缓存，worker import 的都在 vendor/ 里、都存在', () => {
+  inCore('./src/workers/transcribe.worker.js', 'new Worker');
+  const vendor = filesUnder('vendor');
+  assert.ok(vendor.some(f => f.endsWith('.wasm')), 'vendor/ 里应该有 wasm');
+  for (const f of vendor) assert.ok(!CORE.includes(f), `${f} 太大，不该写进 CORE（用到时才缓存）`);
+  assert.ok(!CORE.some(f => f.startsWith('./vendor/')), 'CORE 里不该有 vendor/');
+  const src = read('src/workers/transcribe.worker.js');
+  for (const m of src.matchAll(/^\s*import\b[^;]*?from\s*['"]([^'"]+)['"]/gm)) {
+    const f = resolve('./src/workers/transcribe.worker.js', m[1]);
+    assert.ok(f.startsWith('./vendor/') && exists(f), `worker import 的 ${f}`);
+  }
+  for (const m of src.matchAll(/ort-wasm-simd-threaded\$\{v\}\.(mjs|wasm)/g)) for (const v of ['', '.asyncify']) assert.ok(exists(`./vendor/transformers/ort-wasm-simd-threaded${v}.${m[1]}`));
+});
+
 test('JS 里写到的图标和 CSS 里 url() 的文件都存在，都在 CORE 里', () => {
   for (const f of filesUnder('src', f => f.endsWith('.js'))) {
     for (const m of read(f).matchAll(/['"`](?:\.\/)?(icons\/[\w.-]+)['"`]/g)) {
@@ -146,6 +161,7 @@ function loadSw({ fetch: fakeFetch = () => Promise.reject(new TypeError('offline
           for (const r of reqs) m.set(abs(r), { body: 'core:' + abs(r), status: 200, cacheMode: r.cache });
         },
         async put(req, res) { m.set(abs(req), res); },
+        async match(req) { return m.get(abs(req)); },
       };
     },
     async keys() { return [...stores.keys()]; },
@@ -203,12 +219,44 @@ swTest('sw 启用：只删自己的旧缓存，同域名下别的 app 的缓存�
   assert.deepEqual([...sw.stores.keys()].sort(), [CACHE, 'babbleish', 'house-ledger-v13', 'vshelf-v2'].sort());
 });
 
+swTest('sw 启用：语音转文字的第三方文件缓存（当前版本）留着，旧版本的删掉；transformers.js 的模型缓存不碰', async () => {
+  assert.match(VENDOR_CACHE, /^babble-vendor-/);
+  assert.notEqual(VENDOR_CACHE, CACHE);
+  const sw = loadSw({ caches: { 'babble-v0': {}, [CACHE]: {}, [VENDOR_CACHE]: { 'vendor/transformers/transformers.min.js': res('tf') }, 'babble-vendor-tf000': {}, 'transformers-cache': {} } });
+  await sw.fire('activate').settled();
+  assert.deepEqual([...sw.stores.keys()].sort(), [CACHE, VENDOR_CACHE, 'transformers-cache'].sort());
+  assert.deepEqual(sw.keys(VENDOR_CACHE), [SCOPE + 'vendor/transformers/transformers.min.js']);
+});
+
+swTest('sw 第三方文件（vendor/）：第一次从网络取并存起来，以后先用缓存（离线也能用）；404 不存', async () => {
+  const sw = loadSw({ fetch: async r => res('net:' + r.url, r.url.endsWith('missing.wasm') ? 404 : 200) });
+  const wasm = 'vendor/transformers/ort-wasm-simd-threaded.wasm';
+  const first = sw.fire('fetch', req(wasm));
+  assert.equal((await first.responded).body, 'net:' + SCOPE + wasm);
+  await first.settled();
+  assert.deepEqual(sw.keys(VENDOR_CACHE), [SCOPE + wasm]);
+  assert.deepEqual(sw.keys(CACHE), [], '不放进程序文件的缓存（换版本时不用重下）');
+  assert.equal(sw.fetched.length, 1);
+  const again = sw.fire('fetch', req(wasm));
+  assert.equal((await again.responded).body, 'net:' + SCOPE + wasm);
+  assert.equal(sw.fetched.length, 1, '有缓存就不再联网');
+  const miss = sw.fire('fetch', req('vendor/transformers/missing.wasm'));
+  assert.equal((await miss.responded).status, 404);
+  await miss.settled();
+  assert.deepEqual(sw.keys(VENDOR_CACHE), [SCOPE + wasm]);
+  // 离线：缓存里有的照样能用
+  const off = loadSw({ caches: { [VENDOR_CACHE]: { [wasm]: res('cached wasm') } } });
+  assert.equal((await off.fire('fetch', req(wasm)).responded).body, 'cached wasm');
+  assert.equal(off.fetched.length, 0);
+});
+
 swTest('sw 不碰 api.github.com、别的网站和非 GET 请求', () => {
   const sw = loadSw({ fetch: async () => res('net') });
   for (const e of [
     req('https://api.github.com/repos/someone/babble-data/contents/babble.json'),
     req('https://api.github.com/repos/someone/babble-data/contents/audio/abc.m4a', { mode: 'cors' }),
     req('https://example.com/babble/src/app.js'),
+    req('https://huggingface.co/onnx-community/whisper-base/resolve/abc/onnx/encoder_model_quantized.onnx'),
     req('src/app.js', { method: 'POST' }),
   ]) assert.equal(sw.fire('fetch', e).responded, null, e.request.url);
   assert.equal(sw.fetched.length, 0);

@@ -30,7 +30,7 @@ async function fixture() {
   const C = await store.putClip(fakeAudio('删'), { mime: 'audio/mp4' });
   const D = await store.putClip(fakeAudio('怪名字'), { mime: 'audio/webm' });
   const B = { sha256: await sha256Hex(fakeAudio('不在这台设备上')), mime: 'audio/mp4', bytes: 10 };
-  const clip = (c, sec) => ({ ...c, durationSec: sec, origName: '测试录音.m4a', addedAt: 1 });
+  const clip = (c, sec) => ({ ...c, durationSec: sec, origName: '新录音 3.m4a', addedAt: 1 });   // 语音备忘录的默认名：文件名不用它
   const s = blankState();
   const put = f => { const e = makeEntry(f, 1000); s.data.entries[e.id] = e; return e; };
   const text = [

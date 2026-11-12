@@ -12,8 +12,8 @@
       || (L.theme !== 'light' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
     var root = document.documentElement;
     root.setAttribute('data-theme', dark ? 'dark' : 'light');
-    // 夜里冷启动会直接进录音页（app.js 的 nightRedirect）：先刷成录音页的近黑
-    if ((night && S.nightOpensRecorder !== false && /^#?\/?(\?.*)?$/.test(location.hash)) || /^#\/rec\b/.test(location.hash)) root.setAttribute('data-boot', 'rec');
+    // 夜里冷启动停在列表 / 日历会直接进录音页（app.js 的 nightRedirect）：先刷成录音页的近黑
+    if ((night && S.nightOpensRecorder !== false && /^#?\/?(cal(\/[\d-]*)?)?(\?.*)?$/.test(location.hash)) || /^#\/rec\b/.test(location.hash)) root.setAttribute('data-boot', 'rec');
   } catch (e) { /* 读不到就按系统外观，app.js 会再定 */ }
 })();
 

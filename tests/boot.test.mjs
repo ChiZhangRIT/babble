@@ -27,6 +27,7 @@ test('夜里（默认 21:00–07:00）且夜里强制深色 → dark，冷启动
   const at = h => new Date(2026, 10, 11, h, 30).getTime();
   assert.deepEqual(boot({ settings: {}, at: at(2) }), { 'data-theme': 'dark', 'data-boot': 'rec' });
   assert.deepEqual(boot({ settings: {}, at: at(2), hash: '#/e/x' }), { 'data-theme': 'dark' });
+  assert.deepEqual(boot({ settings: {}, at: at(2), hash: '#/cal/2026-11-04' }), { 'data-theme': 'dark', 'data-boot': 'rec' });   // 日历也算「呓语」
   assert.deepEqual(boot({ settings: {}, at: at(14) }), { 'data-theme': 'light' });
   assert.deepEqual(boot({ settings: {}, at: at(14), systemDark: true }), { 'data-theme': 'dark' });
   assert.deepEqual(boot({ settings: {}, at: at(14), local: { theme: 'dark' } }), { 'data-theme': 'dark' });

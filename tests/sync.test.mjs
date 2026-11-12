@@ -10,7 +10,7 @@ import { sha256Hex } from '../src/core/sha256.js';
 // 测试只用编出来的数据。
 // 模拟 GitHub contents API：文件、git blob sha、ETag/304、409（sha 过期）、422（文件已存在但没给 sha）、>1MB 只给 raw
 function mockGitHub({ big = Infinity } = {}) {
-  const gh = { files: new Map(), log: [], puts: 0, n304: 0, private: true, faults: [], tokenExp: null, big };
+  const gh = { files: new Map(), log: [], puts: 0, n304: 0, private: true, faults: [], tokenExp: null, big, commits: [] };
   const res = (status, body, headers = {}) => {
     const hs = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
     if (gh.tokenExp) hs['github-authentication-token-expiration'] = gh.tokenExp;
@@ -39,6 +39,14 @@ function mockGitHub({ big = Infinity } = {}) {
       if (h.Authorization !== 'Bearer t') return res(401, { message: 'Bad credentials' });
       return res(200, { full_name: 'me/data', private: gh.private, visibility: gh.private ? 'private' : 'public' });
     }
+    // 提交记录（修改记录的云端历史）：babble.json 每次 PUT 算一次提交，新的在前
+    const cm = path.match(/^\/repos\/me\/data\/commits\?path=babble\.json&per_page=(\d+)&page=(\d+)$/);
+    if (cm) return res(200, gh.commits.slice((cm[2] - 1) * cm[1], cm[2] * cm[1]).map(c => ({ sha: c.sha, commit: { message: c.message, committer: { date: c.date } } })));
+    const rm = path.match(/^\/repos\/me\/data\/contents\/babble\.json\?ref=(\w+)$/);
+    if (rm) {
+      const c = gh.commits.find(x => x.sha === rm[1]);
+      return c && h.Accept === 'application/vnd.github.raw+json' ? res(200, c.bytes) : res(404, { message: 'Not Found' });
+    }
     const m = path.match(/^\/repos\/me\/data\/contents\/(.+)$/);
     if (!m) return res(404, {});
     const file = gh.files.get(m[1]);
@@ -61,6 +69,7 @@ function mockGitHub({ big = Infinity } = {}) {
       const sha = await gitBlobSha(bytes);
       gh.files.set(m[1], { bytes, sha });
       gh.puts++;
+      if (m[1] === SYNC_FILE) gh.commits.unshift({ sha: 'k' + gh.puts, message: body.message, date: new Date(Date.UTC(2026, 0, 1, 0, gh.puts)).toISOString(), bytes });
       return res(file ? 200 : 201, { content: { sha, size: bytes.length } });
     }
     return res(405, {});
@@ -473,4 +482,33 @@ test('同步中途点了「停止同步」：剩下的录音和 babble.json 都�
   assert.equal(gh.writes().filter(w => w.includes('/contents/audio/')).length, 1);
   assert.ok(!gh.files.has(SYNC_FILE), 'babble.json 没传');
   assert.ok(a);
+});
+
+test('修改记录的云端历史：commits 列出 babble.json 的提交（新的在前，分页），fileAt 取当时的原文；设备名可以是函数（改名马上生效）', async () => {
+  const gh = mockGitHub(), mac = device(gh, 'Mac');
+  let name = 'Mac';
+  mac.sync = createSync({
+    getState: () => mac.state, applyRemote: (m) => { mac.state = m; }, getConfig: () => mac.cfg, saveConfig() {}, editVersion: () => mac.version,
+    device: () => name, getLocal: () => mac.local, saveLocal() {}, fetch: (...a) => gh.fetch(...a),
+  });
+  const e = mac.put({ id: 'e_h', text: '👰🏻‍♀️“一”' });
+  await mac.run();
+  name = '测试 Mac';
+  mac.put({ ...e, text: '👰🏻‍♀️“二”' });
+  await mac.run();
+  assert.equal(gh.json().device, '测试 Mac');
+  assert.match(gh.commits[0].message, /测试 Mac/);
+  const list = await mac.sync.commits({ page: 1, perPage: 30 });
+  assert.equal(list.length, 2);
+  assert.deepEqual(list.map(c => c.sha), gh.commits.map(c => c.sha));
+  assert.ok(list[0].at > list[1].at);
+  assert.equal((await mac.sync.commits({ page: 2, perPage: 1 })).length, 1);
+  assert.equal((await mac.sync.commits({ page: 3, perPage: 1 })).length, 0);
+  const old = await mac.sync.fileAt(list[1].sha);
+  assert.equal(old.device, 'Mac');
+  assert.equal(old.state.data.entries.e_h.text, '👰🏻‍♀️“一”');
+  assert.equal((await mac.sync.fileAt(list[0].sha)).state.data.entries.e_h.text, '👰🏻‍♀️“二”');
+  assert.equal(await mac.sync.fileAt('nope'), null);
+  gh.faults.push({ path: '/commits', status: 401 });
+  await assert.rejects(mac.sync.commits(), err => err.code === 'auth');
 });

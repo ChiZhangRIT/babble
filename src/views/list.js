@@ -1,11 +1,13 @@
-// 梦话列表（#/）：标题和条数、待整理横幅、搜索（简繁互通）、筛选、按年 / 月分组的卡片。
+// 梦话列表（#/）：标题和条数、「列表 | 日历」切换、待整理横幅、搜索（简繁互通）、筛选、按年 / 月分组的卡片。
 // 宽屏双栏时在左栏（params.pane === 'list'），params.selected 是右栏正在看的条目（高亮；j / k 换上一条下一条）。
 // 自己管更新（返回 onChange）：数据变了只重画标题和卡片，搜索框原样留着，不丢输入和光标。
+// 卡片（entryCard）和页头（listHead）日历页（views/calendar.js）也用。
 import { h, icon } from '../ui/dom.js';
 import { audioPlayer } from '../ui/player.js';
 import { fmtEntryDate, fmtDate, fmtMonth, fmtYear, fmtDuration, monthKey } from '../core/dates.js';
-import { parseDialogue } from '../core/dialogue.js';
+import { parseDialogue, isDescOnly } from '../core/dialogue.js';
 import { matchEntry, highlight } from '../core/search.js';
+import { sayNodes } from './entry.js';
 
 /** 同一行里日期和时间之间：中文空格（11月4日 凌晨2:58），英文逗号（Nov 4, 2:58 AM） */
 const daySep = lang => (lang === 'en' ? ', ' : ' ');
@@ -52,27 +54,75 @@ function snippet(text, q, before = 10, len = 36) {
 }
 
 /**
- * 卡片上显示什么：标题（没有就用 NN 的第一句，楷体）+ 最多两行预览（跳过空行、反应表情、录音提示）。
- * 搜索时预览换成命中的句子；只有背景 / 草稿命中时多一行 extra。
- * @returns {{ head: string, headKai: boolean, lines: Array<{who?: 'nn'|'me', content: string}>, extra: {label: 'note'|'draft', text: string} | null }}
+ * 卡片上显示什么：标题（只用 entry.title；没填就没有标题这一行）+ 预览行（跳过空行、反应表情、录音提示；
+ * 有标题时两行，没标题时三行，都是普通的预览样式）。搜索时预览换成命中的句子；只有背景 / 草稿命中时多一行 extra。
+ * @returns {{ head: string, lines: Array<{who?: 'nn'|'me', content: string}>, extra: {label: 'note'|'draft', text: string} | null }}
  */
 export function cardPreview(e, speakers, q = '') {
   const blocks = parseDialogue(e.text, speakers).filter(b => b.type !== 'gap' && b.content && !b.reactionOnly && !b.emptyQuote);
-  let head = e.title && e.title.trim() ? e.title : '', headKai = false, rest = blocks;
-  if (!head) {
-    const i = blocks.findIndex(b => b.type === 'line' && b.who === 'nn');
-    if (i >= 0) { head = blocks[i].content; headKai = true; rest = blocks.filter((_, j) => j !== i); }
-  }
-  let lines = rest.slice(0, 2), extra = null;
+  const head = e.title && e.title.trim() ? e.title : '';
+  let lines = blocks.slice(0, head ? 2 : 3), extra = null;
   if (q && q.trim()) {
-    const hits = rest.filter(b => hasHit(b.content, q));
-    if (hits.length) lines = hits.slice(0, 2);
+    const hits = blocks.filter(b => hasHit(b.content, q));
+    if (hits.length) lines = hits.slice(0, head ? 2 : 3);
     else if (!hasHit(head, q)) {
       if (hasHit(e.note, q)) extra = { label: 'note', text: snippet(e.note, q) };
       else if (e.draft && hasHit(e.draft.text, q)) extra = { label: 'draft', text: snippet(e.draft.text, q) };
     }
   }
-  return { head, headKai, lines: lines.map(b => (b.type === 'line' ? { who: b.who, content: b.content } : { content: b.content })), extra };
+  return { head, lines: lines.map(b => (b.type === 'line' ? { who: b.who, content: b.content } : { content: b.content })), extra };
+}
+
+// ---------- 列表和日历共用的部件 ----------
+
+/**
+ * 一张条目卡片。opts: { q 搜索词（高亮）, selected 双栏时右栏正在看这条, players 数组（卡片里的播放器放进去，重画前要 destroy） }
+ */
+export function entryCard(e, ctx, { q = '', selected = false, players = [] } = {}) {
+  const { t } = ctx;
+  const lang = ctx.lang(), sp = ctx.state.settings.speakers, p = cardPreview(e, sp, q);
+  const hl = (text) => (q.trim() ? highlight(text, q).map(s => (s.hit ? h('mark', null, s.text) : s.text)) : text);
+  const dur = totalDuration(e);
+  const href = '#/e/' + encodeURIComponent(e.id);
+  let player = null;
+  if (e.audio.length) {
+    const c = e.audio[0];
+    player = audioPlayer({ getBlob: () => ctx.clipBlob(c.sha256), durationSec: c.durationSec, compact: true, key: c.sha256 });
+    players.push(player);
+  }
+  const emoji = who => (who ? h('span.c-emoji', { 'aria-hidden': 'true' }, sp[who].emoji) : null);
+  return h('article.card.ecard' + (e.status === 'inbox' ? '.pending' : '') + (selected ? '.sel' : ''), { dataset: { id: e.id } },
+    h('div.c-body', null,
+      h('p.c-meta', null,
+        h('a.c-link', { href, 'aria-current': selected ? 'page' : null }, fmtEntryDate(e, lang, { year: false, sep: daySep(lang) })),
+        e.audio.length ? h('span.c-dur', { title: t('list.hasAudio') }, icon('mic', { label: t('list.hasAudio') }), fmtDuration(dur)) : null,
+        e.status === 'inbox' ? h('span.tag', null, t('list.inboxTag')) : null),
+      p.head ? h('p.c-title', null, hl(p.head)) : null,
+      !p.head && !p.lines.length ? h('p.c-line.ph.kai', null, t('list.noText')) : null,
+      // 引号里说的话楷体，引号外的动作 / 描述普通字体（sayNodes）；整行都是动作的、旁白：淡一点
+      p.lines.map(l => h('p.c-line' + (!l.who ? '.narr' : isDescOnly(l.content) ? '.act' : '.kai'), null, emoji(l.who), sayNodes(l.content, q))),
+      p.extra ? h('p.c-extra', null, h('span.tag.neutral', null, t(p.extra.label === 'note' ? 'list.inNote' : 'list.inDraft')), ' ', hl(p.extra.text)) : null),
+    h('div.c-side', null,
+      h('button.fav-btn', {
+        type: 'button', 'aria-pressed': String(e.fav), 'aria-label': t(e.fav ? 'list.unfav' : 'list.fav'), title: t(e.fav ? 'list.unfav' : 'list.fav'),
+        onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); ctx.update(e.id, { fav: !e.fav }); },
+      }, icon('star')),
+      player));
+}
+
+/** 「呓语」页头：导入 / 记一条、大标题和「列表 | 日历」切换、条数。mode: 'list' | 'cal' */
+export function listHead(ctx, all, mode) {
+  const { t } = ctx;
+  const oldest = all[all.length - 1];
+  const seg = (m, label) => h('button', { type: 'button', 'aria-pressed': String(mode === m), onclick: () => { if (mode !== m) ctx.setListMode(m); } }, label);
+  return h('header.page-head', null,
+    h('div.toolbar', null,
+      h('a.tb-btn', { href: '#/import' }, icon('import'), t('nav.import')),
+      h('a.tb-btn', { href: '#/new', title: t('nav.new') + ' (⌘N)' }, icon('plus'), t('nav.new'))),
+    h('div.lt-row', null,
+      h('h1.lt', null, t('nav.list')),
+      h('div.seg.lt-mode', { role: 'group', 'aria-label': t('cal.mode') }, seg('list', t('cal.list')), seg('cal', t('cal.cal')))),
+    all.length ? h('p.lt-sub', null, t('list.count', { n: all.length }) + ' · ' + t('list.since', { month: fmtMonth(monthKey(oldest.date), ctx.lang()) })) : null);
 }
 
 // ---------- 页面 ----------
@@ -81,7 +131,6 @@ export function render(main, params, ctx) {
   let players = [], shown = [];
   const sp = () => ctx.state.settings.speakers;
   const nn = () => sp().nn.name || 'NN';
-  const hl = (text) => (ui.q.trim() ? highlight(text, ui.q).map(s => (s.hit ? h('mark', null, s.text) : s.text)) : text);
 
   // 搜索框和筛选只建一次（重画时不动）
   const qInput = h('input', {
@@ -107,22 +156,15 @@ export function render(main, params, ctx) {
 
   function drawHead(all) {
     const inbox = all.filter(e => e.status === 'inbox');
-    const oldest = all[all.length - 1];
-    head.replaceChildren(
-      h('header.page-head', null,
-        h('div.toolbar', null,
-          h('a.tb-btn', { href: '#/import' }, icon('import'), t('nav.import')),
-          h('a.tb-btn', { href: '#/new', title: t('nav.new') + ' (⌘N)' }, icon('plus'), t('nav.new'))),
-        h('h1.lt', null, t('nav.list')),
-        all.length ? h('p.lt-sub', null, t('list.count', { n: all.length }) + ' · ' + t('list.since', { month: fmtMonth(monthKey(oldest.date), ctx.lang()) })) : null),
-      inbox.length && !ui.inbox ? h('div.page', null, inboxBanner(inbox)) : '');
+    head.replaceChildren(listHead(ctx, all, 'list'), inbox.length && !ui.inbox ? h('div.page', null, inboxBanner(inbox)) : '');
   }
+  // 横幅的小字：最新一条待整理的日期时间（有标题带上标题；还没写原话才说「还没写原话」）
   function inboxBanner(inbox) {
-    const e = inbox[0], p = cardPreview(e, sp());
+    const e = inbox[0], lang = ctx.lang();
+    const sub = [fmtEntryDate(e, lang, { sep: daySep(lang) }), e.title && e.title.trim() ? e.title : null, e.text.trim() ? null : t('list.noText')].filter(Boolean).join(' · ');
     return h('button.inbox', { type: 'button', onclick: () => { ui.inbox = true; paintTools(); draw(); } },
       h('span.inbox-n', { 'aria-hidden': 'true' }, String(inbox.length)),
-      h('span.inbox-t', null, h('b', null, t('list.inbox', { n: inbox.length })),
-        h('small', null, fmtEntryDate(e, ctx.lang(), { sep: daySep(ctx.lang()) }) + ' · ' + (p.head || t('list.noTitle')))),
+      h('span.inbox-t', null, h('b', null, t('list.inbox', { n: inbox.length })), h('small', null, sub)),
       icon('chev'));
   }
 
@@ -156,36 +198,7 @@ export function render(main, params, ctx) {
   }
   function clearAll() { Object.assign(ui, { fav: false, audio: false, inbox: false }); setQ(''); drawHead(ctx.entries()); }
 
-  function card(e) {
-    const lang = ctx.lang(), p = cardPreview(e, sp(), ui.q);
-    const sel = !!params.selected && params.selected === e.id;
-    const dur = totalDuration(e);
-    const href = '#/e/' + encodeURIComponent(e.id);
-    let player = null;
-    if (e.audio.length) {
-      const c = e.audio[0];
-      player = audioPlayer({ getBlob: () => ctx.clipBlob(c.sha256), durationSec: c.durationSec, compact: true, key: c.sha256 });
-      players.push(player);
-    }
-    const emoji = who => (who ? h('span.c-emoji', { 'aria-hidden': 'true' }, sp()[who].emoji) : null);
-    const empty = !p.head && !p.lines.length;
-    return h('article.card.ecard' + (e.status === 'inbox' ? '.pending' : '') + (sel ? '.sel' : ''), { dataset: { id: e.id } },
-      h('div.c-body', null,
-        h('p.c-meta', null,
-          h('a.c-link', { href, 'aria-current': sel ? 'page' : null }, fmtEntryDate(e, lang, { year: false, sep: daySep(lang) })),
-          e.audio.length ? h('span.c-dur', { title: t('list.hasAudio') }, icon('mic', { label: t('list.hasAudio') }), fmtDuration(dur)) : null,
-          e.status === 'inbox' ? h('span.tag', null, t('list.inboxTag')) : null),
-        p.head ? h('p.c-title' + (p.headKai ? '.kai' : ''), null, hl(p.head)) : null,
-        empty ? [h('p.c-title.ph', null, t('list.noTitle')), h('p.c-line.ph.kai', null, t('list.noText'))] : null,
-        p.lines.map(l => h('p.c-line' + (l.who ? '.kai' : '.narr'), null, emoji(l.who), hl(l.content))),
-        p.extra ? h('p.c-extra', null, h('span.tag.neutral', null, t(p.extra.label === 'note' ? 'list.inNote' : 'list.inDraft')), ' ', hl(p.extra.text)) : null),
-      h('div.c-side', null,
-        h('button.fav-btn', {
-          type: 'button', 'aria-pressed': String(e.fav), 'aria-label': t(e.fav ? 'list.unfav' : 'list.fav'), title: t(e.fav ? 'list.unfav' : 'list.fav'),
-          onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); ctx.update(e.id, { fav: !e.fav }); },
-        }, icon('star')),
-        player));
-  }
+  const card = (e) => entryCard(e, ctx, { q: ui.q, selected: !!params.selected && params.selected === e.id, players });
 
   function emptyState() {
     return h('div.empty.list-empty', null,

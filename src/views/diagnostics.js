@@ -139,7 +139,7 @@ export function render(main, params, ctx) {
     const meta = readMp4Meta(await clip.blob.arrayBuffer());
     const el = await probeDuration(clip.blob);
     if (!gone) {
-      recPlayer = audioPlayer({ getBlob: async () => clip.blob, durationSec: el || res.durationSec });
+      recPlayer = audioPlayer({ getBlob: async () => clip.blob, durationSec: el || res.durationSec, level: false });   // 诊断要听原样，不做均衡
     }
     return [
       [t('diag.recResult'), t('diag.recOk')],

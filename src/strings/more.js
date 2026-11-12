@@ -29,6 +29,12 @@ export const STRINGS = {
     'rec.err.empty.t': '什么也没录到', 'rec.err.empty': '没有收到声音数据。再试一次；还不行的话，跑一遍「录音诊断」看看。',
     'rec.err.save.t': '录音没能存进这台设备',
     'rec.err.save': '可能是存储空间满了。先把这段录音下载下来，免得丢失；下次打开 App 也会再试着把它找回来。',
+    // 边录边写、编辑页里「录一段」
+    'rec.stopShort': '停止', 'rec.writeToo': '边录边写', 'rec.recOnly': '只录音', 'rec.toEditor': '去编辑页',
+    'rec.textSaved': '写的字已存进「待整理」', 'rec.recoveredText': '找回了上次没存好的原话。',
+    'rec.inline': '录一段', 'rec.inlineAria': '在这里录一段（不离开编辑页）',
+    'rec.inlineSaved': '录好了（{dur}），已经放进这条', 'rec.inlineAdded': '录好了（{dur}），保存时一起存',
+    'rec.inlineAway': '刚才那段录音（{dur}）已经存进这条',
 
     // ---------- 导入录音 ----------
     'imp.audio.intro': '把语音备忘录里的录音导进来，每段建一条「待整理」，也可以接到已有的一条里。点「导入」之前不会写入任何数据。',
@@ -134,6 +140,7 @@ export const STRINGS = {
     'set.tip3': '手机保持静音，免得开始、停止时出声。',
     'set.tip4': '「设置 → 辅助功能 → 辅助功能快捷键」选「降低白点值」，连按三下侧边按钮屏幕更暗。',
     'set.tip5': '外观设成自动深色；手机已经在手上时，直接点主屏幕上的小猪，夜里会直接进录音页。',
+    'set.tip6': '边录边写时：「设置 → 声音与触感 → 键盘反馈」里关掉「声音」，打字的咔嗒声就不会录进去，也不会吵醒 {nn}。',
     'set.aboutH': '关于', 'set.aboutLine': '记下 TA 的梦话',
     'set.about1': '梦话和录音只存在你的设备和你自己的 GitHub 私有仓库里，没有别的服务器。',
     'set.about2': '你写的原话原样保存，不做简繁转换，标点和引号也不会被「修正」。',
@@ -190,6 +197,12 @@ export const STRINGS = {
     'rec.err.empty.t': '什麼也沒錄到', 'rec.err.empty': '沒有收到聲音資料。再試一次；還是不行的話，跑一次「錄音診斷」看看。',
     'rec.err.save.t': '錄音沒能存進這臺裝置',
     'rec.err.save': '可能是儲存空間滿了。先把這段錄音下載下來，以免遺失；下次開啟 App 也會再試著把它找回來。',
+    // 邊錄邊寫、編輯頁裡「錄一段」
+    'rec.stopShort': '停止', 'rec.writeToo': '邊錄邊寫', 'rec.recOnly': '只錄音', 'rec.toEditor': '到編輯頁',
+    'rec.textSaved': '寫的字已存進「待整理」', 'rec.recoveredText': '找回了上次沒存好的原話。',
+    'rec.inline': '錄一段', 'rec.inlineAria': '在這裡錄一段（不離開編輯頁）',
+    'rec.inlineSaved': '錄好了（{dur}），已經放進這則', 'rec.inlineAdded': '錄好了（{dur}），儲存時一起存',
+    'rec.inlineAway': '剛才那段錄音（{dur}）已經存進這則',
 
     // ---------- 匯入錄音 ----------
     'imp.audio.intro': '把語音備忘錄裡的錄音匯入，每段建一則「待整理」，也可以接到已有的一則裡。點「匯入」之前不會寫入任何資料。',
@@ -295,6 +308,7 @@ export const STRINGS = {
     'set.tip3': '手機保持靜音，以免開始、停止時發出聲音。',
     'set.tip4': '「設定 → 輔助使用 → 輔助使用快速鍵」選「降低白點值」，按三下側邊按鈕螢幕就更暗。',
     'set.tip5': '外觀設成自動深色；手機已經在手上時，直接點主畫面上的小豬，夜裡會直接進錄音頁。',
+    'set.tip6': '邊錄邊寫時：「設定 → 聲音與觸覺回饋 → 鍵盤回饋」裡關掉「聲音」，打字的喀噠聲就不會錄進去，也不會吵醒 {nn}。',
     'set.aboutH': '關於', 'set.aboutLine': '記下 TA 的夢話',
     'set.about1': '夢話和錄音只存在你的裝置和你自己的 GitHub 私人儲存庫裡，沒有別的伺服器。',
     'set.about2': '你寫的原話原樣儲存，不做簡繁轉換，標點和引號也不會被「修正」。',
@@ -352,6 +366,12 @@ export const STRINGS = {
     'rec.err.empty.t': 'Nothing was recorded', 'rec.err.empty': 'No audio data arrived. Try again; if it keeps happening, run Recording diagnostics.',
     'rec.err.save.t': "Couldn't save the recording on this device",
     'rec.err.save': 'Storage may be full. Download this recording first so it is not lost; the app will also try to recover it next time it opens.',
+    // Writing while recording, Record in the editor
+    'rec.stopShort': 'Stop', 'rec.writeToo': 'Write too', 'rec.recOnly': 'Record only', 'rec.toEditor': 'Open editor',
+    'rec.textSaved': 'Your words were saved to To tidy', 'rec.recoveredText': 'Recovered the words you had not saved last time.',
+    'rec.inline': 'Record', 'rec.inlineAria': 'Record a clip here without leaving the editor',
+    'rec.inlineSaved': 'Recorded ({dur}) and added to this entry', 'rec.inlineAdded': 'Recorded ({dur}). It is saved with the entry',
+    'rec.inlineAway': 'The recording ({dur}) was saved to this entry',
 
     // ---------- Import audio ----------
     'imp.audio.intro': 'Bring in recordings from Voice Memos. Each one becomes a To tidy entry, or you can add it to an existing entry. Nothing is written until you tap Import.',
@@ -463,6 +483,7 @@ export const STRINGS = {
     'set.tip3': 'Keep the phone on silent so starting and stopping make no sound.',
     'set.tip4': 'Settings → Accessibility → Accessibility Shortcut → Reduce White Point, then triple-click the side button for a dimmer screen.',
     'set.tip5': 'Set Appearance to automatic dark. When the phone is already in your hand, tap the pig on the Home Screen; at night it opens straight to the recorder.',
+    'set.tip6': 'Writing while recording: Settings → Sounds & Haptics → Keyboard Feedback, turn off Sound so typing clicks are not recorded and do not wake {nn}.',
     'set.aboutH': 'About', 'set.aboutLine': 'Keep the things they say in their sleep',
     'set.about1': 'Entries and recordings live only on your devices and in your own private GitHub repository. There is no other server.',
     'set.about2': 'What you write is saved exactly as typed: no Simplified/Traditional conversion, and quotes and punctuation are never “fixed”.',

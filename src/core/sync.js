@@ -4,6 +4,7 @@
 // 每一轮：确认仓库是私有的（5 分钟内确认过就不再问；要传录音时这一轮一定再问一次）→ 先传本机还没上传的录音（断网就留到下一轮，文字照常同步）
 // → 拉取 babble.json、逐条合并 → 本机有云端没有的改动才上传
 // （带上云端版本号 sha，云端被别的设备改过会返回 409 / 422，这时重新拉取合并再传）→ 在后台下载本机缺的录音（不挡下一轮同步）。
+// 修改记录要的云端历史（commits / fileAt）只在用户点了才去取，用同一套令牌和出错处理。
 import { normalizeState, mergeStates, canon, byNewest } from './store.js';
 import { extForMime } from './audioStore.js';
 import { sha256Hex } from './sha256.js';
@@ -86,20 +87,23 @@ export function referencedClips(state, { includeDeleted = false } = {}) {
  * @param {() => object|null} o.getConfig           babble.local 里的 sync：{ repo, token, sha, etag, dirty, at, err, offline, tokenExp }；没开同步 → null
  * @param {(cfg) => void} o.saveConfig              保存同步状态（只存本机）
  * @param {() => number} o.editVersion              本机修改计数：上传期间又改过的话，上传完仍然算「有改动」
- * @param {string} o.device                         设备名（写进云端）
+ * @param {string|(() => string)} o.device          设备名（写进云端；可以是函数，设置里改了名字马上生效）
  * @param {object} o.audioStore                     src/core/audioStore.js（没有就只同步文字）
  * @param {(status) => void} [o.onStatus]           进度变化时调用（设置页显示待上传 / 待下载）
  * @param {() => object} [o.getLocal]  @param {() => void} [o.saveLocal]   babble.local：录音同步进度记在 local.audioSync
  * @param {typeof fetch} [o.fetch]
  * @returns {{ syncNow(): Promise<{ok: boolean, skipped?: boolean, error?: object, offline?: boolean}>,
  *             checkRepo(repo: string, token: string): Promise<string>,
- *             getAudio(sha: string): Promise<Blob|null>,
+ *             getAudio(sha: string, mime?: string): Promise<Blob|null>,
  *             status(): { running, uploading, downloading, pendingUp, pendingDown, lastError, tokenExpires },
- *             idle(): Promise<void> }}
+ *             idle(): Promise<void>,
+ *             commits({ page, perPage }): Promise<Array<{ sha, at, message }>>,
+ *             fileAt(ref: string): Promise<object|null> }}
  */
 export function createSync(o) {
   const doFetch = o.fetch || ((...a) => fetch(...a));
   const store = o.audioStore || null;
+  const device = () => String((typeof o.device === 'function' ? o.device() : o.device) || '');
   let chain = Promise.resolve();
   let verified = null, verifiedAt = 0, verifiedRound = 0, round = 0;   // 最近确认过是私有仓库的 repo 名、时刻、第几轮
   const memAudio = {};          // 没给 getLocal 时（测试）录音同步进度放内存里
@@ -225,8 +229,8 @@ export function createSync(o) {
     for (let i = 0; i < 4; i++) {
       const version = o.editVersion();
       const body = {
-        message: `更新 ${SYNC_FILE}（${o.device}）`,
-        content: toB64(JSON.stringify({ app: 'babble', v: 1, device: o.device, savedAt: new Date().toISOString(), state: o.getState() })),
+        message: `更新 ${SYNC_FILE}（${device()}）`,
+        content: toB64(JSON.stringify({ app: 'babble', v: 1, device: device(), savedAt: new Date().toISOString(), state: o.getState() })),
       };
       if (cfg.sha) body.sha = cfg.sha;
       const r = await gh(cfg, 'PUT', contents(cfg, SYNC_FILE), { body, timeout: 60000 });
@@ -272,7 +276,7 @@ export function createSync(o) {
         remoteSha = (j && j.sha) || null;                                             // 在，但内容不对（以前传坏了）：覆盖
       } else if (r.status !== 404) throw httpError(r);
       content = content || bytesToB64(bytes);
-      const body = { message: `添加录音 ${sha.slice(0, 8)}（${o.device}）`, content };
+      const body = { message: `添加录音 ${sha.slice(0, 8)}（${device()}）`, content };
       if (remoteSha) body.sha = remoteSha;
       const p = await gh(cfg, 'PUT', path, { body, timeout: 60000 + Math.round(content.length / 20) });   // 按 20KB/s 估上传时间
       if (p.ok) {
@@ -381,15 +385,16 @@ export function createSync(o) {
     if (!dlLoop) dlLoop = downloadLoop().catch(() => {}).finally(() => { dlLoop = null; });
   }
 
-  /** 播放器要用的录音：本机有就直接给；没有就马上下载（不排队），校验 sha256 后存进本机。云端也没有 → null */
-  async function getAudio(sha) {
+  /** 播放器要用的录音：本机有就直接给；没有就马上下载（不排队），校验 sha256 后存进本机。云端也没有 → null。
+   *  mime：已经没有条目引用的录音（恢复旧版本时）要给，才找得到仓库里的文件名 */
+  async function getAudio(sha, mimeHint = null) {
     sha = String(sha || '').toLowerCase();
     if (!store || !/^[0-9a-f]{64}$/.test(sha)) return null;
     const have = await store.getClip(sha);
     if (have && have.blob) return have.blob;
     const cfg = o.getConfig();
     if (!cfg) return null;
-    const mime = referencedClips(o.getState(), { includeDeleted: true }).get(sha) || 'audio/mp4';
+    const mime = referencedClips(o.getState(), { includeDeleted: true }).get(sha) || mimeHint || 'audio/mp4';
     const blob = await fetchClip(cfg, sha, mime);
     if (blob && !dlLoop) changed({ pendingDown: (await missingClips()).length });
     return blob;
@@ -449,5 +454,33 @@ export function createSync(o) {
     return info.full_name || repo;
   }
 
-  return { syncNow, checkRepo, getAudio, status, idle };
+  // ---------- 云端历史（修改记录，按需） ----------
+  /** babble.json 的提交记录，新的在前 → [{ sha, at, message }]。没开同步 → [] */
+  async function commits({ page = 1, perPage = 30 } = {}) {
+    const cfg = o.getConfig();
+    if (!cfg) return [];
+    const r = await gh(cfg, 'GET', `/repos/${cfg.repo}/commits?path=${encodeURIComponent(SYNC_FILE)}&per_page=${perPage}&page=${page}`);
+    if (!r.ok) throw httpError(r);
+    const list = await r.json().catch(() => null);
+    return (Array.isArray(list) ? list : []).filter(c => c && typeof c.sha === 'string').map(c => {
+      const m = c.commit || {};
+      return { sha: c.sha, at: (m.committer && m.committer.date) || (m.author && m.author.date) || null, message: m.message || '' };
+    });
+  }
+  /** 某次提交时的 babble.json（{ app, v, device, savedAt, state }）。那时没有这个文件 / 不是牙牙呓语的文件 → null。
+   *  直接要原文（raw）：超过 1MB 的文件也能取 */
+  async function fileAt(ref) {
+    const cfg = o.getConfig();
+    if (!cfg) return null;
+    const r = await gh(cfg, 'GET', contents(cfg, SYNC_FILE) + '?ref=' + encodeURIComponent(ref), { accept: ACCEPT_RAW, timeout: 60000 });
+    if (r.status === 404) return null;
+    if (!r.ok) throw httpError(r);
+    let text;
+    try { text = await r.text(); } catch (e) { throw new SyncError('net'); }
+    let d = null;
+    try { d = JSON.parse(text); } catch (e) { d = null; }
+    return d && d.app === 'babble' && d.state && typeof d.state === 'object' ? d : null;
+  }
+
+  return { syncNow, checkRepo, getAudio, status, idle, commits, fileAt };
 }

@@ -50,23 +50,27 @@ test('录音总长：每段都知道时长才加；有不知道的 → null', ()
   assert.equal(totalDuration(list.find(e => e.id === 'c')), null);
 });
 
-test('卡片预览：有标题用标题；没有用 NN 的第一句（楷体）；预览跳过反应表情；搜索时换成命中的句子', () => {
+test('卡片预览：标题只用 entry.title（没填就没有标题，不拿第一句顶替）；没标题时三行预览、有标题时两行；跳过反应表情；搜索时换成命中的句子', () => {
   const a = cardPreview(list.find(e => e.id === 'a'), SP);
-  assert.equal(a.head, '“今天吃什么”');
-  assert.equal(a.headKai, true);
-  assert.deepEqual(a.lines, [{ who: 'me', content: '“吃什么都行？”' }, { who: 'nn', content: '“馄饨..”' }]);
+  assert.equal(a.head, '');
+  assert.equal('headKai' in a, false);
+  assert.deepEqual(a.lines, [{ who: 'nn', content: '“今天吃什么”' }, { who: 'me', content: '“吃什么都行？”' }, { who: 'nn', content: '“馄饨..”' }]);
 
   const c = cardPreview(list.find(e => e.id === 'c'), SP);
   assert.equal(c.head, '测试标题');
-  assert.equal(c.headKai, false);
   assert.deepEqual(c.lines, [{ who: 'nn', content: '「為什麼……？」' }]);     // 原样，不转简体；🤯 不进预览
 
   const d = cardPreview(list.find(e => e.id === 'd'), SP);
-  assert.equal(d.head, '伸了个懒腰');
-  assert.deepEqual(d.lines, [{ content: '过了一会儿..' }]);               // 旁白没有 who
+  assert.equal(d.head, '');
+  assert.deepEqual(d.lines, [{ content: '过了一会儿..' }, { who: 'nn', content: '伸了个懒腰' }]);   // 旁白没有 who
 
   const b = cardPreview(list.find(e => e.id === 'b'), SP);
   assert.deepEqual([b.head, b.lines], ['', []]);
+
+  const titled = makeEntry({ id: 't', date: '2026-01-01', title: '有标题', text: [1, 2, 3, 4].map(i => `${NN}“第${i}句”`).join('\n') }, 1000);
+  assert.equal(cardPreview(titled, SP).lines.length, 2);
+  assert.equal(cardPreview({ ...titled, title: '  ' }, SP).head, '');          // 只有空格 = 没填
+  assert.equal(cardPreview({ ...titled, title: '  ' }, SP).lines.length, 3);
 
   assert.deepEqual(cardPreview(list.find(e => e.id === 'a'), SP, '馄饨').lines, [{ who: 'nn', content: '“馄饨..”' }]);
   assert.deepEqual(cardPreview(list.find(e => e.id === 'c'), SP, '很累').extra, { label: 'note', text: '那天很累' });

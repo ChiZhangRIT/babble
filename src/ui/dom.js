@@ -56,6 +56,7 @@ const ICONS = {
   bubble: { kids: [P('M5.5 4.5h13a2 2 0 012 2v8.5a2 2 0 01-2 2H11l-4.5 3.5v-3.5h-1a2 2 0 01-2-2V6.5a2 2 0 012-2z'), P('M8 9h8M8 12.5h5')] },
   gear: { kids: [C(12, 12, 3), P('M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z')] },
   clock: { kids: [C(12, 12, 8.5), P('M12 7.5V12l3 2')] },
+  history: { kids: [P('M4.2 12a7.8 7.8 0 1 0 2.3-5.5L4.2 8.8'), P('M4.2 4.6v4.2h4.2'), P('M12 8v4.3l2.8 1.7')] },
   pencil: { kids: [P('M4.5 19.5l1-4.2L15.8 5a2 2 0 012.9 0l.3.3a2 2 0 010 2.9L8.7 18.5z')] },
   x: { kids: [P('M6.5 6.5l11 11M17.5 6.5l-11 11')] },
   check: { kids: [P('M5 12.5l4.5 4.5L19 7.5')] },
@@ -93,6 +94,7 @@ let toastTimer = null;
 /**
  * toast('已删除', { ms: 10000, action: { label: '撤销', run: fn } })
  * 兼容旧写法 { action: '撤销', onAction: fn }。返回 { close }
+ * 提示条不挡按钮：显示期间跟着页面变化（换页、录音页换状态、转屏）重新找位置，见 placeToast
  */
 export function toast(msg, { ms = 4000, action = null, onAction = null } = {}) {
   let el = $('#toast');
@@ -100,15 +102,84 @@ export function toast(msg, { ms = 4000, action = null, onAction = null } = {}) {
   const act = typeof action === 'string' ? { label: action, run: onAction } : action;
   const close = () => {
     el.classList.remove('on'); el.setAttribute('inert', '');
+    unwatch();
     setTimeout(() => { if (!el.classList.contains('on')) el.replaceChildren(); }, 300);
   };
   el.replaceChildren(h('span.toast-msg', null, msg));
   if (act && act.label) el.appendChild(h('button', { type: 'button', onclick: () => { clearTimeout(toastTimer); close(); if (act.run) act.run(); } }, act.label));
   el.classList.add('on');
   el.removeAttribute('inert');
+  placeToast(el);
+  watch(el);
   clearTimeout(toastTimer);
   toastTimer = setTimeout(close, ms);
   return { close: () => { clearTimeout(toastTimer); close(); } };
+}
+
+// 提示条要让开的按钮：手机底栏、底部按钮条（整理好了、确认导入）、顶栏、录音页的按钮（只记文字 / 返回、停止、长按丢弃、保存后的几个按钮）。
+// 页面里别的固定按钮可以加 data-toast-avoid
+const TOAST_AVOID = '#tabs, .bottom-bar, .navbar, .n-links, .n-acts, .n-stop, .n-discard, [data-toast-avoid]';
+let safeProbe = null;
+/** 顶部安全区（刘海 / 灵动岛）多高：env() 只能在 CSS 里用，放一个看不见的元素量一下 */
+function safeTop() {
+  if (!safeProbe || !safeProbe.isConnected) {
+    safeProbe = h('div', { 'aria-hidden': 'true', style: { position: 'fixed', top: '0', left: '0', width: '0', height: 'env(safe-area-inset-top, 0px)', visibility: 'hidden', pointerEvents: 'none' } });
+    document.body.appendChild(safeProbe);
+  }
+  return safeProbe.offsetHeight || 0;
+}
+/**
+ * 放提示条：先放在 CSS 定的底部位置；挡住了上面那些按钮就往上挪到按钮上方（一层层往上找）；
+ * 下半屏都放不下（比如录音时整块都是停止键）就放到顶部安全区下面、顶上的按钮下方
+ */
+export function placeToast(el = $('#toast')) {
+  if (!el) return;
+  el.style.top = ''; el.style.bottom = '';
+  el.classList.remove('at-top');
+  if (!el.classList.contains('on')) return;
+  const vh = window.innerHeight, gap = 8, th = el.offsetHeight, tw = el.offsetWidth;
+  const left = (window.innerWidth - tw) / 2, right = left + tw;
+  const rects = [...document.querySelectorAll(TOAST_AVOID)].filter(n => !el.contains(n)).map(n => n.getBoundingClientRect())
+    .filter(r => r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < vh && r.left < right && r.right > left);
+  const hits = (top) => rects.filter(r => r.top < top + th && r.bottom > top);
+  const minTop = safeTop() + gap;
+  const base = vh - (parseFloat(getComputedStyle(el).bottom) || 24) - th;
+  let top = base;
+  for (let i = 0; i < 12 && top >= minTop; i++) {
+    const hit = hits(top);
+    if (!hit.length) break;
+    top = Math.min(...hit.map(r => r.top)) - gap - th;
+  }
+  if (top >= minTop && top >= vh * 0.2) {
+    if (top !== base) el.style.bottom = Math.round(vh - top - th) + 'px';
+    return;
+  }
+  // 下面放不下：从顶上往下找
+  top = minTop;
+  for (let i = 0; i < 12; i++) {
+    const hit = hits(top);
+    if (!hit.length) break;
+    top = Math.max(...hit.map(r => r.bottom)) + gap;
+  }
+  el.classList.add('at-top');
+  el.style.bottom = 'auto';
+  el.style.top = Math.round(Math.min(top, vh - th - gap)) + 'px';
+}
+// 显示期间：页面内容变了（换页、重画）、窗口大小变了、滚动了（吸底的按钮条位置会变）→ 下一帧重新放
+let toastObs = null, toastRaf = 0;
+const placeSoon = () => { if (!toastRaf) toastRaf = requestAnimationFrame(() => { toastRaf = 0; placeToast(); }); };
+function watch(el) {
+  if (toastObs) return;
+  toastObs = new MutationObserver(muts => { if (muts.some(m => !el.contains(m.target))) placeSoon(); });
+  toastObs.observe(document.body, { childList: true, subtree: true });
+  window.addEventListener('resize', placeSoon);
+  window.addEventListener('scroll', placeSoon, { passive: true, capture: true });
+}
+function unwatch() {
+  if (!toastObs) return;
+  toastObs.disconnect(); toastObs = null;
+  window.removeEventListener('resize', placeSoon);
+  window.removeEventListener('scroll', placeSoon, { capture: true });
 }
 
 // ---------- 面板（手机上从底部弹出，宽屏居中） ----------
