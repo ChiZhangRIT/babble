@@ -126,7 +126,7 @@ export const STRINGS = {
     'common.recoverFail': "A recording couldn't be recovered: {msg}",
     'common.dropHint': 'Drop to import recordings',
 
-    'nav.label': 'Main', 'nav.list': 'Sleep talk', 'nav.rec': 'Record', 'nav.settings': 'Settings', 'nav.import': 'Import audio',
+    'nav.label': 'Main', 'nav.list': 'Murmurs', 'nav.rec': 'Record', 'nav.settings': 'Settings', 'nav.import': 'Import audio',
     'nav.importNotes': 'Move from Notes', 'nav.deleted': 'Recently deleted', 'nav.new': 'New entry', 'nav.diag': 'Recording diagnostics',
 
     'player.play': 'Play', 'player.pause': 'Pause', 'player.loading': 'Downloading…', 'player.error': "This recording can't be played.",
