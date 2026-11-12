@@ -247,7 +247,7 @@ export function render(main, params, ctx) {
 
   // ---------- 录一段（不离开编辑页） ----------
   // 录到的：已有的条目马上接上（同时列进工作副本、不算没保存的修改）；新的一条放进工作副本（added），草稿另存好了才清恢复记录。
-  let recr = null, recState = 'idle', recErr = null, recTick = null, recMeter = null, recTimer = null, recWaiters = [], keepOnLeave = [];
+  let recr = null, recState = 'idle', recErr = null, recTick = null, recMeter = null, recTimer = null, recWaiters = [], awayId = null;   // awayId：离开时新建的那条待整理，之后录完的那段也接到这条
   const recBusy = () => !!recr && (recr.state === 'requesting' || recr.state === 'recording' || recr.state === 'stopping');
   function recorder() {
     if (!recr) {
@@ -323,13 +323,19 @@ export function render(main, params, ctx) {
     // 条目里、草稿里都有了才清恢复记录（不然下次启动时找回，单独建一条）
     if (ok && res.recId) Promise.resolve(ctx.audio.clearRec(res.recId)).catch(() => {});
   }
-  /** 离开了编辑页、这条又没保存：这次录的单独存成一条待整理（还在录的那段存好以后一起） */
-  function keepInline(more) {
-    const clips = [...keepOnLeave, ...more];
-    if (recBusy() || !clips.length) { keepOnLeave = clips; return; }
-    keepOnLeave = [];
-    const first = inlineSha.get(clips[0].sha256) || {};
-    ctx.put(ctx.newEntry({ ...recTimeFields(first.startedAt, first.tz), status: 'inbox', audio: clips, source: { kind: 'app' } }));
+  /** 离开了编辑页、这条又没保存：这次录的单独存成一条待整理。
+   *  马上存（不等还在录的那段收尾）——收尾要一两秒，这期间 App 被关掉的话，已经录好的几段就哪条都不在了；
+   *  还在录的那段录完再接到同一条（App 先被关掉的话，下次启动按没收尾的录音找回，单独一条） */
+  function keepInline(clips) {
+    if (!clips.length) return;
+    const cur = awayId ? ctx.entry(awayId) : null;
+    if (cur && !cur.deleted) {
+      const have = cur.audio || [];
+      ctx.update(awayId, { audio: [...have, ...clips.filter(c => !have.some(a => a.sha256 === c.sha256)).map(c => ({ ...c }))] });
+    } else {
+      const first = inlineSha.get(clips[0].sha256) || {};
+      awayId = ctx.put(ctx.newEntry({ ...recTimeFields(first.startedAt, first.tz), status: 'inbox', audio: clips.map(c => ({ ...c })), source: { kind: 'app' } })).id;
+    }
     ctx.toast(t('rec.savedAway', { dur: fmtDuration(clips.reduce((n, c) => n + (c.durationSec || 0), 0)) || '0:00' }), { ms: 6000 });
   }
   /** 这次编辑里改过草稿没有（和打开时的条目比） */
@@ -555,8 +561,8 @@ export function render(main, params, ctx) {
       for (const p of players) p.destroy(); players = [];
       // 离开时还在录：照样存好（已有的条目接上；新的一条没保存 → 单独存成一条待整理）。这次录的、没保存的也一样
       const unsaved = !saved ? w.audio.filter(a => inlineSha.has(a.sha256)) : [];      // 已有的条目只有接不上（被删了）的才在 inlineSha 里
-      if (recBusy()) { keepOnLeave = unsaved; recr.stop({ reason: 'leave' }).catch(() => {}); }
-      else if (unsaved.length) keepInline(unsaved);
+      if (unsaved.length) keepInline(unsaved);                       // 先存已经录好的，再让还在录的那段收尾
+      if (recBusy()) recr.stop({ reason: 'leave' }).catch(() => {});
     },
   };
 }
