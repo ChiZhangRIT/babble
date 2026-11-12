@@ -25,8 +25,9 @@ export function render(main, params, ctx) {
 }
 
 // ---------- 小部件 ----------
+const LANG_ROW = '语言 / Language';
 const sec = (id, title, kids, foot) => h('section.set-sec', { id: id ? 'set-' + id : null },
-  h('h2.group-h', null, title), h('div.group', null, kids), foot ? h('div.group-foot', null, foot) : null);
+  title ? h('h2.group-h', null, title) : null, h('div.group', null, kids), foot ? h('div.group-foot', null, foot) : null);
 // 只有一个输入框 / 开关时整行是 <label>（点哪里都行）；分段按钮之类用 <div>，免得点文字误按第一个按钮
 const row = (label, control, help) => h((/^(INPUT|SELECT|TEXTAREA)$/.test(control.tagName) ? 'label' : 'div') + '.group-row.set-row', null,
   h('span.set-label', null, label, help ? h('small', null, help) : null), control);
@@ -77,6 +78,9 @@ function mainPage(main, params, ctx) {
     const deletedN = Object.values(ctx.state.data.entries).filter(e => e.deleted).length;
     const pend = [st.pendingUp ? t('sync.audioUp', { n: st.pendingUp }) : null, st.pendingDown ? t('sync.audioDown', { n: st.pendingDown }) : null].filter(Boolean).join(' · ');
     fill(page,
+      // 语言放最上面，标题三种语言都写：不管现在是哪种语言都找得到
+      sec('lang', null, [row(LANG_ROW, h('select.set-in.set-select', { 'aria-label': LANG_ROW, onchange: (e) => ctx.setLang(e.target.value) },
+        LANGS.map(l => h('option', { value: l, selected: l === lang }, LANG_LABELS[l]))))]),
       sec('sync', t('set.syncH'), [h('a.group-row.set-link', { href: '#/settings/sync' }, icon('share'), h('span', null, t('set.sync')), h('span.sp'), stateDot(syncState(st, lang)))],
         st.on ? (pend || (st.repo ? t('set.syncRepo', { repo: st.repo }) : null)) : t('set.syncOffFoot')),
       speakersSec(S),
@@ -86,8 +90,6 @@ function mainPage(main, params, ctx) {
           const on = (L.theme || 'auto') === v;
           return h('button', { type: 'button', class: on ? 'on' : null, 'aria-pressed': String(on), onclick: () => { ctx.setTheme(v); draw(); } }, t('set.theme.' + v));
         }))),
-        row(t('set.lang'), h('select.set-in.set-select', { onchange: (e) => ctx.setLang(e.target.value) },
-          LANGS.map(l => h('option', { value: l, selected: l === lang }, LANG_LABELS[l])))),
       ], S.nightForcesDark ? t('set.lookFoot') : null),
       backupSec(L),
       storageSec(),

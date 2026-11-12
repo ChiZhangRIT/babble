@@ -81,7 +81,8 @@ test('语言列表和名称；按系统语言猜第一次打开的语言', () =>
   assert.equal(guessLang(['zh-TW']), 'zh-Hant-TW');
   assert.equal(guessLang(['zh-Hant-HK']), 'zh-Hant-TW');
   assert.equal(guessLang(['zh-CN', 'en']), 'zh-Hans');
-  assert.equal(guessLang(['en-US']), 'en');
+  assert.equal(guessLang(['en-US']), 'zh-Hans');            // 英文系统也先用简体，English 要在设置里选
+  assert.equal(guessLang(['en-US', 'zh-Hant-TW']), 'zh-Hant-TW');
   assert.equal(guessLang(['fr-FR']), 'zh-Hans');
   assert.equal(guessLang([]), 'zh-Hans');
 });

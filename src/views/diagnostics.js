@@ -20,10 +20,12 @@ const yes = (v) => (v ? t('diag.yes') : t('diag.no'));
 
 /** UA → 'iOS 18.4' / 'iPadOS 或 macOS 18.4（Safari）' 之类，认不出 → '' */
 export function osVersion(ua = '') {
+  const safari = /Version\/(\d+(?:\.\d+)*)/.exec(ua);
   let m = /\b(?:iPhone|iPad|iPod)[^)]*?OS (\d+)[_.](\d+)(?:[_.](\d+))?/.exec(ua);
+  // iOS 26 起 UA 里的系统版本固定写 18_x，真实版本看 Safari 的 Version/
+  if (m && safari && +m[1] === 18 && parseInt(safari[1], 10) >= 26) return 'iOS ' + safari[1];
   if (m) return 'iOS ' + [m[1], m[2], m[3]].filter(Boolean).join('.');
   m = /Mac OS X (\d+)[_.](\d+)(?:[_.](\d+))?/.exec(ua);
-  const safari = /Version\/(\d+(?:\.\d+)*)/.exec(ua);
   if (m) return 'macOS ' + [m[1], m[2], m[3]].filter(Boolean).join('.') + (safari ? ' · Safari ' + safari[1] : '');
   m = /Android (\d+(?:\.\d+)*)/.exec(ua);
   return m ? 'Android ' + m[1] : '';
