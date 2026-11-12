@@ -7,12 +7,13 @@ export const STRINGS = {
   'zh-Hans': {
     'list.count': '共 {n} 条', 'list.since': '自 {month}',
     'list.inbox': '待整理 {n} 条', 'list.noText': '还没写原话',
-    'list.search': '搜原话、标题、背景', 'list.searchLabel': '搜索梦话', 'list.clearSearch': '清除搜索',
+    'list.search': '搜原话、背景、录音名', 'list.searchLabel': '搜索梦话', 'list.clearSearch': '清除搜索',
     'list.filters': '筛选', 'list.fFav': '收藏', 'list.fAudio': '有录音', 'list.fInbox': '待整理',
     'list.inboxTag': '待整理', 'list.fav': '收藏', 'list.unfav': '取消收藏', 'list.hasAudio': '有录音',
     'list.first': '这是第一条 · {date}', 'list.results': '{n} 条', 'list.noResults': '没有找到相关的梦话',
     'list.noResultsHint': '换个词试试，简体繁体都能搜到。', 'list.clearFilters': '清除筛选',
-    'list.inNote': '背景', 'list.inDraft': '草稿',
+    'list.inNote': '背景', 'list.inDraft': '草稿', 'list.inClip': '录音名',
+    'list.more': '展开全部（还有 {n} 行）', 'list.less': '收起',
     'list.emptyTitle': '还没有梦话', 'list.emptyText': '{nn} 说梦话的时候，点小猪鼻子录下来；也可以把备忘录里的旧笔记搬过来。',
     'list.emptyImport': '从备忘录导入', 'list.emptyNew': '记第一条',
 
@@ -36,7 +37,6 @@ export const STRINGS = {
 
     'edit.date': '日期', 'edit.dateHelp': '凌晨说的也记在当天：3月8日凌晨2点就写 3月8日。', 'edit.badDate': '请填一个日期',
     'edit.time': '时间', 'edit.optional': '可不填', 'edit.now': '现在', 'edit.clearTime': '清除',
-    'edit.title': '标题', 'edit.titlePh': '标题（可不填）',
     'edit.text': '原话', 'edit.textHint': '照原样保存，不会被改动', 'edit.textPh': '边听边写下 {nn} 的原话……',
     'edit.insert': '插入一行', 'edit.me': '我', 'edit.reactions': '插入反应',
     'edit.note': '那天的背景', 'edit.notePh': '那天发生了什么（可不填）',
@@ -55,12 +55,13 @@ export const STRINGS = {
   'zh-Hant-TW': {
     'list.count': '共 {n} 則', 'list.since': '自 {month}',
     'list.inbox': '待整理 {n} 則', 'list.noText': '還沒寫原話',
-    'list.search': '搜尋原話、標題、背景', 'list.searchLabel': '搜尋夢話', 'list.clearSearch': '清除搜尋',
+    'list.search': '搜尋原話、背景、錄音名稱', 'list.searchLabel': '搜尋夢話', 'list.clearSearch': '清除搜尋',
     'list.filters': '篩選', 'list.fFav': '收藏', 'list.fAudio': '有錄音', 'list.fInbox': '待整理',
     'list.inboxTag': '待整理', 'list.fav': '收藏', 'list.unfav': '取消收藏', 'list.hasAudio': '有錄音',
     'list.first': '這是第一則 · {date}', 'list.results': '{n} 則', 'list.noResults': '沒有找到相關的夢話',
     'list.noResultsHint': '換個詞試試，簡體繁體都搜得到。', 'list.clearFilters': '清除篩選',
-    'list.inNote': '背景', 'list.inDraft': '草稿',
+    'list.inNote': '背景', 'list.inDraft': '草稿', 'list.inClip': '錄音名稱',
+    'list.more': '展開全部（還有 {n} 行）', 'list.less': '收合',
     'list.emptyTitle': '還沒有夢話', 'list.emptyText': '{nn} 說夢話的時候，點小豬鼻子錄下來；也可以把備忘錄裡的舊筆記搬過來。',
     'list.emptyImport': '從備忘錄匯入', 'list.emptyNew': '記第一則',
 
@@ -84,7 +85,6 @@ export const STRINGS = {
 
     'edit.date': '日期', 'edit.dateHelp': '凌晨說的也記在當天：3月8日凌晨2點就寫 3月8日。', 'edit.badDate': '請填一個日期',
     'edit.time': '時間', 'edit.optional': '可不填', 'edit.now': '現在', 'edit.clearTime': '清除',
-    'edit.title': '標題', 'edit.titlePh': '標題（可不填）',
     'edit.text': '原話', 'edit.textHint': '照原樣儲存，不會被改動', 'edit.textPh': '邊聽邊寫下 {nn} 的原話……',
     'edit.insert': '插入一行', 'edit.me': '我', 'edit.reactions': '插入反應',
     'edit.note': '那天的背景', 'edit.notePh': '那天發生了什麼（可不填）',
@@ -103,12 +103,13 @@ export const STRINGS = {
   en: {
     'list.count': en('{n} entry', '{n} entries'), 'list.since': 'since {month}',
     'list.inbox': en('{n} to tidy', '{n} to tidy'), 'list.noText': 'No words written yet',
-    'list.search': 'Search words, titles, notes', 'list.searchLabel': 'Search entries', 'list.clearSearch': 'Clear search',
+    'list.search': 'Search words, notes, recording names', 'list.searchLabel': 'Search entries', 'list.clearSearch': 'Clear search',
     'list.filters': 'Filters', 'list.fFav': 'Starred', 'list.fAudio': 'With audio', 'list.fInbox': 'To tidy',
     'list.inboxTag': 'To tidy', 'list.fav': 'Star', 'list.unfav': 'Unstar', 'list.hasAudio': 'Has audio',
     'list.first': 'The very first one · {date}', 'list.results': en('{n} entry', '{n} entries'), 'list.noResults': 'Nothing found',
     'list.noResultsHint': 'Try another word. Simplified and traditional Chinese both match.', 'list.clearFilters': 'Clear filters',
-    'list.inNote': 'Note', 'list.inDraft': 'Draft',
+    'list.inNote': 'Note', 'list.inDraft': 'Draft', 'list.inClip': 'Recording',
+    'list.more': en('Show all (1 more line)', 'Show all ({n} more lines)'), 'list.less': 'Show less',
     'list.emptyTitle': 'No sleep talk yet', 'list.emptyText': 'When {nn} talks in her sleep, tap the pig snout to record. You can also bring over your old notes.',
     'list.emptyImport': 'Import from Notes', 'list.emptyNew': 'Write the first one',
 
@@ -132,7 +133,6 @@ export const STRINGS = {
 
     'edit.date': 'Date', 'edit.dateHelp': 'Early-morning talk keeps that calendar date: 2 AM on Mar 8 is Mar 8.', 'edit.badDate': 'Please enter a date',
     'edit.time': 'Time', 'edit.optional': 'optional', 'edit.now': 'Now', 'edit.clearTime': 'Clear',
-    'edit.title': 'Title', 'edit.titlePh': 'Title (optional)',
     'edit.text': 'Words', 'edit.textHint': 'Kept exactly as you type it', 'edit.textPh': 'Listen and write down what {nn} said…',
     'edit.insert': 'Insert a line', 'edit.me': 'Me', 'edit.reactions': 'Insert a reaction',
     'edit.note': 'Context', 'edit.notePh': 'What happened that day (optional)',

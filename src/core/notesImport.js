@@ -110,7 +110,7 @@ const DT_CHARS = '[\\d\\s\\-_.:/,，年月日号號时時分秒点點]*';
 const PURE_DT = new RegExp(`^${DT_CHARS}(?:am|pm|a\\.m\\.|p\\.m\\.|上午|下午|凌晨|早上|中午|晚上)?${DT_CHARS}$`, 'i');
 
 /**
- * 语音备忘录 / 录音软件的默认名 → true（这种名字不当标题，也不拿去原话里找）：
+ * 语音备忘录 / 录音软件的默认名 → true（这种名字不拿去原话里找，也不当分享 / 备份时的文件名）：
  * 地址（「123 Main St」，Voice Memos 用位置命名）、「新录音 3」「新錄音 3」「New Recording 3」、
  * 「Audio Recording …」（QuickTime）、纯日期时间（「2024-10-05 10.15」「20241005」）、一串十六进制 / UUID。
  */
@@ -124,9 +124,6 @@ export function isDefaultRecordingName(name) {
   if (/^[0-9a-f]{8}(?:-?[0-9a-f]{4}){3}-?[0-9a-f]{12}$/i.test(b) || /^[0-9a-f]{16,}$/i.test(b)) return true;
   return false;
 }
-
-/** 导入后的标题：文件名去掉扩展名；默认名 → '' */
-export const fileTitle = name => (isDefaultRecordingName(name) ? '' : baseOf(name));
 
 /** 文件名里写的日期 → [{ y: number|null, m, d }]（「10-5标题」「10.5」「10月5日」「2024-10-05」「20241005」） */
 export function nameDates(name) {

@@ -90,18 +90,30 @@ test('地址：#/cal/YYYY-MM、#/cal/YYYY-MM-DD；不存在的日期、乱写的
   assert.equal(parseCalPath(undefined), null);
 });
 
-test('别处的条目称呼（录音页「已存到」、导入时选条目）：有标题用标题，没有就是第一句的开头（截短）', () => {
-  assert.equal(entryLabel(E('x', { date: '2026-11-04', time: '02:58', title: '测试标题', text: `${NN}“一句话”` }), SP, 'zh-Hans'), '2026年11月4日 凌晨2:58 · 测试标题');
+test('别处的条目称呼（录音页「已存到」、导入时选条目、修改记录）：日期时间 + 第一句的开头（截短）；没写原话用录音的名字；存着的标题不用', () => {
+  assert.equal(entryLabel(E('x', { date: '2026-11-04', time: '02:58', title: '旧标题', text: `${NN}“一句话”` }), SP, 'zh-Hans'), '2026年11月4日 凌晨2:58 · “一句话”');
   assert.equal(entryLabel(E('y', { date: '2026-11-04', text: `${NN}“今天吃什么”` }), SP, 'zh-Hans'), '2026年11月4日 · “今天吃什么”');
   const long = entryLabel(E('z', { date: '2026-11-04', text: `${NN}“这是一句很长很长很长很长很长很长的梦话”` }), SP, 'zh-Hans');
   assert.ok(long.endsWith('…') && long.length < 40, long);
   assert.equal(entryLabel(E('w', { date: '2026-11-04' }), SP, 'en'), 'Nov 4, 2026');
+  assert.equal(entryLabel(E('v', { date: '2026-11-04', time: '02:58' }), SP, 'en'), 'Nov 4, 2026, 2:58 AM');
+  const clip = (over) => ({ sha256: 'a'.repeat(64), mime: 'audio/mp4', ...over });
+  assert.equal(entryLabel(E('u', { date: '2026-11-04', title: '旧标题', audio: [clip({}), clip({ sha256: 'b'.repeat(64), origName: '测试录音.m4a' })] }), SP, 'zh-Hans'), '2026年11月4日 · 🎙 测试录音');
+  assert.equal(entryLabel(E('t', { date: '2026-11-04', audio: [clip({ name: '下雨了' })] }), SP, 'zh-Hant-TW'), '2026年11月4日 · 🎙 下雨了');
+  assert.equal(entryLabel(E('s', { date: '2026-11-04', text: `${NN}“有字”`, audio: [clip({ name: '下雨了' })] }), SP, 'zh-Hans'), '2026年11月4日 · “有字”');   // 有原话用原话
 });
 
-test('F1：「标题待填」不再出现；编辑页标题的提示是「标题（可不填）」', () => {
-  for (const lang of Object.keys(STRINGS)) assert.equal(STRINGS[lang]['list.noTitle'], undefined, lang);
-  assert.equal(STRINGS['zh-Hans']['edit.titlePh'], '标题（可不填）');
-  assert.equal(STRINGS['zh-Hant-TW']['edit.titlePh'], '標題（可不填）');
-  assert.equal(STRINGS.en['edit.titlePh'], 'Title (optional)');
+test('条目没有标题：标题相关的文案都去掉了，界面文案里不再说「标题」', () => {
+  for (const lang of Object.keys(STRINGS)) {
+    for (const k of ['list.noTitle', 'edit.title', 'edit.titlePh', 'hist.f.title', 'hist.titleChange', 'imp.title', 'imp.titlePh', 'imp.defaultName', 'imp.r.defaultName']) {
+      assert.equal(STRINGS[lang][k], undefined, lang + ' ' + k);
+    }
+    for (const [k, v] of Object.entries(STRINGS[lang])) {
+      if (typeof v === 'string') assert.doesNotMatch(v.replace(/\{\w+\}/g, ''), /标题|標題|\btitles?\b/i, lang + ' ' + k);
+    }
+  }
+  assert.deepEqual(['zh-Hans', 'zh-Hant-TW'].map(l => STRINGS[l]['list.search']), ['搜原话、背景、录音名', '搜尋原話、背景、錄音名稱']);
+  assert.deepEqual(['zh-Hans', 'zh-Hant-TW'].map(l => [STRINGS[l]['list.more'], STRINGS[l]['list.less']]), [['展开全部（还有 {n} 行）', '收起'], ['展開全部（還有 {n} 行）', '收合']]);
+  assert.deepEqual([STRINGS.en['list.more']({ n: 5 }), STRINGS.en['list.more']({ n: 1 }), STRINGS.en['list.less']], ['Show all (5 more lines)', 'Show all (1 more line)', 'Show less']);
   assert.equal(STRINGS['zh-Hant-TW']['cal.cal'], '日曆');
 });

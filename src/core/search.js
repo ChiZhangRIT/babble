@@ -1,6 +1,7 @@
-// 搜索：简繁折叠、忽略大小写和全角半角，去掉表情、标点、空白后匹配标题、原话、背景、草稿。
+// 搜索：简繁折叠、忽略大小写和全角半角，去掉表情、标点、空白后匹配原话、背景、草稿和录音的名字（条目没有标题）。
 // 只有表情的搜索词（如「🤯」）退一步：保留表情、忽略肤色和变体选择符再比。
 import { toSimplified } from './hanzi.js';
+import { clipName } from './clips.js';
 
 // 比较时丢掉的字符：标点、符号（含表情、肤色）、空白、控制和格式字符（ZWJ 等）、变体选择符、键帽
 const DROP = /[\p{P}\p{S}\p{Z}\s\p{Cc}\p{Cf}\uFE00-\uFE0F\u20E3]/u;
@@ -45,7 +46,8 @@ function terms(query) {
     .filter(x => x.f);
 }
 
-const fields = e => [e && e.title, e && e.text, e && e.note, e && e.draft && e.draft.text];
+/** 搜哪些字：原话、背景、草稿、每段录音的名字（起的名字 / 原文件名）。旧条目存着的 title 不搜（界面上不显示） */
+export const searchFields = e => (e ? [e.text, e.note, e.draft && e.draft.text, ...(Array.isArray(e.audio) ? e.audio.map(clipName) : [])] : []);
 
 /**
  * 条目是否匹配（搜索词为空 → true）
@@ -56,7 +58,7 @@ const fields = e => [e && e.title, e && e.text, e && e.note, e && e.draft && e.d
 export function matchEntry(entry, query, speakers) {
   const ts = terms(query);
   if (!ts.length) return true;
-  const fs = fields(entry);
+  const fs = searchFields(entry);
   return ts.every(t => fs.some(x => x && foldStr(x, t.loose).includes(t.f)));
 }
 

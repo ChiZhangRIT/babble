@@ -3,7 +3,7 @@
 // 语音转文字的第三方文件（vendor/，几十 MB）不预先缓存：第一次用到时存进 VENDOR_CACHE，以后先用缓存（之后离线也能转文字）；
 // 名字带版本号，App 发新版不用重新下载，换版本时改名字，旧的会被清掉。模型文件在 Hugging Face（别的网站），
 // 由 transformers.js 自己存在「transformers-cache」里，这里不碰。
-const CACHE = 'babble-v8';
+const CACHE = 'babble-v9';
 const VENDOR_CACHE = 'babble-vendor-tf432';
 const VENDOR = new URL('./vendor/', location).pathname;
 // 程序文件全部预先缓存（tests/sw.test.mjs 检查这张表和磁盘上的文件、index.html、import 关系一致），第一次打开之后就能离线用

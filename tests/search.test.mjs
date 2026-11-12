@@ -35,10 +35,11 @@ test('fold：简繁、大小写、全角半角都一样；去掉表情、标点�
 
 const entry = (over = {}) => ({ id: 'e_1', title: '', text: '', note: '', draft: null, ...over });
 
-test('matchEntry：标题、原话、背景、草稿；简体搜繁体、繁体搜简体', () => {
-  const e = entry({ title: '下雨天', text: `${NN}“為什麼下雨了”\n${ME}“因为云来了”`, note: '那天在露营', draft: { text: '自动转写的草稿', source: 'voice-memos' } });
-  for (const q of ['为什么', '為什麼', '下雨天', '露營', '露营', '自動轉寫', '雲來了', '  因為  ']) assert.equal(matchEntry(e, q), true, q);
-  for (const q of ['晴天', '下雪', 'abc']) assert.equal(matchEntry(e, q), false, q);
+test('matchEntry：原话、背景、草稿、录音的名字；简体搜繁体、繁体搜简体；存着的标题不搜', () => {
+  const e = entry({ title: '晴天', text: `${NN}“為什麼下雨了”\n${ME}“因为云来了”`, note: '那天在露营', draft: { text: '自动转写的草稿', source: 'voice-memos' },
+    audio: [{ sha256: 'a'.repeat(64), name: '下雪天' }, { sha256: 'b'.repeat(64), origName: '测试录音.m4a' }, { sha256: 'c'.repeat(64) }] });
+  for (const q of ['为什么', '為什麼', '露營', '露营', '自動轉寫', '雲來了', '  因為  ', '下雪', '測試錄音', '测试录音 露营']) assert.equal(matchEntry(e, q), true, q);
+  for (const q of ['晴天', 'm4a', 'abc']) assert.equal(matchEntry(e, q), false, q);       // 标题不搜；原文件名的扩展名不算名字
   assert.equal(matchEntry(e, ''), true);
   assert.equal(matchEntry(e, '   '), true);
   assert.equal(matchEntry(entry(), '雨'), false);
@@ -46,7 +47,7 @@ test('matchEntry：标题、原话、背景、草稿；简体搜繁体、繁体�
 });
 
 test('matchEntry：忽略标点和表情；空格分开的几个词都要命中（可以在不同字段）', () => {
-  const e = entry({ title: 'Test 录音', text: `${NN}“吃……什么？”\n${ME} 🤯` });
+  const e = entry({ text: `${NN}“吃……什么？”\n${ME} 🤯`, audio: [{ sha256: 'a'.repeat(64), name: 'Test 录音' }] });
   assert.equal(matchEntry(e, '吃什么'), true);
   assert.equal(matchEntry(e, '“吃什么”'), true);
   assert.equal(matchEntry(e, 'TEST'), true);

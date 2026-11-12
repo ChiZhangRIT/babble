@@ -43,11 +43,12 @@ test('按行比较：前后相同的行不动，中间按最长公共子序列�
   assert.deepEqual(compactDiff(lineDiff('一', '一')), [{ t: 'skip', n: 1 }]);
 });
 
-test('changedFields：标题 / 原话 / 背景 / 录音 / 收藏 / 状态 / 日期 / 草稿 / 删除 / 恢复', () => {
+test('changedFields：原话 / 背景 / 录音 / 收藏 / 状态 / 日期 / 草稿 / 删除 / 恢复（存着的标题不比：界面上没有标题）', () => {
   const A = 'a'.repeat(64), B = 'b'.repeat(64);
   const base = makeEntry({ id: 'x', date: '2026-01-02', text: `${NN}“今天吃什么”`, audio: [{ sha256: A, mime: 'audio/mp4' }] }, 1000);
   assert.deepEqual(changedFields(base, { ...base }), []);
-  assert.deepEqual(changedFields(base, { ...base, title: '测试标题', text: base.text + '\n' + ME + ' 🤯' }), ['title', 'text']);
+  assert.deepEqual(changedFields(base, { ...base, title: '旧标题', text: base.text + '\n' + ME + ' 🤯' }), ['text']);
+  assert.deepEqual(changedFields(base, { ...base, title: '旧标题' }), []);
   assert.deepEqual(changedFields(base, { ...base, audio: [...base.audio, { sha256: B }], fav: true, status: 'inbox' }), ['audio', 'fav', 'status']);
   assert.deepEqual(changedFields(base, { ...base, time: '02:58', note: '那天很累', draft: { text: '草稿', source: 'paste' } }), ['note', 'date', 'draft']);
   const gone = deletedRecord(base, 2000);

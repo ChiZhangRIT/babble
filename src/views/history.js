@@ -7,6 +7,7 @@ import { audioPlayer } from '../ui/player.js';
 import { buildVersions, changedFields, lineDiff, compactDiff, versionBy } from '../core/history.js';
 import { fmtEntryDate, fmtInstant, fmtTime, localParts, daysAgo, today } from '../core/dates.js';
 import { chatView } from './entry.js';
+import { entryLabel } from './record.js';
 import { clipLabel, clipName } from '../core/clips.js';
 import { byLabel } from './device.js';
 import { t } from '../i18n.js';
@@ -14,8 +15,8 @@ import { t } from '../i18n.js';
 const enc = encodeURIComponent;
 const daySep = lang => (lang === 'en' ? ', ' : ' ');
 const fill = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter(k => k != null && k !== false));
-/** 恢复旧版本时换回来的字段（收藏、待整理状态不跟着变；录音另外处理） */
-const RESTORE = ['date', 'time', 'recordedAt', 'tz', 'timeSource', 'title', 'text', 'note', 'draft'];
+/** 恢复旧版本时换回来的字段（收藏、待整理状态不跟着变；录音另外处理；旧数据里存着的 title 不动——界面上没有标题） */
+const RESTORE = ['date', 'time', 'recordedAt', 'tz', 'timeSource', 'text', 'note', 'draft'];
 const DIFF_ROWS = 8;
 const shaList = (list) => (list || []).map(a => a.sha256 + (a.name ? '|' + a.name : '')).join(',');   // 连录音的名字一起比
 
@@ -73,7 +74,7 @@ export function render(main, params, ctx) {
     if (!e) { fill(page, h('p.empty', null, t('common.notFound'))); return; }
     const versions = buildVersions(e, local || [], cloudFound);
     fill(page,
-      h('p.hist-sub', null, fmtEntryDate(e, lang, { sep: daySep(lang) }), e.title && e.title.trim() ? h('span', null, ' · ', e.title) : null),
+      h('p.hist-sub', null, entryLabel(e, sp(), lang)),
       loadErr ? h('p.err.small.hist-err', { role: 'alert' }, t('hist.loadFail', { msg: loadErr })) : null,
       h('ol.hist-list', null, versions.map((it, i) => versionRow(it, versions[i + 1] || null, i === versions.length - 1))),
       local == null ? h('p.muted.small.hist-loading', { role: 'status' }, t('hist.loading')) : null,
@@ -106,8 +107,6 @@ export function render(main, params, ctx) {
   }
   function changeDetails(a, b, fields) {
     const out = [];
-    const val = (s) => (s && s.trim() ? s : t('hist.emptyValue'));
-    if (fields.includes('title')) out.push(h('span.hist-line', null, t('hist.titleChange', { from: val(a.title), to: val(b.title) })));
     if (fields.includes('date')) out.push(h('span.hist-line', null, t('hist.dateChange', { from: fmtEntryDate(a, lang, { sep: daySep(lang) }), to: fmtEntryDate(b, lang, { sep: daySep(lang) }) })));
     if (fields.includes('audio')) {
       const shas = (v) => v.audio.map(c => c.sha256).join(',');
@@ -143,7 +142,6 @@ export function render(main, params, ctx) {
       h('p.hist-pv-by', null, byText(it)),
       it.current ? h('p.hist-pv-note', null, t('hist.isCurrent')) : null,
       v.deleted ? h('p.hist-pv-note.amber', null, t('hist.versionDeleted')) : null,
-      v.title && v.title.trim() ? h('h3.hist-pv-title', null, v.title) : null,
       h('p.hist-pv-date', null, fmtEntryDate(v, lang, { sep: daySep(lang) })),
       v.audio.length ? h('div.e-audio', null, v.audio.map((c, i) => {
         const p = audioPlayer({ getBlob: () => ctx.clipBlob(c.sha256, c.mime), durationSec: c.durationSec, key: c.sha256 });

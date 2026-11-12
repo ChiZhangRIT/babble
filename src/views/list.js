@@ -2,11 +2,13 @@
 // 宽屏双栏时在左栏（params.pane === 'list'），params.selected 是右栏正在看的条目（高亮；j / k 换上一条下一条）。
 // 自己管更新（返回 onChange）：数据变了只重画标题和卡片，搜索框原样留着，不丢输入和光标。
 // 卡片（entryCard）和页头（listHead）日历页（views/calendar.js）也用。
+// 卡片上是整段原话（条目没有标题）：超过 16 行的先显示前 12 行，「展开全部」就地展开，这次打开 App 期间记住。
 import { h, icon } from '../ui/dom.js';
 import { audioPlayer } from '../ui/player.js';
 import { fmtEntryDate, fmtDate, fmtMonth, fmtYear, fmtDuration, monthKey } from '../core/dates.js';
 import { parseDialogue, isDescOnly } from '../core/dialogue.js';
 import { matchEntry, highlight } from '../core/search.js';
+import { clipName } from '../core/clips.js';
 import { sayNodes } from './entry.js';
 
 /** 同一行里日期和时间之间：中文空格（11月4日 凌晨2:58），英文逗号（Nov 4, 2:58 AM） */
@@ -14,6 +16,11 @@ const daySep = lang => (lang === 'en' ? ', ' : ' ');
 
 // 搜索词和筛选：这次打开 App 期间记住（点进详情再回来还在）
 const ui = { q: '', fav: false, audio: false, inbox: false };
+// 长条目点过「展开全部」/「收起」的：id → true / false（这次打开 App 期间记住；列表、日历共用）
+const opened = new Map();
+
+/** 超过这么多行的卡片先折起来，只显示前 CARD_SHOW 行（只多一两行的不折） */
+export const CARD_FOLD = 16, CARD_SHOW = 12;
 
 // ---------- 纯计算（Node 里能测） ----------
 
@@ -54,33 +61,63 @@ function snippet(text, q, before = 10, len = 36) {
 }
 
 /**
- * 卡片上显示什么：标题（只用 entry.title；没填就没有标题这一行）+ 预览行（跳过空行、反应表情、录音提示；
- * 有标题时两行，没标题时三行，都是普通的预览样式）。搜索时预览换成命中的句子；只有背景 / 草稿命中时多一行 extra。
- * @returns {{ head: string, lines: Array<{who?: 'nn'|'me', content: string}>, extra: {label: 'note'|'draft', text: string} | null }}
+ * 卡片上的整段原话，一行一项（原话一个字不改，只是分好类给卡片画）：
+ * - 说话人的行 → { kind: 'say' | 'act', who, content }（act：整行都是动作，没有引号里的话）
+ * - 只有表情的反应 → { kind: 'react', who, content }；「👰🏻‍♀️：」后面跟着录音 → { kind: 'cue', who }
+ * - 没写字的「👰🏻‍♀️ “”」不要；旁白 → { kind: 'narr', content }；空行 → { kind: 'gap' }（连续的、开头结尾的不要）
  */
-export function cardPreview(e, speakers, q = '') {
-  const blocks = parseDialogue(e.text, speakers).filter(b => b.type !== 'gap' && b.content && !b.reactionOnly && !b.emptyQuote);
-  const head = e.title && e.title.trim() ? e.title : '';
-  let lines = blocks.slice(0, head ? 2 : 3), extra = null;
-  if (q && q.trim()) {
-    const hits = blocks.filter(b => hasHit(b.content, q));
-    if (hits.length) lines = hits.slice(0, head ? 2 : 3);
-    else if (!hasHit(head, q)) {
-      if (hasHit(e.note, q)) extra = { label: 'note', text: snippet(e.note, q) };
-      else if (e.draft && hasHit(e.draft.text, q)) extra = { label: 'draft', text: snippet(e.draft.text, q) };
-    }
+export function cardLines(text, speakers) {
+  const out = [];
+  for (const b of parseDialogue(text, speakers)) {
+    let it;
+    if (b.type === 'gap') it = { kind: 'gap' };
+    else if (b.type === 'narration') it = { kind: 'narr', content: b.content };
+    else if (b.emptyQuote) continue;
+    else if (b.audioCue) it = { kind: 'cue', who: b.who };
+    else if (b.reactionOnly) it = { kind: 'react', who: b.who, content: b.content };
+    else it = { kind: isDescOnly(b.content) ? 'act' : 'say', who: b.who, content: b.content };
+    if (it.kind === 'gap' && (!out.length || out[out.length - 1].kind === 'gap')) continue;
+    out.push(it);
   }
-  return { head, lines: lines.map(b => (b.type === 'line' ? { who: b.who, content: b.content } : { content: b.content })), extra };
+  while (out.length && out[out.length - 1].kind === 'gap') out.pop();
+  return out;
+}
+
+/**
+ * 折不折：超过 CARD_FOLD 行（空行不算）→ 折起来时只显示前 CARD_SHOW 行；more = 折起来时看不到的行数
+ * @returns {{ shown: Array, more: number, long: boolean }}
+ */
+export function foldLines(items, open = false) {
+  const n = items.reduce((k, x) => k + (x.kind === 'gap' ? 0 : 1), 0);
+  if (n <= CARD_FOLD) return { shown: items, more: 0, long: false };
+  if (open) return { shown: items, more: n - CARD_SHOW, long: true };
+  let k = 0, cut = 0;
+  while (cut < items.length && k < CARD_SHOW) { if (items[cut].kind !== 'gap') k++; cut++; }
+  return { shown: items.slice(0, cut), more: n - CARD_SHOW, long: true };
+}
+
+/**
+ * 搜索时原话里没有命中、是背景 / 草稿 / 录音名命中的：卡片上多一行说明命中了什么 → { label: 'note'|'draft'|'clip', text } | null
+ */
+export function cardExtra(e, q, items) {
+  if (!q || !q.trim() || items.some(x => hasHit(x.content, q))) return null;
+  if (hasHit(e.note, q)) return { label: 'note', text: snippet(e.note, q) };
+  if (e.draft && hasHit(e.draft.text, q)) return { label: 'draft', text: snippet(e.draft.text, q) };
+  const name = (e.audio || []).map(clipName).find(n => hasHit(n, q));
+  return name ? { label: 'clip', text: name } : null;
 }
 
 // ---------- 列表和日历共用的部件 ----------
 
 /**
- * 一张条目卡片。opts: { q 搜索词（高亮）, selected 双栏时右栏正在看这条, players 数组（卡片里的播放器放进去，重画前要 destroy） }
+ * 一张条目卡片：日期、录音时长、待整理，下面是整段原话（和详情页一样：引号里说的话楷体，动作 / 旁白普通字体、淡一点）；
+ * 长的先折起来（「展开全部（还有 N 行）」，就地展开，不跳页）。整张卡片点了进详情，⭐、▶、展开按钮除外。
+ * opts: { q 搜索词（高亮；命中在折起来的那部分时直接展开）, selected 双栏时右栏正在看这条, players 数组（卡片里的播放器放进去，重画前要 destroy） }
  */
 export function entryCard(e, ctx, { q = '', selected = false, players = [] } = {}) {
   const { t } = ctx;
-  const lang = ctx.lang(), sp = ctx.state.settings.speakers, p = cardPreview(e, sp, q);
+  const lang = ctx.lang(), sp = ctx.state.settings.speakers;
+  const items = cardLines(e.text, sp), extra = cardExtra(e, q, items);
   const hl = (text) => (q.trim() ? highlight(text, q).map(s => (s.hit ? h('mark', null, s.text) : s.text)) : text);
   const dur = totalDuration(e);
   const href = '#/e/' + encodeURIComponent(e.id);
@@ -90,24 +127,49 @@ export function entryCard(e, ctx, { q = '', selected = false, players = [] } = {
     player = audioPlayer({ getBlob: () => ctx.clipBlob(c.sha256), durationSec: c.durationSec, compact: true, key: c.sha256 });
     players.push(player);
   }
-  const emoji = who => (who ? h('span.c-emoji', { 'aria-hidden': 'true' }, sp[who].emoji) : null);
-  return h('article.card.ecard' + (e.status === 'inbox' ? '.pending' : '') + (selected ? '.sel' : ''), { dataset: { id: e.id } },
+  const names = { nn: sp.nn.name || 'NN', me: sp.me.name || t('edit.me') };
+  const who = (w) => [h('span.c-emoji', { 'aria-hidden': 'true' }, sp[w].emoji), h('span.sr-only', null, names[w] + '：')];
+  const line = (x) => {
+    if (x.kind === 'gap') return h('div.c-gap', { 'aria-hidden': 'true' });
+    if (x.kind === 'narr') return h('p.c-line.narr', null, sayNodes(x.content, q));
+    if (x.kind === 'cue') return h('p.c-line.c-cueline', null, who(x.who), h('span.c-cue', null, icon('mic'), t('entry.cue')));
+    if (x.kind === 'react') return h('p.c-line.c-reaction', null, who(x.who), h('span.c-react', null, hl(x.content)));
+    return h('p.c-line.' + (x.kind === 'act' ? 'act' : 'kai'), null, who(x.who), sayNodes(x.content, q));   // .act：整行都是动作
+  };
+
+  // 长的：先看这次是不是点过；没点过、搜索命中在折起来的那部分 → 直接展开
+  const folded = foldLines(items, false);
+  let open = opened.has(e.id) ? opened.get(e.id)
+    : folded.long && !!q.trim() && items.slice(folded.shown.length).some(x => hasHit(x.content, q));
+  const linesEl = h('div.c-lines');
+  const moreBtn = folded.long ? h('button.c-more', { type: 'button', onclick: (ev) => {
+    ev.preventDefault(); ev.stopPropagation();
+    open = !open; opened.set(e.id, open); paint();
+    if (!open) { const r = card.getBoundingClientRect(); if (r.top < 0) card.scrollIntoView({ block: 'start' }); }   // 收起后卡片的开头在屏幕上面：滚回来
+  } }) : null;
+  function paint() {
+    const f = foldLines(items, open);
+    linesEl.replaceChildren(...f.shown.map(line));
+    if (moreBtn) { moreBtn.textContent = open ? t('list.less') : t('list.more', { n: f.more }); moreBtn.setAttribute('aria-expanded', String(open)); }
+  }
+  paint();
+
+  const card = h('article.card.ecard' + (e.status === 'inbox' ? '.pending' : '') + (selected ? '.sel' : ''), { dataset: { id: e.id } },
     h('div.c-body', null,
       h('p.c-meta', null,
         h('a.c-link', { href, 'aria-current': selected ? 'page' : null }, fmtEntryDate(e, lang, { year: false, sep: daySep(lang) })),
         e.audio.length ? h('span.c-dur', { title: t('list.hasAudio') }, icon('mic', { label: t('list.hasAudio') }), fmtDuration(dur)) : null,
         e.status === 'inbox' ? h('span.tag', null, t('list.inboxTag')) : null),
-      p.head ? h('p.c-title', null, hl(p.head)) : null,
-      !p.head && !p.lines.length ? h('p.c-line.ph.kai', null, t('list.noText')) : null,
-      // 引号里说的话楷体，引号外的动作 / 描述普通字体（sayNodes）；整行都是动作的、旁白：淡一点
-      p.lines.map(l => h('p.c-line' + (!l.who ? '.narr' : isDescOnly(l.content) ? '.act' : '.kai'), null, emoji(l.who), sayNodes(l.content, q))),
-      p.extra ? h('p.c-extra', null, h('span.tag.neutral', null, t(p.extra.label === 'note' ? 'list.inNote' : 'list.inDraft')), ' ', hl(p.extra.text)) : null),
+      items.length ? linesEl : h('p.c-line.ph.kai', null, t('list.noText')),
+      moreBtn,
+      extra ? h('p.c-extra', null, h('span.tag.neutral', null, t(extra.label === 'note' ? 'list.inNote' : extra.label === 'draft' ? 'list.inDraft' : 'list.inClip')), ' ', hl(extra.text)) : null),
     h('div.c-side', null,
       h('button.fav-btn', {
         type: 'button', 'aria-pressed': String(e.fav), 'aria-label': t(e.fav ? 'list.unfav' : 'list.fav'), title: t(e.fav ? 'list.unfav' : 'list.fav'),
         onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); ctx.update(e.id, { fav: !e.fav }); },
       }, icon('star')),
       player));
+  return card;
 }
 
 /** 「呓语」页头：导入 / 记一条、大标题和「列表 | 日历」切换、条数。mode: 'list' | 'cal' */
@@ -158,10 +220,10 @@ export function render(main, params, ctx) {
     const inbox = all.filter(e => e.status === 'inbox');
     head.replaceChildren(listHead(ctx, all, 'list'), inbox.length && !ui.inbox ? h('div.page', null, inboxBanner(inbox)) : '');
   }
-  // 横幅的小字：最新一条待整理的日期时间（有标题带上标题；还没写原话才说「还没写原话」）
+  // 横幅的小字：最新一条待整理的日期时间（还没写原话才说「还没写原话」）
   function inboxBanner(inbox) {
     const e = inbox[0], lang = ctx.lang();
-    const sub = [fmtEntryDate(e, lang, { sep: daySep(lang) }), e.title && e.title.trim() ? e.title : null, e.text.trim() ? null : t('list.noText')].filter(Boolean).join(' · ');
+    const sub = [fmtEntryDate(e, lang, { sep: daySep(lang) }), e.text.trim() ? null : t('list.noText')].filter(Boolean).join(' · ');
     return h('button.inbox', { type: 'button', onclick: () => { ui.inbox = true; paintTools(); draw(); } },
       h('span.inbox-n', { 'aria-hidden': 'true' }, String(inbox.length)),
       h('span.inbox-t', null, h('b', null, t('list.inbox', { n: inbox.length })), h('small', null, sub)),

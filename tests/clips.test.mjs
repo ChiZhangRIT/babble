@@ -67,12 +67,13 @@ test('文件名用的名字：起的名字 → 原文件名（语音备忘录的
   assert.equal(clipFileStem(C('a')), '');
 });
 
-test('备份里的录音文件名：录音的名字优先，没有再用标题 / 第一句', () => {
-  const e = { date: '2026-11-04', title: '测试标题', text: '👰🏻‍♀️“今天吃什么”' };
+test('备份里的录音文件名：录音的名字优先，没有再用第一句（存着的标题不用）', () => {
+  const e = { date: '2026-11-04', title: '旧标题', text: '👰🏻‍♀️“今天吃什么”' };
   assert.equal(clipFileName(e, C('a', { name: '下雨了' }), SP), `2026-11-04 下雨了 (aaaaaaaa).m4a`);
   assert.equal(clipFileName(e, C('a', { origName: '测试录音.m4a' }), SP), `2026-11-04 测试录音 (aaaaaaaa).m4a`);
-  assert.equal(clipFileName(e, C('a', { origName: '新录音 3.m4a' }), SP), `2026-11-04 测试标题 (aaaaaaaa).m4a`);
+  assert.equal(clipFileName(e, C('a', { origName: '新录音 3.m4a' }), SP), `2026-11-04 今天吃什么 (aaaaaaaa).m4a`);
   assert.equal(clipFileName({ ...e, title: '' }, C('a'), SP), `2026-11-04 今天吃什么 (aaaaaaaa).m4a`);
+  assert.equal(clipFileName({ ...e, text: '' }, C('a'), SP), `2026-11-04 (aaaaaaaa).m4a`);
   assert.equal(clipFileName(e, C('a', { name: 'a/b:c', mime: 'audio/webm' }), SP), `2026-11-04 a b c (aaaaaaaa).webm`);
   // 梦话.md 的录音链接文字带上名字（[ ] 转义）
   const s = blankState();
@@ -83,10 +84,10 @@ test('备份里的录音文件名：录音的名字优先，没有再用标题 /
   assert.ok(md.includes('[🎙 录音 2 · 0:04](<audio/b.m4a>)'));
 });
 
-test('分享出去的文件名：「名字.m4a」；同名的加 (2)；没名字用日期和标题', () => {
-  const e = { date: '2026-11-04', title: '测试标题', text: '', audio: [C('a', { name: '下雨了' }), C('b', { name: '下雨了' }), C('c'), C('d', { origName: '测试录音.m4a', mime: 'audio/webm' })] };
-  assert.deepEqual(e.audio.map((c, i) => shareName(e, c, i, SP)), ['下雨了.m4a', '下雨了 (2).m4a', '2026-11-04 测试标题 (3).m4a', '测试录音.webm']);
-  const one = { date: '2026-11-04', title: '', text: '👰🏻‍♀️“今天吃什么”', audio: [C('a')] };
+test('分享出去的文件名：「名字.m4a」；同名的加 (2)；没名字用日期和第一句（存着的标题不用）', () => {
+  const e = { date: '2026-11-04', title: '旧标题', text: '', audio: [C('a', { name: '下雨了' }), C('b', { name: '下雨了' }), C('c'), C('d', { origName: '测试录音.m4a', mime: 'audio/webm' })] };
+  assert.deepEqual(e.audio.map((c, i) => shareName(e, c, i, SP)), ['下雨了.m4a', '下雨了 (2).m4a', '2026-11-04 (3).m4a', '测试录音.webm']);
+  const one = { date: '2026-11-04', title: '旧标题', text: '👰🏻‍♀️“今天吃什么”', audio: [C('a')] };
   assert.equal(shareName(one, one.audio[0], 0, SP), '2026-11-04 今天吃什么.m4a');
 });
 

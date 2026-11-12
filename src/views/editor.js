@@ -1,4 +1,5 @@
-// 记一条 / 编辑（#/new、#/edit/<id>）：日期、时间、录音、标题、原话（楷体，工具栏插入说话人和反应）、草稿、那天的背景。
+// 记一条 / 编辑（#/new、#/edit/<id>）：日期、时间、录音、原话（楷体，工具栏插入说话人和反应）、草稿、那天的背景。
+// 条目没有标题：旧数据里存着的 title 这里不显示、不改（保存时不带这个字段，原样留着，不会多出同步和修改记录）。
 // 原话照原样保存（新建时预填的「👰🏻‍♀️ “”」没动过就当没写）。改了没保存，离开前会问（ctx.guard）。
 // 自己管更新（返回 onChange）：别的设备改了这条——没动过就换成新的，动过就保留你写的并提示一句。
 // 没保存的修改随手另存在 localStorage（babble.edit.<id|new>）：iOS 在后台把 App 杀掉（切去语音备忘录抄转写时常见）也不丢，
@@ -23,9 +24,35 @@ const daySep = lang => (lang === 'en' ? ', ' : ' ');
 
 const enc = encodeURIComponent;
 // 条目里编辑页管的字段（判断别的设备是不是改了这些）
-const EDITABLE = ['date', 'time', 'title', 'text', 'note', 'draft', 'audio', 'timeSource', 'recordedAt', 'tz', 'deleted'];
+const EDITABLE = ['date', 'time', 'text', 'note', 'draft', 'audio', 'timeSource', 'recordedAt', 'tz', 'deleted'];
 const pickEditable = e => Object.fromEntries(EDITABLE.map(k => [k, e[k] ?? null]));
 const store = () => { try { return globalThis.localStorage || null; } catch (e) { return null; } };
+/** 条目 → 编辑页的工作副本（没有标题：旧数据里存着的 title 不进来）。template：预填的「👰🏻‍♀️ “”」（原话空着时用它） */
+export function workingCopy(e, template) {
+  return {
+    date: e.date, time: e.time || '', text: e.text ? e.text : template.text, note: e.note || '',
+    draftText: e.draft ? e.draft.text : '', draftSrc: e.draft ? e.draft.source : '',
+    audio: (e.audio || []).map(a => ({ ...a })), timeSource: e.timeSource || null, recordedAt: e.recordedAt || null, tz: e.tz || null,
+  };
+}
+
+/**
+ * 工作副本 → 保存时写进条目的字段。没有 title：已有条目存着的标题原样留着（ctx.update 只改给的字段），新的一条是 ''。
+ * @param {{ template: {text: string}, prev?: object|null, audio: Array, keepDraft?: boolean }} o
+ *   prev：条目现在的样子（新的一条 null）；audio：保存后的录音列表；keepDraft：草稿这里没动过 → 用条目现在的
+ *   （「转成文字」可能在后台刚做完，别拿打开时的旧草稿盖掉）
+ */
+export function savedFields(w, { template, prev = null, audio, keepDraft = false }) {
+  return {
+    date: w.date, time: isTime(w.time) ? w.time : null,
+    text: w.text === template.text ? '' : w.text,
+    note: w.note,
+    draft: prev && keepDraft ? prev.draft || null
+      : w.draftText.trim() ? { ...((prev && prev.draft) || {}), text: w.draftText, source: w.draftSrc || 'paste' } : null,
+    audio, timeSource: w.timeSource, recordedAt: w.recordedAt, tz: w.tz,
+  };
+}
+
 /** 条目的可编辑字段：b 和 a 比只是录音列表最后多了几段 → 多的那几段；别的也变了 → null */
 export function addedAudio(a, b) {
   if (!a || !b || canon({ ...a, audio: null }) !== canon({ ...b, audio: null })) return null;
@@ -51,11 +78,7 @@ export function render(main, params, ctx) {
 
   // ---------- 工作副本 ----------
   const template = startTemplate(sp());                          // 「👰🏻‍♀️ “”」，光标在引号中间
-  const fromEntry = (e) => ({
-    date: e.date, time: e.time || '', title: e.title || '', text: e.text ? e.text : template.text, note: e.note || '',
-    draftText: e.draft ? e.draft.text : '', draftSrc: e.draft ? e.draft.source : '',
-    audio: (e.audio || []).map(a => ({ ...a })), timeSource: e.timeSource || null, recordedAt: e.recordedAt || null, tz: e.tz || null,
-  });
+  const fromEntry = (e) => workingCopy(e, template);
   const qDate = isNew && params.query && isISODate(params.query.date) ? params.query.date : null;   // 日历里某一天的「记一条」
   let w = fromEntry(src || { date: qDate || today() });
   let base = canon(w), baseEntry = src ? canon(pickEditable(src)) : null;
@@ -94,7 +117,9 @@ export function render(main, params, ctx) {
     const removed = new Set(Array.isArray(d.removed) ? d.removed : []);
     let audio = Array.isArray(d.w.audio) ? d.w.audio : w.audio;
     if (cur) audio = [...audio, ...(cur.audio || []).filter(a => !audio.some(x => x.sha256 === a.sha256) && !removed.has(a.sha256)).map(a => ({ ...a }))];
-    const next = { ...w, ...d.w, audio };
+    const dw = { ...d.w };
+    delete dw.title;                              // 旧版本另存的草稿里可能有标题：不要了
+    const next = { ...w, ...dw, audio };
     if (canon(next) === base) { dropDraft(); return false; }
     w = next;
     for (const x of d.added || []) addedSha.add(x);
@@ -117,8 +142,6 @@ export function render(main, params, ctx) {
   const dateErr = h('p.f-help.err', { hidden: true, role: 'alert' }, t('edit.badDate'));
   const timeHelp = h('p.f-help.ed-tsrc');
   const suggestEl = h('div.ed-suggest', { hidden: true });
-  const titleInput = h('input#ed-title', { type: 'text', value: w.title, placeholder: t('edit.titlePh'), dataset: { fid: 'ed-title' }, enterkeyhint: 'next', oninput: () => { w.title = titleInput.value; persistSoon(); },
-    onkeydown: (e) => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); ta.focus(); } } });
   const ta = h('textarea.kai.ed-text#ed-text', { value: w.text, rows: 6, placeholder: t('edit.textPh', { nn: nn() }), dataset: { fid: 'ed-text' },
     autocapitalize: 'off', spellcheck: 'false', oninput: () => onText(), onfocus: () => { touchedText = true; } });
   const noteTa = h('textarea.ed-note#ed-note', { value: w.note, rows: 2, placeholder: t('edit.notePh'), dataset: { fid: 'ed-note' }, oninput: () => { w.note = noteTa.value; grow(noteTa, 56); persistSoon(); } });
@@ -387,7 +410,7 @@ export function render(main, params, ctx) {
     if (!isISODate(w.date)) { dateErr.hidden = false; dateInput.focus(); return; }
     if (!isNew && !isDirty() && !markDone) { saved = true; dropDraft(); ctx.back(backTo); return; }
     // 新建但什么都没写（只有预填的「👰🏻‍♀️ “”」）：不建空条目，直接回去
-    if (isNew && w.text === template.text && !w.title.trim() && !w.note.trim() && !w.draftText.trim() && !w.audio.length) { saved = true; dropDraft(); ctx.back(backTo); return; }
+    if (isNew && w.text === template.text && !w.note.trim() && !w.draftText.trim() && !w.audio.length) { saved = true; dropDraft(); ctx.back(backTo); return; }
     const prev = isNew ? null : ctx.entry(id);
     const curAudio = prev ? prev.audio || [] : [];
     const named = (a) => {                       // 这次改了名的：名字用工作副本里的
@@ -398,16 +421,7 @@ export function render(main, params, ctx) {
     };
     const audio = [...curAudio.filter(a => !removedSha.has(a.sha256)),
       ...w.audio.filter(a => addedSha.has(a.sha256) && !curAudio.some(x => x.sha256 === a.sha256))].map(named);
-    const fields = {
-      date: w.date, time: isTime(w.time) ? w.time : null,
-      title: w.title.trim() ? w.title : '',
-      text: w.text === template.text ? '' : w.text,
-      note: w.note,
-      // 草稿这里没动过：用条目现在的（「转成文字」可能在后台刚做完，别拿打开时的旧草稿盖掉）
-      draft: prev && !draftTouched() ? prev.draft || null
-        : w.draftText.trim() ? { ...((prev && prev.draft) || {}), text: w.draftText, source: w.draftSrc || 'paste' } : null,
-      audio: isNew ? w.audio : audio, timeSource: w.timeSource, recordedAt: w.recordedAt, tz: w.tz,
-    };
+    const fields = savedFields(w, { template, prev, audio: isNew ? w.audio : audio, keepDraft: !draftTouched() });   // 没有 title：存着的原样留着
     saved = true;
     dropDraft();
     inlineSha.clear();
@@ -452,8 +466,6 @@ export function render(main, params, ctx) {
         dateErr, timeHelp, suggestEl,
         h('div.f-label', null, h('span', null, t('edit.audio'))),
         audioBox,
-        h('div.f-label', null, h('label', { for: 'ed-title' }, t('edit.title'), ' ', h('small', null, t('edit.optional')))),
-        titleInput,
         h('div.f-label', null, h('label', { for: 'ed-text' }, t('edit.text')), h('small', null, t('edit.textHint'))),
         h('div.ed-textbox', null, toolsEl, ta),
         draftEl,
@@ -489,7 +501,7 @@ export function render(main, params, ctx) {
   /** 工作副本换成 e 的内容（没有修改） */
   function resetTo(e) {
     w = fromEntry(e); base = canon(w); addedSha.clear(); removedSha.clear(); renamedSha.clear();
-    dateInput.value = w.date; timeInput.value = w.time; titleInput.value = w.title; ta.value = w.text; noteTa.value = w.note; draftTa.value = w.draftText;
+    dateInput.value = w.date; timeInput.value = w.time; ta.value = w.text; noteTa.value = w.note; draftTa.value = w.draftText;
   }
 
   // 切到后台、页面被收起：马上存一份（之后 App 可能直接被系统杀掉）；录着的先存好（iOS 在后台本来也录不了）
@@ -504,7 +516,7 @@ export function render(main, params, ctx) {
       if (gone || !main.isConnected || isDirty()) return;
       if (!applyDraft(readDraft(store(), draftKey))) return;
       restoredEl.firstChild.textContent = restoredMsg(); restoredEl.hidden = !restoredAt;
-      dateInput.value = w.date; timeInput.value = w.time; titleInput.value = w.title; ta.value = w.text; noteTa.value = w.note; draftTa.value = w.draftText;
+      dateInput.value = w.date; timeInput.value = w.time; ta.value = w.text; noteTa.value = w.note; draftTa.value = w.draftText;
       build();
     });
   }

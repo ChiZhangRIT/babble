@@ -1,4 +1,4 @@
-// 备份 zip：babble.json（全部数据 + 录音文件对照表）、audio/ 下的录音（按日期和标题起名）、梦话.md（人能直接读的版本）。
+// 备份 zip：babble.json（全部数据 + 录音文件对照表）、audio/ 下的录音（按日期和录音的名字 / 第一句起名）、梦话.md（人能直接读的版本）。
 // 恢复 = 逐条合并（不覆盖、不删除），恢复前先确认（页面负责）。每段录音按 sha256 校验，对不上的不恢复。
 import { createZip, readZip } from './zip.js';
 import { sha256Hex } from './sha256.js';
@@ -34,9 +34,12 @@ export function backupFileName(date = new Date(), lang = 'zh-Hans') {
 }
 
 const QUOTES = /[“”‘’「」『』"'«»„‟‹›〝〞＂＇]/g;
-/** 录音在备份里的文件名：「2026-11-04 录音的名字 (sha前8位).m4a」；录音没起名（原文件名也是默认的）→ 用标题或第一句（去掉引号和文件名里不能用的字符） */
+/**
+ * 录音在备份里的文件名：「2026-11-04 录音的名字 (sha前8位).m4a」；录音没起名（原文件名也是默认的）→ 用 NN 的第一句（去掉引号和文件名里不能用的字符）。
+ * 条目没有标题：旧数据里存着的 title 不用
+ */
 export function clipFileName(entry, clip, speakers) {
-  const words = clipFileStem(clip) || sanitizeFileName(String(entry.title || firstNNLine(entry.text || '', speakers) || '').replace(QUOTES, ''), 24);
+  const words = clipFileStem(clip) || sanitizeFileName(String(firstNNLine(entry.text || '', speakers) || '').replace(QUOTES, ''), 24);
   return `${entry.date}${words ? ' ' + words : ''} (${clip.sha256.slice(0, 8)}).${extForMime(clip.mime)}`;
 }
 
@@ -110,9 +113,7 @@ export function backupMarkdown(state, { lang = 'zh-Hans', files = {}, now = new 
   for (const e of entries) {
     const y = e.date.slice(0, 4);
     if (y !== year) { out.push(`## ${y}`, ''); year = y; }
-    // eslint-disable-next-line no-control-regex
-    const title = String(e.title || '').replace(/[\u0000-\u001f\u007f\s]+/g, ' ').trim().replace(/</g, '\\<');   // < 不让 Markdown 当成 HTML
-    out.push(`### ${fmtEntryDate(e, lang, { sep: ' ' })}${title ? ' · ' + title : ''}${e.fav ? ' ⭐' : ''}${e.status === 'inbox' ? T.inbox : ''}`, '');
+    out.push(`### ${fmtEntryDate(e, lang, { sep: ' ' })}${e.fav ? ' ⭐' : ''}${e.status === 'inbox' ? T.inbox : ''}`, '');   // 只有日期时间（条目没有标题）
     const clips = e.audio || [];
     if (clips.length) {
       clips.forEach((a, i) => {

@@ -13,6 +13,7 @@ import { createRecorder } from '../core/recorder.js';
 import { extForMime } from '../core/audioStore.js';
 import { localParts, today, fmtTime, fmtTimer, fmtDuration, fmtEntryDate } from '../core/dates.js';
 import { previewLines } from '../core/dialogue.js';
+import { clipName } from '../core/clips.js';
 import { REC_DRAFT, writeDraft, dropDraft, clipOf, recTimeFields } from '../core/drafts.js';
 import { writeTools, insertLine, startTemplate, keepFocus, revealCaret } from '../ui/writer.js';
 import { t } from '../i18n.js';
@@ -40,13 +41,18 @@ const ERR_CODES = ['denied', 'unsupported', 'nomic', 'failed', 'empty', 'save'];
 // 自动停下的原因 → 保存后的说明（自己点停止的不用说明）
 const WHY = { max: 'rec.why.max', hidden: 'rec.why.hidden', pagehide: 'rec.why.hidden', interrupted: 'rec.why.interrupted', ended: 'rec.why.interrupted', error: 'rec.why.error' };
 
-/** 条目的简短称呼（普通文字，不当标题用）：「11月4日 凌晨2:58 · 标题」，没标题就是第一句的开头 */
+/**
+ * 条目的简短称呼（选「接到哪一条」、「已存进 …」这些地方用；条目没有标题）：
+ * 「2026年11月4日 凌晨2:58 · 第一句的开头」；还没写原话 → 第一段有名字的录音（「· 🎙 下雨了」）；都没有就只有日期时间
+ */
 export function entryLabel(e, speakers, lang) {
   if (!e) return '';
+  const cut = (s) => ([...s].length > 18 ? [...s].slice(0, 17).join('') + '…' : s);
   const first = previewLines(e.text, speakers, 1)[0];
   const line = first ? first.content.replace(/\s+/g, ' ').trim() : '';
-  const words = e.title && e.title.trim() ? e.title.trim() : [...line].length > 18 ? [...line].slice(0, 17).join('') + '…' : line;
-  return fmtEntryDate(e, lang, { sep: ' ' }) + (words ? ' · ' + words : '');
+  const name = line ? '' : (e.audio || []).map(clipName).find(Boolean) || '';
+  const words = line ? cut(line) : name ? '🎙 ' + cut(name) : '';
+  return fmtEntryDate(e, lang, { sep: lang === 'en' ? ', ' : ' ' }) + (words ? ' · ' + words : '');
 }
 
 export function render(main, params, ctx) {

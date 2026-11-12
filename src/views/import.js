@@ -10,7 +10,7 @@ import { clipIndex, makeEntry, newId } from '../core/store.js';
 import { localParts, today, systemTz, isISODate, isTime, fmtTime, fmtDate, fmtDuration } from '../core/dates.js';
 import { splitExt, fmtBytes, uniq } from '../core/util.js';
 import { firstNNLine } from '../core/dialogue.js';
-import { parseNote, parsePathList, suggestPairs, fileTitle, isDefaultRecordingName, recordedOnDate } from '../core/notesImport.js';
+import { parseNote, parsePathList, suggestPairs, recordedOnDate } from '../core/notesImport.js';
 import { probeDuration, AUDIO_ACCEPT, sayNodes } from './entry.js';
 import { ownName } from '../core/clips.js';
 import { entryLabel } from './record.js';
@@ -44,11 +44,11 @@ export async function readAudioFile(f) {
   } catch (e) { return { name: f.name, bad: 'fail', msg: (e && e.message) || String(e) }; }
 }
 
-/** 「已经在哪一条里」：条目的简称；那段录音改过名的话把名字也带上（「… · 🎙 名字」） */
+/** 「已经在哪一条里」：条目的简称；那段录音改过名的话把名字也带上（「… · 🎙 名字」，简称里已经是这个名字就不重复） */
 function clipWhere(e, sha, speakers, lang) {
   const c = e && (e.audio || []).find(a => a.sha256 === sha);
-  const own = ownName(c);
-  return entryLabel(e, speakers, lang) + (own ? ' · 🎙 ' + own : '');
+  const own = ownName(c), label = entryLabel(e, speakers, lang);
+  return label + (own && !label.endsWith('🎙 ' + own) ? ' · 🎙 ' + own : '');
 }
 
 /** 拖放区（只管样子）：文件由 catchDrops 在整个窗口上接 */
@@ -88,7 +88,7 @@ export function render(main, params, ctx) {
 function audioView(main, params, ctx) {
   const lang = ctx.lang();
   const sp = () => ctx.state.settings.speakers;
-  const rows = [];          // { key, info, date, time, title, auto: {date,time,timeSource,recordedAt,tz}, mode, attachTo }
+  const rows = [];          // { key, info, date, time, auto: {date,time,timeSource,recordedAt,tz}, mode, attachTo }（没有标题：文件名就是录音的名字）
   const skipped = [];       // { name, why, where? }
   let reading = 0, busy = false, done = false, players = [];
   ctx.guard(() => !done && rows.length > 0);
@@ -122,7 +122,7 @@ function audioView(main, params, ctx) {
       if (dup) { skipped.push({ name: info.name, ...dup }); drawSkipped(); drawHead(); continue; }
       if (rows.some(r => r.info.sha256 === info.sha256)) { skipped.push({ name: info.name, why: 'dupBatch' }); drawSkipped(); drawHead(); continue; }
       const auto = guessTime(info);
-      rows.push({ key: info.sha256, info, auto, date: auto.date, time: auto.time || '', title: fileTitle(info.name), mode: 'new', attachTo: null });
+      rows.push({ key: info.sha256, info, auto, date: auto.date, time: auto.time || '', mode: 'new', attachTo: null });
       rows.sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
       drawRows(); drawHead();
     }
@@ -170,7 +170,6 @@ function audioView(main, params, ctx) {
     const dateIn = h('input.im-date', { type: 'date', value: r.date, required: true, 'aria-label': t('imp.date'),
       onchange: () => { r.date = dateIn.value; if (r.mode === 'attach') r.attachTo = null; refreshRow(); } });
     const timeIn = h('input.im-time', { type: 'time', value: r.time, 'aria-label': t('imp.time'), onchange: () => { r.time = timeIn.value; refreshRow(); } });
-    const titleIn = h('input.im-title', { type: 'text', value: r.title, placeholder: t('imp.titlePh'), 'aria-label': t('imp.title'), oninput: () => { r.title = titleIn.value; } });
     const near = isISODate(r.date) ? ctx.entries().filter(e => Math.abs(dayNum(e.date) - dayNum(r.date)) <= NEAR_DAYS)
       .sort((a, b) => Math.abs(dayNum(a.date) - dayNum(r.date)) - Math.abs(dayNum(b.date) - dayNum(r.date))) : [];
     const seg = h('div.seg.im-mode', { role: 'group', 'aria-label': t('imp.modeLabel') },
@@ -191,8 +190,6 @@ function audioView(main, params, ctx) {
         h('label.im-f', null, h('span', null, t('imp.date')), dateIn),
         h('label.im-f', null, h('span', null, t('imp.time')), timeIn)),
       h('p.f-help.im-src' + (src === 'file' || src === 'none' ? '.im-warn' : ''), null, icon('clock'), t('imp.src.' + src)),
-      h('label.im-f.im-f-title', null, h('span', null, t('imp.title')), titleIn),
-      !r.title && isDefaultRecordingName(info.name) ? h('p.f-help', null, t('imp.defaultName', { name: info.name })) : null,
       h('div.im-moderow', null, seg), attach);
     function refreshRow() {
       const old = listEl.children[rows.indexOf(r)];
@@ -223,14 +220,7 @@ function audioView(main, params, ctx) {
         if (!(e.audio || []).some(a => a.sha256 === clip.sha256)) e.audio = [...(e.audio || []), clip];
         return e.id;
       }
-      const same = r.date === r.auto.date && (r.time || '') === (r.auto.time || '');
-      const time = isTime(r.time) ? r.time : null;
-      const e = makeEntry({
-        date: r.date, time,
-        recordedAt: same ? r.auto.recordedAt : null, tz: same ? r.auto.tz : (time ? tz : null),
-        timeSource: same ? r.auto.timeSource : 'manual',
-        status: 'inbox', title: r.title.trim(), audio: [clip], source: { kind: 'audio-import', batchId },
-      }, now);
+      const e = audioEntry(r, clip, { now, batchId, tz });
       s.data.entries[e.id] = e;
       return e.id;
     }), { undoLabel: t('imp.undo', { n: made.length }) });
@@ -247,6 +237,36 @@ function audioView(main, params, ctx) {
     onChange: () => {},
     cleanup: () => { offDrop(); for (const p of players) p.destroy(); players = []; },
   };
+}
+
+/**
+ * 导入的一段录音 → 新的一条待整理。没有标题：文件名就是这段录音的名字（clip.origName，播放器上面显示）。
+ * r：核对页的一行（日期、时间改过 → 时间来源算手动）
+ */
+export function audioEntry(r, clip, { now = Date.now(), batchId, tz = null } = {}) {
+  const same = r.date === r.auto.date && (r.time || '') === (r.auto.time || '');
+  const time = isTime(r.time) ? r.time : null;
+  return makeEntry({
+    date: r.date, time,
+    recordedAt: same ? r.auto.recordedAt : null, tz: same ? r.auto.tz : (time ? tz : null),
+    timeSource: same ? r.auto.timeSource : 'manual',
+    status: 'inbox', audio: [clip], source: { kind: 'audio-import', batchId },
+  }, now);
+}
+
+/**
+ * 备忘录里的一条 → 条目（没有标题；录音的文件名在 clip.origName 里）。first：配给它的第一段录音文件（{ createdAt }），没有 → null。
+ * 录音时间是那天或第二天上午 → 用它的钟点。修改时间故意用很早的（1 + 录音段数）：另一台设备还没同步就又导了一次时，
+ * 那边改过的、先导入的都比它新，不会被盖掉；都没改过时带录音的那份赢。盖在删除标记上时 state 会补盖新时间
+ */
+export function noteEntry(x, audio, first, { now = Date.now(), batchId, tz = null } = {}) {
+  const when = first ? recordedOnDate(first.createdAt, x.date) : null;
+  return { ...makeEntry({
+    id: x.id, date: x.date, time: when ? when.time : null,
+    recordedAt: when ? new Date(first.createdAt).toISOString() : null, tz: when ? tz : null, timeSource: when ? 'mp4' : 'note',
+    status: 'done', text: x.e.text, audio,
+    source: { kind: 'apple-notes', batchId, raw: x.e.raw },
+  }, now), updatedAt: 1 + audio.length };
 }
 
 /** 文件的时间：mp4 里的录音时间 → 文件修改时间（不一定准）→ 不知道（日期先填今天，时间空着） */
@@ -533,7 +553,6 @@ function notesView(main, params, ctx) {
     }
     if (isManual) chips.push(h('span.ev.ev-manual', null, t('imp.r.manual')));
     if (isMoved) chips.push(h('span.ev.ev-flag', null, f ? t('imp.r.moved') : t('imp.r.movedNone')));
-    if (f && isDefaultRecordingName(f.name)) chips.push(h('span.ev.ev-flag', null, t('imp.r.defaultName')));
     const dupIds = f ? (m.clips.get(f.sha256) || []) : [];
     if (dupIds.length) chips.push(h('span.ev.ev-flag', null, t('imp.r.dupClip', { where: clipWhere(ctx.entry(dupIds[0]), f.sha256, sp(), lang) })));
     let why = null;
@@ -610,15 +629,7 @@ function notesView(main, params, ctx) {
         const audio = [];
         for (const nm of names) { const c = clipOf.get(nm); if (c && !audio.some(a => a.sha256 === c.sha256)) audio.push(c); }
         const first = names.length ? fb.get(names[0]) : null;
-        const when = first ? recordedOnDate(first.createdAt, x.date) : null;     // 录音时间是那天或第二天上午 → 用它的钟点
-        // 修改时间故意用很早的（1 + 录音段数）：另一台设备还没同步就又导了一次时，那边改过的、先导入的都比它新，不会被盖掉；
-        // 都没改过时带录音的那份赢。盖在删除标记上时 state 会补盖新时间
-        s.data.entries[x.id] = { ...makeEntry({
-          id: x.id, date: x.date, time: when ? when.time : null,
-          recordedAt: when ? new Date(first.createdAt).toISOString() : null, tz: when ? tz : null, timeSource: when ? 'mp4' : 'note',
-          status: 'done', title: first ? fileTitle(first.name) : '', text: x.e.text, audio,
-          source: { kind: 'apple-notes', batchId, raw: x.e.raw },
-        }, now), updatedAt: 1 + audio.length };
+        s.data.entries[x.id] = noteEntry(x, audio, first, { now, batchId, tz });
         if (audio.length) withAudio++;
       }
     }, { undoLabel: fresh.length ? t('imp.r.undo', { n: fresh.length }) : null });

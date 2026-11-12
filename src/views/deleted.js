@@ -22,16 +22,14 @@ export function render(main, params, ctx) {
   const lang = ctx.lang(), sp = ctx.state.settings.speakers;
   const list = deletedEntries(ctx.state);
 
-  // 有标题显示标题；没有就是第一句原话（普通的预览样式，不当标题）；什么都没写 →「还没写原话」
+  // 日期时间 + 第一句原话（条目没有标题）；什么都没写 →「还没写原话」
   const row = (e) => {
-    const title = e.title && e.title.trim() ? e.title : '';
-    const line = title ? null : previewLines(e.text, sp, 1)[0];
+    const line = previewLines(e.text, sp, 1)[0];
     return h('div.group-row.del-row', null,
       h('a.del-body', { href: '#/e/' + encodeURIComponent(e.id) },
         h('span.del-date', null, fmtEntryDate(e, lang, { sep: daySep(lang) })),
-        title ? h('span.del-title', null, title)
-          : line ? h('span.del-prev' + (line.type === 'line' ? '.kai' : ''), null, line.who ? sp[line.who].emoji + ' ' : '', sayNodes(line.content))
-            : h('span.del-prev.ph', null, t('list.noText')),
+        line ? h('span.del-prev' + (line.type === 'line' ? '.kai' : ''), null, line.who ? sp[line.who].emoji + ' ' : '', sayNodes(line.content))
+          : h('span.del-prev.ph', null, t('list.noText')),
         h('span.del-at', null, t('deleted.at', { time: fmtInstant(e.deletedAt, lang) }), byLabel(deletionBy(e), sp) ? ' · ' + byLabel(deletionBy(e), sp) : '')),
       h('button.btn.small.soft.del-restore', { type: 'button', onclick: () => ctx.restore(e.id) }, t('common.restore')));
   };

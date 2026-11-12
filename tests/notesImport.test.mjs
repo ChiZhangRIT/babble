@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseNote, parsePathList, suggestPairs, isDefaultRecordingName, fileTitle, nameDates, recordedOnDate,
+  parseNote, parsePathList, suggestPairs, isDefaultRecordingName, nameDates, recordedOnDate,
 } from '../src/core/notesImport.js';
 
 // 全是编的例子（仓库是公开的，不放真的梦话和真的录音文件名）
@@ -124,7 +124,7 @@ test('parsePathList：一行一个路径 → 文件名（file:// 网址解码、
   assert.deepEqual(parsePathList(''), []);
 });
 
-test('isDefaultRecordingName / fileTitle：语音备忘录的默认名不当标题', () => {
+test('isDefaultRecordingName：语音备忘录的默认名（不拿去原话里找）', () => {
   for (const n of ['123 Main St.m4a', '1600 Amphitheatre Pkwy 2.m4a', '新录音 3.m4a', '新錄音 12.m4a', 'New Recording 7.m4a', 'New Recording.m4a',
     '2024-10-05 10.15.m4a', '20241005 101500.m4a', '10-5.m4a', '10月5日.m4a', '下午 3:15.m4a', 'Audio Recording 2024-10-05 at 10.15.00.m4a',
     '3F2504E0-4F89-11D3-9A0C-0305E82C3301.m4a', '.m4a', '']) {
@@ -133,10 +133,6 @@ test('isDefaultRecordingName / fileTitle：语音备忘录的默认名不当标�
   for (const n of ['测试录音.m4a', '10-5标题.m4a', '小狗跳舞.m4a', '為什麼下雨.m4a', 'Main St.m4a', 'Ocean.m4a']) {
     assert.equal(isDefaultRecordingName(n), false, n);
   }
-  assert.equal(fileTitle('测试录音.m4a'), '测试录音');
-  assert.equal(fileTitle('/a/b/1.5 小时.m4a'), '1.5 小时');   // 只去掉音频扩展名
-  assert.equal(fileTitle('新录音 3.m4a'), '');
-  assert.equal(fileTitle('小狗跳舞'), '小狗跳舞');
 });
 
 test('nameDates：文件名里的日期', () => {

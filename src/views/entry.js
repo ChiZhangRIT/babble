@@ -147,7 +147,7 @@ export async function readClipFiles(files, ctx) {
 const QUOTES = /[“”‘’「」『』"'＂＇]/g;
 /**
  * 分享出去的录音文件名：录音有名字（起的名字 / 原文件名）→「名字.m4a」（几段同名的加 (2)）；
- * 没有 → 「2026-11-04 标题或第一句.m4a」（几段的加 (2)）
+ * 没有 → 「2026-11-04 NN 的第一句.m4a」（几段的加 (2)；条目没有标题）
  */
 export function shareName(e, clip, i, speakers) {
   const ext = '.' + extForMime(clip.mime);
@@ -156,7 +156,7 @@ export function shareName(e, clip, i, speakers) {
     const same = e.audio.filter((a, k) => k < i && clipFileStem(a) === stem).length;
     return stem + (same ? ` (${same + 1})` : '') + ext;
   }
-  const words = sanitizeFileName(String(e.title || firstNNLine(e.text, speakers) || '').replace(QUOTES, ''), 24);
+  const words = sanitizeFileName(String(firstNNLine(e.text, speakers) || '').replace(QUOTES, ''), 24);
   return sanitizeFileName(`${e.date}${words ? ' ' + words : ''}`, 60) + (e.audio.length > 1 ? ` (${i + 1})` : '') + ext;
 }
 
@@ -190,9 +190,9 @@ export function renameClipSheet(ctx, clip, i, onSave) {
   setTimeout(() => { input.focus(); input.select(); }, 0);
   return s;
 }
-/** 分享出去的文字：日期行、标题、原话（原样） */
+/** 分享出去的文字：日期行、空一行、原话（原样；条目没有标题） */
 export function shareText(e, lang) {
-  return [fmtEntryDate(e, lang), e.title && e.title.trim() ? e.title : null, '', e.text].filter(x => x != null).join('\n').trim();
+  return [fmtEntryDate(e, lang), '', e.text].join('\n').trim();
 }
 
 function weekday(date, lang) {
@@ -236,9 +236,8 @@ export function render(main, params, ctx) {
       h('button.icon-btn', { type: 'button', 'aria-label': t('common.share'), title: t('common.share'), onclick: () => doShare(e) }, icon('share')),
       h('button.icon-btn', { type: 'button', 'aria-label': t('common.more'), title: t('common.more'), onclick: () => menu(e) }, icon('more')));
 
-    // 标题区：日期 + 时间最大；填了标题才在下面显示标题（不拿第一句顶替）
+    // 页头：日期 + 时间最大（条目没有标题）
     const wd = weekday(e.date, lang);
-    const titled = !!(e.title && e.title.trim());
     const big = fmtDate(e.date, lang, { year: false }) + (e.time ? daySep(lang) + fmtTime(e.time, lang) : '');
     const sub = fmtYear(e.date.slice(0, 4), lang);
     const chips = [
@@ -271,7 +270,6 @@ export function render(main, params, ctx) {
           h('h1.e-big', null, big),
           h('p.e-sub', null, h('span', null, [sub, wd].filter(Boolean).join(' · ')),
             h('a.e-edit', { href: '#/edit/' + enc(id), 'aria-label': t('entry.editDate'), title: t('entry.editDate') }, icon('pencil'))),
-          titled ? h('p.e-title', null, e.title) : null,
           chips.length ? h('div.e-chips', null, chips) : null),
         clips.length ? h('div.e-audio', null, clips) : null,
         draftView(ctx, e),               // 草稿紧跟在录音下面：边听边改，「填进原话」

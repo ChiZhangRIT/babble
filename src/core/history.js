@@ -165,13 +165,12 @@ export const journal = createJournal(idbBackend());
 const shas = (e) => ((e && e.audio) || []).map(a => a && a.sha256 + (a.name ? '|' + a.name : '')).join(',');
 const draftText = (e) => (e && e.draft && typeof e.draft.text === 'string' ? e.draft.text : '');
 
-/** older → newer 改了哪些：'deleted' | 'restored' | 'title' | 'text' | 'note' | 'audio' | 'fav' | 'status' | 'date' | 'draft' */
+/** older → newer 改了哪些：'deleted' | 'restored' | 'text' | 'note' | 'audio' | 'fav' | 'status' | 'date' | 'draft'（条目没有标题：旧数据里的 title 不比） */
 export function changedFields(older, newer) {
   if (!older || !newer) return [];
   const out = [];
   const diff = (k) => (older[k] ?? '') !== (newer[k] ?? '');
   if (!!older.deleted !== !!newer.deleted) out.push(newer.deleted ? 'deleted' : 'restored');
-  if (diff('title')) out.push('title');
   if (diff('text')) out.push('text');
   if (diff('note')) out.push('note');
   if (shas(older) !== shas(newer)) out.push('audio');

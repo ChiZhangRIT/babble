@@ -63,14 +63,14 @@ test('没录音、只写了字：存成一条只有字的待整理；要写进�
   assert.equal(s2.data.entries.gone.text, '旧的');
 });
 
-test('「记一条」录到一半被杀：连同日期、标题、原话、之前录好的那段建成一条待整理；预填的「👰🏻‍♀️ “”」当成空的', () => {
+test('「记一条」录到一半被杀：连同日期、原话、之前录好的那段建成一条待整理（旧草稿里的标题不要）；预填的「👰🏻‍♀️ “”」当成空的', () => {
   const s = blankState();
   const prev = { sha256: sha('f'), mime: 'audio/mp4', bytes: 5, durationSec: 3, origName: '', addedAt: 1 };
   const fresh = { w: { date: '2026-11-04', time: '', title: '测试标题', text: `${NN} “杀掉之前”`, note: '那天很累', draftText: '', draftSrc: '', audio: [prev], timeSource: null, recordedAt: null, tz: null },
     added: [sha('f')], removed: [], at: T0, rec: 'r_a' };
   const r = applyRecovery(s, [clip('a')], { fresh });
   const [e] = only(s);
-  assert.deepEqual([e.title, e.text, e.note, e.status, e.date], ['测试标题', `${NN} “杀掉之前”`, '那天很累', 'inbox', '2026-11-04']);
+  assert.deepEqual([e.title, e.text, e.note, e.status, e.date], ['', `${NN} “杀掉之前”`, '那天很累', 'inbox', '2026-11-04']);
   assert.deepEqual(e.audio.map(a => a.sha256), [sha('f'), sha('a')]);
   assert.deepEqual([e.time, e.timeSource], ['02:58', 'recorder']);        // 时间没填、录音是同一天 → 用录音的
   assert.deepEqual([r.dropFresh, r.fresh], [true, null]);

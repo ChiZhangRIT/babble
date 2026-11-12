@@ -40,7 +40,7 @@ export function recTimeFields(startedAt, tz) {
  * clips：recoverPending 的结果（已经在某条里的也可以传：会跳过，只用来找它在哪条）。
  * drafts.rec：录音页那份；drafts.fresh：编辑页「记一条」那份（只处理录到一半的，即带 rec 的）。
  *   - 录音页：录音接到 target（或录音本来要接的那条 / 已经存进的那条），没有就新建一条待整理；写的字放进同一条。没在录也照样把字存进去。
- *   - 「记一条」：录到一半的那段找回来了 → 连同写好的日期、标题、原话建成一条待整理；没找回 → 草稿留着（去掉 rec），下次打开「记一条」时恢复。
+ *   - 「记一条」：录到一半的那段找回来了 → 连同写好的日期、原话、背景建成一条待整理；没找回 → 草稿留着（去掉 rec），下次打开「记一条」时恢复。
  *   - 其余找回的录音照旧：接到 attachTo 那条，或者新建一条待整理（source recovered）。
  * @returns {{ ids: string[], clips: number, texts: number, dropRec: boolean, dropFresh: boolean, fresh: object|null }}
  *   fresh：要写回的「记一条」草稿（去掉了 rec）；null = 不用动
@@ -96,7 +96,7 @@ export function applyRecovery(s, clips = [], drafts = {}, now = Date.now()) {
       const draft = typeof w.draftText === 'string' && w.draftText.trim() ? { text: w.draftText, source: w.draftSrc || 'paste' } : null;
       put(makeEntry({
         ...time, date,
-        title: typeof w.title === 'string' && w.title.trim() ? w.title : '', text: typeof w.text === 'string' && w.text !== tpl ? w.text : '',
+        text: typeof w.text === 'string' && w.text !== tpl ? w.text : '',          // 没有标题（旧版本草稿里的 title 不要）
         note: typeof w.note === 'string' ? w.note : '', draft, audio: [...audio, clipOf(c, now)], status: 'inbox', source: { kind: 'app' },
       }, now));
       out.clips++;
