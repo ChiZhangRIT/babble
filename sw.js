@@ -1,9 +1,9 @@
-// 离线缓存：有网时取最新版本（3 秒内没响应就先用缓存，夜里信号差也能马上打开），没网时用缓存。
+// 每次启动固定使用同一份完整缓存。新版安装时按 release.json 校验文件，等旧页面全部关闭后再启用。
 // 只管本网站的文件。同步（api.github.com）不经过这里，也不进缓存；录音存在 IndexedDB，不在这里。
 // 语音转文字的第三方文件（vendor/，几十 MB）不预先缓存：第一次用到时存进 VENDOR_CACHE，以后先用缓存（之后离线也能转文字）；
 // 名字带版本号，App 发新版不用重新下载，换版本时改名字，旧的会被清掉。模型文件在 Hugging Face（别的网站），
 // 由 transformers.js 自己存在「transformers-cache」里，这里不碰。
-const CACHE = 'babble-v9';
+const CACHE = 'babble-v17';
 const VENDOR_CACHE = 'babble-vendor-tf432';
 const VENDOR = new URL('./vendor/', location).pathname;
 // 程序文件全部预先缓存（tests/sw.test.mjs 检查这张表和磁盘上的文件、index.html、import 关系一致），第一次打开之后就能离线用
@@ -11,60 +11,86 @@ const CORE = [
   './', './index.html', './styles.css',
   './manifest.webmanifest', './manifest.zh-Hant-TW.webmanifest',
   './icons/icon.svg', './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png',
+  './icons/icon-180-v2.png', './icons/icon-192-v2.png', './icons/icon-512-v2.png', './icons/icon-maskable-512-v2.png',
+  './icons/icon-180-v3.png', './icons/icon-192-v3.png', './icons/icon-512-v3.png', './icons/icon-maskable-512-v3.png',
+  './icons/icon-180-v4.png', './icons/icon-192-v4.png', './icons/icon-512-v4.png', './icons/icon-maskable-512-v4.png',
   './src/app.js', './src/boot.js', './src/i18n.js',
+  './src/start.js', './src/ui/recovery.js', './src/strings/recovery.js',
   './src/core/audioStore.js', './src/core/backup.js', './src/core/clips.js', './src/core/dates.js', './src/core/dialogue.js', './src/core/drafts.js', './src/core/hanzi.js', './src/core/history.js', './src/core/loudness.js',
   './src/core/mp4meta.js', './src/core/notesImport.js', './src/core/recorder.js', './src/core/search.js', './src/core/sha256.js',
   './src/core/state.js', './src/core/store.js', './src/core/sync.js', './src/core/util.js', './src/core/zip.js',
+  './src/core/persistence.js',
   './src/strings/cal.js', './src/strings/core.js', './src/strings/history.js', './src/strings/list.js', './src/strings/more.js', './src/strings/stt.js',
   './src/core/transcribe.js', './src/workers/transcribe.worker.js',
   './src/ui/dom.js', './src/ui/player.js', './src/ui/stt.js', './src/ui/writer.js',
   './src/views/calendar.js', './src/views/deleted.js', './src/views/device.js', './src/views/diagnostics.js', './src/views/editor.js', './src/views/entry.js', './src/views/history.js', './src/views/import.js',
   './src/views/list.js', './src/views/record.js', './src/views/settings.js',
 ];
-const WAIT = 3000;
+const RELEASE = './release.json';
+const BASE = new URL('./', location).pathname;
+const CORE_PATHS = new Map(CORE.map(u => [new URL(u, location).pathname, u]));
+const HASH = /^[a-f0-9]{64}$/;
 
-self.addEventListener('install', e => {
-  // cache: 'reload' 绕过浏览器的 HTTP 缓存（GitHub Pages 有 10 分钟缓存），存进来的是刚发布的版本。
-  // 有一个文件没取到就算安装失败（不吞掉错误）：浏览器留着旧版本和旧缓存，下次打开再装；不然 activate 会把旧缓存删掉，只剩一个空的新缓存，离线就打不开了
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE.map(u => new Request(u, { cache: 'reload' })))));
-  self.skipWaiting();
-});
+async function verify(response, expected) {
+  if (response.status !== 200 || !HASH.test(expected || '')) throw new Error('release-file-unavailable');
+  const bytes = await response.clone().arrayBuffer();
+  const actual = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(b => b.toString(16).padStart(2, '0')).join('');
+  if (actual !== expected) throw new Error('release-hash-mismatch');
+  return response;
+}
+async function install() {
+  const response = await fetch(new Request(RELEASE, { cache: 'no-store' }));
+  if (response.status !== 200) throw new Error('release-unavailable');
+  const release = await response.clone().json();
+  if (release.cache !== CACHE || release.vendorCache !== VENDOR_CACHE || !release.core
+    || Object.keys(release.core).length !== CORE.length || CORE.some(u => !HASH.test(release.core[u] || ''))) throw new Error('release-version-mismatch');
+  const files = await Promise.all(CORE.map(async u => [u, await verify(await fetch(new Request(u, { cache: 'reload' })), release.core[u])]));
+  const cache = await caches.open(CACHE);
+  for (const [url, file] of files) await cache.put(new Request(url), file);
+  await cache.put(new Request(RELEASE), response);
+}
+self.addEventListener('install', e => { e.waitUntil(install()); });
 self.addEventListener('activate', e => {
   // 只清自己的旧版本：同一个 github.io 域名下的其它网页 app（房屋账本、虚拟书架）也用 Cache Storage
   e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k.startsWith('babble-') && k !== CACHE && k !== VENDOR_CACHE).map(k => caches.delete(k)))));
-  self.clients.claim();
+  // 不 skipWaiting / claim：正在录音、编辑或刚打开的旧页面继续由旧 worker 服务。
 });
+self.addEventListener('message', e => { if (e.data === 'babble-build') e.ports?.[0]?.postMessage(CACHE); });
 self.addEventListener('fetch', e => {
   const req = e.request, url = new URL(req.url);
   // 别的网站（api.github.com 等）和非 GET 请求一律不碰：浏览器直接发，不缓存
-  if (req.method !== 'GET' || url.origin !== location.origin) return;
+  if (req.method !== 'GET' || url.origin !== location.origin || !url.pathname.startsWith(BASE)) return;
   if (url.pathname.startsWith(VENDOR)) { e.respondWith(vendor(e, req)); return; }
-  let stored = Promise.resolve();
-  const net = fetch(req, { cache: 'no-cache' }).then(res => {
-    if (res.status === 200) {   // 206（分段）之类不能也不该存
-      const copy = res.clone();
-      stored = caches.open(CACHE).then(c => c.put(req, copy));
-    }
-    return res;
-  });
-  e.waitUntil(net.then(() => stored, () => {}).catch(() => {}));
-  // 打开页面（navigate）缓存里没有这个地址时用 index.html（路由在 # 后面，地址带参数也一样）
-  const cached = () => caches.match(req, { ignoreSearch: true }).then(r => r || (req.mode === 'navigate' ? caches.match('./index.html') : undefined));
-  e.respondWith(new Promise(resolve => {
-    let settled = false;
-    const finish = r => { if (!settled && r) { settled = true; resolve(r); } };
-    // 网络 3 秒没回来：缓存里有就先用缓存（网络回来后照样更新缓存，下次打开就是新的）；缓存里也没有就继续等网络
-    const timer = setTimeout(() => cached().then(finish, () => {}), WAIT);
-    // 服务器出错（GitHub Pages 偶尔 5xx）时也先用缓存
-    net.then(res => { clearTimeout(timer); if (res.status >= 500) cached().then(r => finish(r || res), () => finish(res)); else finish(res); })
-      .catch(() => { clearTimeout(timer); cached().then(r => finish(r || Response.error()), () => finish(Response.error())); });
-  }));
+  const file = req.mode === 'navigate' ? './index.html' : CORE_PATHS.get(url.pathname);
+  if (file) e.respondWith(core(file));
 });
 
-// 第三方文件：先用缓存；没有就从网络取（成功的存起来）。文件名里有版本号（缓存名也是），不会过期
+async function core(file) {
+  try {
+    const cache = await caches.open(CACHE), request = new Request(file);
+    const hit = await cache.match(request);
+    if (hit) return hit;
+    // 缓存意外缺文件时，只接收当前版本校验通过的原件，不能借用别的版本或未经校验的网络文件。
+    const release = await (await cache.match(new Request(RELEASE))).json();
+    const response = await verify(await fetch(new Request(file, { cache: 'reload' })), release.core[file]);
+    await cache.put(request, response.clone());
+    return response;
+  } catch (e) { return Response.error(); }
+}
+
+// 大文件按需取，同样按当前版本的清单校验；不预先下载。
 function vendor(e, req) {
-  return caches.open(VENDOR_CACHE).then(c => c.match(req).then(hit => hit || fetch(req).then(res => {
-    if (res.status === 200) e.waitUntil(c.put(req, res.clone()).catch(() => {}));
-    return res;
-  })));
+  return (async () => {
+    try {
+      const cache = await caches.open(VENDOR_CACHE), request = new Request(new URL(req.url).pathname);
+      const hit = await cache.match(request);
+      if (hit) return hit;
+      const active = await caches.open(CACHE);
+      const release = await (await active.match(new Request(RELEASE))).json();
+      const path = './' + new URL(req.url).pathname.slice(BASE.length);
+      const response = await verify(await fetch(req), release.vendor?.[path]);
+      await cache.put(request, response.clone());
+      return response;
+    } catch (e) { return Response.error(); }
+  })();
 }

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>房屋账本</title>
+  <defs><linearGradient id="background" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#28c4b5"/><stop offset="1" stop-color="#007779"/></linearGradient></defs>
+  <rect width="512" height="512" fill="url(#background)"/>
+  <g id="artwork">
+    <path fill="#fff9ed" fill-rule="evenodd" d="M244 91 Q256 79 268 91 L415 230 Q431 245 420 258 Q416 264 405 264 H390 V385 Q390 410 365 410 H147 Q122 410 122 385 V264 H107 Q96 264 92 258 Q81 245 97 230 Z M271 180 Q280 169 287 178 Q290 182 286 191 L260 248 H301 Q314 248 306 261 L235 357 Q227 368 220 360 Q217 356 221 347 L245 287 H211 Q198 287 205 275 Z"/>
+  </g>
+</svg>

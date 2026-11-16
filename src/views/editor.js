@@ -82,12 +82,14 @@ export function render(main, params, ctx) {
   const qDate = isNew && params.query && isISODate(params.query.date) ? params.query.date : null;   // 日历里某一天的「记一条」
   let w = fromEntry(src || { date: qDate || today() });
   let base = canon(w), baseEntry = src ? canon(pickEditable(src)) : null;
-  let saved = false, players = [], suggest = null, touchedText = false, gone = false, recId = null;
+  let saved = false, saveFailed = false, players = [], suggest = null, touchedText = false, gone = false, recId = null;
+  let targetId = isNew ? ctx.newEntry({}).id : id; // 在另存草稿前就分配 id，保存失败重试、重开页面都不重复建条目
+  let doneUndoPending = false;
   // 这次编辑里加的、移除的、改了名的录音（sha256）：保存时在条目「现在」的录音上加减、改名，别的设备刚接上的录音不会被旧的列表盖掉
   const addedSha = new Set(), removedSha = new Set(), renamedSha = new Set();
   // 新的一条里在这里录的（sha256 → { startedAt, tz }）：没保存就离开时单独存成一条待整理，不丢（随草稿另存，恢复后也记得）
   const inlineSha = new Map();
-  const isDirty = () => !saved && canon(w) !== base;
+  const isDirty = () => !saved && (saveFailed || canon(w) !== base);
   ctx.guard(isDirty);
 
   // ---------- 没保存的修改另存一份 ----------
@@ -100,7 +102,7 @@ export function render(main, params, ctx) {
     try {
       // rec：正在录的那段（App 被杀时，启动时把找回的录音和这份草稿放在一起，见 core/drafts.js）
       if (isDirty()) {
-        st.setItem(draftKey, JSON.stringify({ w, added: [...addedSha], removed: [...removedSha], renamed: [...renamedSha], at: Date.now(), ...(recId ? { rec: recId } : {}), ...(inlineSha.size ? { inline: Object.fromEntries(inlineSha) } : {}) }));
+        st.setItem(draftKey, JSON.stringify({ w, target: targetId, added: [...addedSha], removed: [...removedSha], renamed: [...renamedSha], at: Date.now(), ...(recId ? { rec: recId } : {}), ...(inlineSha.size ? { inline: Object.fromEntries(inlineSha) } : {}) }));
         return true;
       }
       st.removeItem(draftKey);
@@ -113,6 +115,7 @@ export function render(main, params, ctx) {
   /** 用另存的那份；和条目一样（没有修改）就删掉。草稿之后条目里多出来的录音（别的设备接上的、启动时找回接上的）也列进来 */
   function applyDraft(d) {
     if (!d || !d.w || typeof d.w !== 'object') { if (d) dropDraft(); return false; }
+    if (isNew && typeof d.target === 'string' && d.target) targetId = d.target;
     const cur = isNew ? null : ctx.entry(id) || src;
     const removed = new Set(Array.isArray(d.removed) ? d.removed : []);
     let audio = Array.isArray(d.w.audio) ? d.w.audio : w.audio;
@@ -149,6 +152,7 @@ export function render(main, params, ctx) {
     oninput: () => { w.draftText = draftTa.value; if (!w.draftSrc && w.draftText.trim()) w.draftSrc = 'paste'; grow(draftTa, 80); persistSoon(); } });
   const audioBox = h('div.ed-audio');
   const banner = h('p.ed-banner', { hidden: !(src && src.deleted), role: 'status' }, src && src.deleted ? t('edit.remoteDeleted') : null);
+  const saveError = h('p.ed-banner.err', { hidden: true, role: 'alert' }, t('edit.saveFailed'));
   const restoredMsg = () => t('edit.restored', { time: restoredAt ? fmtEntryDate({ ...localParts(restoredAt), timeSource: null }, ctx.lang(), { sep: daySep(ctx.lang()) }) : '' });
   const restoredEl = h('div.ed-banner.ed-restored', { hidden: !restoredAt, role: 'status' },
     h('span', null, restoredMsg()),
@@ -422,19 +426,36 @@ export function render(main, params, ctx) {
     const audio = [...curAudio.filter(a => !removedSha.has(a.sha256)),
       ...w.audio.filter(a => addedSha.has(a.sha256) && !curAudio.some(x => x.sha256 === a.sha256))].map(named);
     const fields = savedFields(w, { template, prev, audio: isNew ? w.audio : audio, keepDraft: !draftTouched() });   // 没有 title：存着的原样留着
-    saved = true;
-    dropDraft();
-    inlineSha.clear();
-    if (isNew) {
-      const e = ctx.put(ctx.newEntry({ ...fields, status: 'done', source: { kind: 'app' } }));
-      ctx.navigate('/e/' + enc(e.id), { replace: true });
+    try {
+      if (isNew) {
+        const entry = { ...(ctx.entry(targetId) || ctx.newEntry({ id: targetId, status: 'done', source: { kind: 'app' } })), ...fields };
+        targetId = entry.id;
+        ctx.put(entry);
+      } else {
+        ctx.update(id, { ...fields, ...(prev && prev.deleted ? { deleted: false } : {}) });
+        // 「整理好了」单独一步：撤销只改回状态。原话没落盘时不继续写状态、不报成功。
+        if (ctx.saveOk() && markDone && ctx.entry(id)?.status !== 'done') {
+          doneUndoPending = true;
+          ctx.update(id, { status: 'done' }, { undoLabel: t('entry.doneToast') });
+        }
+      }
+      if (!ctx.saveOk()) throw new Error('not-saved');
+    } catch (e) {
+      saveFailed = true;
+      saveError.hidden = false;
+      persistNow();                          // 保留现有恢复草稿；能写的话再更新成最新的工作副本
+      ctx.toast(t('edit.saveFailed'), { ms: 10000 });
       return;
     }
-    ctx.update(id, { ...fields, ...(prev && prev.deleted ? { deleted: false } : {}) });
-    // 「整理好了」单独一步：提示里点「撤销」只改回状态，刚写的原话不动
-    if (markDone) ctx.update(id, { status: 'done' }, { undoLabel: t('entry.doneToast') });
-    else ctx.toast(t('edit.saved'), { ms: 1600 });
-    ctx.back(backTo);
+    saved = true; saveFailed = false;
+    dropDraft();
+    inlineSha.clear();
+    if (isNew) ctx.navigate('/e/' + enc(targetId), { replace: true });
+    else {
+      if (markDone && doneUndoPending) ctx.toast(t('entry.doneToast'), { ms: 10000, action: { label: t('common.undo'), run: () => ctx.undo() } });
+      else ctx.toast(t('edit.saved'), { ms: 1600 });
+      ctx.back(backTo);
+    }
   }
   const cancel = () => ctx.back(backTo);
 
@@ -459,7 +480,7 @@ export function render(main, params, ctx) {
         h('span.nb-title', null, isNew ? t('nav.new') : t('common.edit')),
         h('button.tb-btn.ed-save', { type: 'button', onclick: () => save(false) }, t('common.save'))),
       h('div.page.editor', null,
-        restoredEl, banner,
+        restoredEl, banner, saveError,
         h('div.ed-dt', null,
           h('div', null, h('div.f-label', null, h('label', { for: 'ed-date' }, t('edit.date'))), dateInput),
           h('div', null, h('div.f-label', null, h('label', { for: 'ed-time' }, t('edit.time'), ' ', h('small', null, t('edit.optional'))), h('span.ed-time-acts', null, nowBtn, clearTime)), timeInput)),
@@ -521,8 +542,8 @@ export function render(main, params, ctx) {
     });
   }
 
-  function onChange() {
-    if (saved || isNew) return;
+  function onChange(info) {
+    if (saved || isNew || (saveFailed && info?.source === 'local')) return;
     const e = ctx.entry(id);
     if (!e) return;
     const cur = pickEditable(e), now = canon(cur);

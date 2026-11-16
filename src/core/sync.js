@@ -221,7 +221,7 @@ export function createSync(o) {
     if (cm !== canon(local)) o.applyRemote(merged, { device: d.device || '' });
     cfg.sha = j.sha; cfg.etag = etag;
     missingAt.clear();                               // 别的设备传了新版本（它的录音先传）：以前云端没有的录音马上再试
-    cfg.dirty = cm !== canon(remote);
+    cfg.dirty = canon(normalizeState(o.getState())) !== canon(remote);   // 保存合并结果时可能又接上了别的标签页的新记录
   }
 
   async function push(cfg) {
@@ -472,7 +472,7 @@ export function createSync(o) {
   async function fileAt(ref) {
     const cfg = o.getConfig();
     if (!cfg) return null;
-    const r = await gh(cfg, 'GET', contents(cfg, SYNC_FILE) + '?ref=' + encodeURIComponent(ref), { accept: ACCEPT_RAW, timeout: 60000 });
+    const r = await gh(cfg, 'GET', contents(cfg, SYNC_FILE) + (ref ? '?ref=' + encodeURIComponent(ref) : ''), { accept: ACCEPT_RAW, timeout: 60000 });
     if (r.status === 404) return null;
     if (!r.ok) throw httpError(r);
     let text;

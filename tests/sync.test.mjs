@@ -147,6 +147,22 @@ test('第一次同步：云端没有 babble.json（404）→ 新建，内容是 
   assert.equal(SYNC_FILE, 'babble.json');
 });
 
+test('拉取结果落盘时又接上另一个标签页的记录：仍标记待上传，不能把新记录漏在云端外', async () => {
+  const gh = mockGitHub(), mac = device(gh, 'Mac');
+  mac.put({ id: 'remote' }); await mac.run();
+  let current = blankState();
+  const cfg = { repo: 'me/data', token: 't', dirty: false };
+  const sync = createSync({
+    getState: () => current,
+    applyRemote: merged => { current = merged; current.data.entries.local = makeEntry({ id: 'local', text: '另一页刚保存的' }); },
+    getConfig: () => cfg, saveConfig() {}, editVersion: () => 0, device: '测试标签页', fetch: (...args) => gh.fetch(...args),
+  });
+  assert.equal((await sync.syncNow()).ok, true);
+  await sync.idle();
+  assert.deepEqual(Object.keys(gh.json().state.data.entries).sort(), ['local', 'remote']);
+  assert.equal(cfg.dirty, false);
+});
+
 test('两台设备合并到一致；没变化时用 ETag 得到 304，不再提交', async () => {
   const gh = mockGitHub(), mac = device(gh, 'Mac'), ipad = device(gh, 'iPad');
   mac.put({ id: 'e_1' });

@@ -36,6 +36,7 @@
 //   ctx.mergeIn(otherState)    导入备份（逐条合并），返回 { changed }
 //   ctx.setLocal(patch)        改本机设置（不重画页面）
 //   ctx.editVersion            本机修改计数
+//   ctx.saveOk()               最近一次数据写入是否成功；编辑页确认成功后才清草稿、离开
 // 导航
 //   ctx.navigate(path, { replace })  path 如 '/e/abc'、'/rec?attach=abc'（前面的 # 可有可无）；同一地址 = 重画
 //   ctx.replaceHash(path)      页面自己换了状态（日历翻月、选日子）：只换地址栏，不重画、不加历史记录
@@ -93,6 +94,7 @@ import * as importView from './views/import.js';
 import * as settings from './views/settings.js';
 import * as diagnostics from './views/diagnostics.js';
 import { askWho, shouldAskWho } from './views/device.js';
+import { recoveryPanel } from './ui/recovery.js';
 
 const BOOT = Date.now();
 const VIEWS = { list, calendar, entry, editor, deleted, record, import: importView, settings, diag: diagnostics };
@@ -175,6 +177,7 @@ async function confirmLeave() {
 const safeCall = fn => { try { return !!fn(); } catch (e) { return false; } };
 
 async function navigate(path, { replace = false } = {}) {
+  if (state.storageIssue()) return false;
   const target = norm(path);
   if (!(await confirmLeave())) return false;
   if ((location.hash || '#/') === target && !replace) { refresh(); return true; }
@@ -234,7 +237,7 @@ let lastSyncTry = 0;
 const syncer = createSync({
   getState: S,
   applyRemote: (merged, info) => state.applyRemote(merged, info),
-  getConfig: () => L().sync,
+  getConfig: () => state.storageIssue() ? null : L().sync,
   saveConfig: (cfg) => {
     if (L().sync === cfg) {
       // 数据没存进本机（空间满）：本机存的比云端旧，不记云端版本号——下次启动完整拉取、合并，不会被 304 当成「没变化」
@@ -257,7 +260,7 @@ function syncStatus() {
 }
 function syncChanged() { renderSyncBadges(); emit('sync', syncStatus()); }
 const syncApi = {
-  now: () => { lastSyncTry = Date.now(); const p = syncer.syncNow(); syncChanged(); return p.finally(syncChanged); },
+  now: () => { if (state.storageIssue()) return Promise.resolve({ ok: false, skipped: true }); lastSyncTry = Date.now(); const p = syncer.syncNow(); syncChanged(); return p.finally(syncChanged); },
   connect: ({ repo, token, tokenExp = null }) => {
     state.setLocal({ sync: { repo, token, sha: null, etag: null, dirty: true, at: null, err: null, offline: false, ...(tokenExp ? { tokenExp } : {}) } });
     syncChanged();
@@ -319,6 +322,19 @@ const ctx = {
   get state() { return S(); },
   get local() { return L(); },
   get editVersion() { return state.editVersion(); },
+  saveOk: state.saveOk,
+  storageIssue: state.storageIssue,
+  recoveryExport: state.recoveryExport,
+  recoveryArchive: state.recoveryArchive,
+  async recoveryCloud() {
+    // 只读云端：损坏期间正常同步被暂停，不能让空白或残缺数据上传。
+    const reader = createSync({ getConfig: () => L().sync, getState: S, applyRemote() {}, saveConfig() {}, editVersion: () => 0 });
+    const file = await reader.fileAt();
+    if (!file?.state || file.state.v !== 1) throw Object.assign(new Error('no-cloud'), { code: 'no-cloud' });
+    return file.state;
+  },
+  async repairData(next) { await state.recoverFrom(next); },
+  retryData() { state.reload(); },
   get route() { return route(); },
   entries,
   entry: (id) => (id && S().data.entries[id]) || null,
@@ -417,7 +433,7 @@ function renderShell(r) {
   const side = r.name === 'import' ? 'import' : cur;          // 侧栏有「导入录音」这一项；手机底栏没有，算在设置下面
   const item = (id, href, ic, label) => h('a.nav-item' + (side === id ? '.on' : ''), { href, 'aria-current': side === id ? 'page' : null }, ic, h('span', null, label));
   $('#side').replaceChildren(
-    h('div.brand', null, h('img', { src: 'icons/icon-180.png', alt: '', width: 32, height: 32, onerror: e => { e.target.style.visibility = 'hidden'; } }), h('b', null, t('common.appName'))),
+    h('div.brand', null, h('img', { src: 'icons/icon-180-v4.png', alt: '', width: 32, height: 32, onerror: e => { e.target.style.visibility = 'hidden'; } }), h('b', null, t('common.appName'))),
     h('nav', { 'aria-label': t('nav.label') },
       item('list', '#' + home(), icon('bubble'), t('nav.list')),
       item('record', '#/rec', icon('snout'), t('nav.rec')),
@@ -523,8 +539,30 @@ function migrate(plan) {
   }
 }
 
+let recoveryRoot = null;
+function recoveryScreen() {
+  if (state.storageIssue()) {
+    syncSoon.cancel();
+    if (!recoveryRoot) {
+      recoveryRoot = h('section.recovery-screen', { tabindex: -1, role: 'region', 'aria-label': t('recovery.title') });
+      document.body.append(recoveryRoot);
+      recoveryPanel(recoveryRoot, ctx);
+      $('.app')?.setAttribute('inert', '');
+      $('#tabs')?.setAttribute('inert', '');
+      recoveryRoot.focus();
+    }
+    return true;
+  }
+  if (recoveryRoot) { recoveryRoot.remove(); recoveryRoot = null; $('.app')?.removeAttribute('inert'); $('#tabs')?.removeAttribute('inert'); }
+  return false;
+}
+function resumeAfterRecovery() {
+  ctx.recovered = recover();
+  render();
+}
 function render() {
   delete document.documentElement.dataset.boot;      // src/boot.js 第一次绘制前刷的近黑底，app 画出来以后就不用了
+  if (recoveryScreen()) return;
   const r = route();
   if (HOME(r) && listMode() !== (r.name === 'calendar' ? 'cal' : 'list')) state.setLocal({ listMode: r.name === 'calendar' ? 'cal' : 'list' });   // 记下「列表 | 日历」
   const plan = planPanes(r, layout());
@@ -545,6 +583,7 @@ function render() {
   }
 }
 function refresh() {
+  if (state.storageIssue()) { render(); return; }
   for (const slot of Object.keys(mounted)) unmount(slot);
   render();
 }
@@ -563,16 +602,20 @@ function askWhoSoon() {
 let rerenderQueued = false;
 state.subscribe((st, info) => {
   cache = null;
+  const wasBlocked = !!recoveryRoot;
+  if (recoveryScreen()) return;
+  if (wasBlocked) resumeAfterRecovery();        // 本页或别的标签页修好数据后，都重新挂载页面并找回待处理录音
   if (info.source === 'local' && info.ids && info.ids.length) askWhoSoon();
   if (info.saved === false) toast(t('common.storageFull'), { ms: 10000 });
   else if (info.undoLabel) toast(info.undoLabel, { ms: 10000, action: { label: t('common.undo'), run: () => ctx.undo() } });
-  if (info.source === 'local' || info.source === 'undo' || info.source === 'merge') syncSoon();
+  if (info.source === 'local' || info.source === 'undo' || info.source === 'merge' || (info.source === 'storage' && info.changed)) syncSoon();
   emit('change', info);
   applyTheme();                                // 夜间设置可能变了；主题只换颜色，不用重画
   if (rerenderQueued) return;
   rerenderQueued = true;
   queueMicrotask(() => {
     rerenderQueued = false;
+    if (recoveryScreen()) return;
     renderSyncBadges();
     for (const m of Object.values(mounted)) {
       if (m.handle && typeof m.handle.onChange === 'function') { try { m.handle.onChange(info); } catch (e) { console.error(e); } }
@@ -610,6 +653,7 @@ function settleDraft(snap, next) {
   } catch (e) { /* 存不了就算了：下次启动再处理 */ }
 }
 async function recover() {
+  if (state.storageIssue()) return [];
   const snap = takeDrafts();
   let clips = [];
   try { clips = (await recoverPending({ audioStore: audio, before: BOOT })) || []; }
@@ -684,7 +728,7 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 window.addEventListener('online', () => { if (L().sync) syncApi.now(); });
-window.addEventListener('storage', e => { if (e.key === state.KEY || e.key === state.LKEY) state.reload(); });   // 别的标签页改了数据
+window.addEventListener('storage', e => { if (e.key === state.KEY || e.key === state.LKEY || e.key?.startsWith(state.PENDING_PREFIX)) state.reload(); });   // 别的标签页改了数据
 setInterval(() => { if (document.visibilityState === 'visible') { syncIfStale(); applyTheme(); } }, 60000);
 prefersDark.addEventListener('change', () => applyTheme());
 for (const mq of [mqSide, mqTwo]) mq.addEventListener('change', () => { render(); emit('layout', layout()); });
@@ -698,8 +742,7 @@ else if (!nightRedirect() && route().name === 'list' && !route().path.length && 
 
 currentHash = location.hash || '#/';
 track(currentHash);
-ctx.recovered = recover();
+ctx.recovered = state.storageIssue() ? Promise.resolve([]) : recover();
 render();
 if (L().sync) syncApi.now();
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 window.__babble = { state, ctx, mounted, get S() { return S(); } };   // 方便在浏览器控制台里查看

@@ -1,0 +1,206 @@
+[
+  {
+    "project": "virtual-bookshelf",
+    "path": "icon.svg",
+    "before": "931e0f1dd0bf7cd1351f50e1310ea7732a5e1e875e0c99871c3304ec035dc751",
+    "after": "b63cf047cfc6d21b92a3f38d1e20a5876fe0b8e056b8fe9e3d7cb8398ca77480",
+    "asset": "assets/virtual-bookshelf/icon.svg"
+  },
+  {
+    "project": "virtual-bookshelf",
+    "path": "icon-180-v2.png",
+    "before": null,
+    "after": "05b823939108265730d4cfb1898f0b80d2f1d70f3443f84986e3959e29c0962b",
+    "asset": "assets/virtual-bookshelf/icon-180-v2.png"
+  },
+  {
+    "project": "virtual-bookshelf",
+    "path": "icon-512-v2.png",
+    "before": null,
+    "after": "665140183b44d4cb077e2a55b41adcc6807b9b31af13d73fe09fb5f88e015fc8",
+    "asset": "assets/virtual-bookshelf/icon-512-v2.png"
+  },
+  {
+    "project": "house-ledger",
+    "path": "icons/icon.svg",
+    "before": null,
+    "after": "cd2f34829744a6923b4ed13714ff4e5ff7a8127bd1ae669832c761064088574e",
+    "asset": "assets/house-ledger/icons/icon.svg"
+  },
+  {
+    "project": "house-ledger",
+    "path": "icons/icon-180-v3.png",
+    "before": null,
+    "after": "563a24f63cbe24fea072cb41022ddb11fa1a659b7fedac495dd67445786040d6",
+    "asset": "assets/house-ledger/icons/icon-180-v3.png"
+  },
+  {
+    "project": "house-ledger",
+    "path": "icons/icon-512-v3.png",
+    "before": null,
+    "after": "e26ce3b2df9b9db957a440a6c78366863f3bad99d883bc3362754ec352908591",
+    "asset": "assets/house-ledger/icons/icon-512-v3.png"
+  },
+  {
+    "project": "virtual-bookshelf",
+    "path": "index.html",
+    "before": "21bf67ddf134a41aa483e7d00ad5cb96564b1984a7e933550fbcec1bd63f54bb",
+    "after": "bf96244add0e73990116f02252ae9923dbd06e4ba9f43c364f6ec66aeb3c7463",
+    "replacements": [
+      [
+        "icon-180.png?v=20261111",
+        "icon-180-v2.png",
+        2
+      ]
+    ]
+  },
+  {
+    "project": "virtual-bookshelf",
+    "path": "manifest.webmanifest",
+    "before": "6ad338d0deddfa6f8789f9abf4954c0752059eed0790b96979a3d4e39f32191f",
+    "after": "d3b1c13967551523df0b1e2e9ab521368424787307dffb5b5754c703ddf8b328",
+    "replacements": [
+      [
+        "icon-180.png?v=20261111",
+        "icon-180-v2.png",
+        1
+      ],
+      [
+        "icon-512.png?v=20261111",
+        "icon-512-v2.png",
+        1
+      ]
+    ]
+  },
+  {
+    "project": "virtual-bookshelf",
+    "path": "sw.js",
+    "before": "994b17e40971815be6b7b005ef0409614ebe75185db36d6b80362b08698b90fc",
+    "after": "04d77404b6dca21b808136099da690170a196b184761877403e947d5c9c027d3",
+    "replacements": [
+      [
+        "const CACHE = 'vshelf-v4';",
+        "const CACHE = 'vshelf-v5';",
+        1
+      ],
+      [
+        "icon-180.png?v=20261111",
+        "icon-180-v2.png",
+        1
+      ],
+      [
+        "icon-512.png?v=20261111",
+        "icon-512-v2.png",
+        1
+      ],
+      [
+        "'./manifest.webmanifest'",
+        "'./manifest.webmanifest', './icon.svg'",
+        1
+      ]
+    ]
+  },
+  {
+    "project": "house-ledger",
+    "path": "index.html",
+    "before": "9b64be17cf7e55fc0c4e24d4cdeb720bced47fe45cf6e3bb4ece6b2a1f7db625",
+    "after": "4684ebefab5b347547bc9f490d58b5bba895ae406624df4ca9c6342f13da850f",
+    "replacements": [
+      [
+        "icons/icon-180-v2.png",
+        "icons/icon-180-v3.png",
+        2
+      ]
+    ]
+  },
+  {
+    "project": "house-ledger",
+    "path": "src/app.js",
+    "before": "7c5b8f3636bd7ace54784ac44281267a1928680da4e18797b1fbba4bda639e54",
+    "after": "9107381117db0776b688da3602ed9eaf2fc28440db8df76b3ee7d7e145de71e5",
+    "replacements": [
+      [
+        "icons/icon-180-v2.png",
+        "icons/icon-180-v3.png",
+        1
+      ]
+    ]
+  },
+  {
+    "project": "house-ledger",
+    "path": "manifest.webmanifest",
+    "before": "b50528cc65f2f879f8058e2c1a3cf867704745fe8433fb1ba7f7703a7e1c831e",
+    "after": "b69afdee329b58894fd77870c9012cd43e50cb2e06ed2c4b61e97594dd944772",
+    "replacements": [
+      [
+        "icons/icon-180-v2.png",
+        "icons/icon-180-v3.png",
+        1
+      ],
+      [
+        "icons/icon-512-v2.png",
+        "icons/icon-512-v3.png",
+        1
+      ]
+    ]
+  },
+  {
+    "project": "house-ledger",
+    "path": "manifest.zh-Hant-TW.webmanifest",
+    "before": "69bde27a3f4a158da1382bb19243a61ec60ea2e2a3bb3de3cc9816852f185377",
+    "after": "fe50ad7011483d61ab3c4feca0a0c745f91ec1e3589d8b5e609660c8cba865b0",
+    "replacements": [
+      [
+        "icons/icon-180-v2.png",
+        "icons/icon-180-v3.png",
+        1
+      ],
+      [
+        "icons/icon-512-v2.png",
+        "icons/icon-512-v3.png",
+        1
+      ]
+    ]
+  },
+  {
+    "project": "house-ledger",
+    "path": "sw.js",
+    "before": "006b9fb8114ac5506f7e0b055755c094ceb2c1a3c803a67c7fac529cf32c48f8",
+    "after": "08bb701236bedc1c3f924ea16ef24f876ea8d68bed72bd400d9d5d7c5e79495c",
+    "replacements": [
+      [
+        "const CACHE = 'house-ledger-v15';",
+        "const CACHE = 'house-ledger-v16';",
+        1
+      ],
+      [
+        "icons/icon-180-v2.png",
+        "icons/icon-180-v3.png",
+        1
+      ],
+      [
+        "icons/icon-512-v2.png",
+        "icons/icon-512-v3.png",
+        1
+      ],
+      [
+        "'./icons/icon-180-v3.png'",
+        "'./icons/icon.svg', './icons/icon-180-v3.png'",
+        1
+      ]
+    ]
+  },
+  {
+    "project": "house-ledger",
+    "path": "icons/README.md",
+    "before": "056d297077994dfe2297da7295b7c74e08c40c18ecc7b0526d77a6d4accf2384",
+    "after": "a51d55280d6fe7a8c8167e9bfe3b147f2d91906f3430b5477595923d50fc639e",
+    "replacements": [
+      [
+        "# House Ledger 图标\n",
+        "# House Ledger 图标\n\n## 当前统一版本（v3）\n\n与虚拟书架、牙牙呓语采用同一套配色与形状规范。青绿渐变背景，奶白色实心房屋，闪电镂空。\n\n- `icon.svg`：可缩放源文件。\n- `icon-180-v3.png`：主屏幕、网页和 App 侧栏图标。\n- `icon-512-v3.png`：安装图标。\n- 使用满幅、不透明方形底，由系统裁切圆角。\n\n## v2 历史记录\n",
+        1
+      ]
+    ]
+  }
+]

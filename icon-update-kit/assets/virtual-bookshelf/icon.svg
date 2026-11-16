@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>虚拟书架</title>
+  <defs><linearGradient id="background" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ff9267"/><stop offset="1" stop-color="#b84f29"/></linearGradient></defs>
+  <rect width="512" height="512" fill="url(#background)"/>
+  <g id="artwork" fill="#fff9ed">
+    <rect x="118" y="140" width="60" height="220" rx="16"/>
+    <rect x="201" y="101" width="60" height="259" rx="16"/>
+    <rect x="297" y="135" width="60" height="227" rx="16" transform="rotate(16 327 248.5)"/>
+    <rect x="95" y="371" width="310" height="30" rx="15"/>
+  </g>
+</svg>

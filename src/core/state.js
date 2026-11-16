@@ -1,5 +1,5 @@
-// App 的数据中心（浏览器里用）：读写 localStorage、改数据、撤销、通知页面重画。
-// 没有 localStorage（Node 测试）也能用；load({ storage }) 可以传一个假的（有 getItem/setItem 就行）。
+// App 的数据中心（浏览器里用）：读写本机日志与快照、改数据、撤销、通知页面重画。
+// load({ storage:null }) 可只用内存（Node 测试）；假的 storage 需实现标准 Storage 接口。
 //
 //   load()                       读入本机数据（启动时调一次）
 //   getState()                   当前数据（只读；要改用 mutate）
@@ -21,6 +21,8 @@
 //   setDefaultDevice(name) / deviceName() / author()   设备名（babble.local.device，没填用平台名）和签名 { who, device }
 import { normalizeState, normalizeEntry, mergeStates, canon, stamp, deletedRecord, setSetting } from './store.js';
 import { isObj } from './util.js';
+import { createPersistence, LocalDataError, PENDING_PREFIX } from './persistence.js';
+export { PENDING_PREFIX };
 
 export const KEY = 'babble.state', LKEY = 'babble.local';
 // who：谁在用这台设备（'me' | 'nn' | null）；whoAsked：已经问过一次（答了或点了「以后再说」）
@@ -28,10 +30,14 @@ export const LOCAL_DEFAULTS = Object.freeze({ lang: null, theme: 'auto', device:
 const UNDO_MAX = 20;
 
 let storage = null;
+let persistence = createPersistence(null);
+let memoryOnly = false;
+let usesBrowserStorage = true, persistenceLocks;
 let S = normalizeState(null);
 let L = { ...LOCAL_DEFAULTS, audioSync: {} };
 let version = 0;
 let lastSaveOk = true;
+let storageFault = null;
 const subs = new Set();
 const undoStack = [];
 let journalFn = null;
@@ -41,19 +47,39 @@ function defaultStorage() { try { return globalThis.localStorage || null; } catc
 function readJSON(k) { try { return JSON.parse((storage && storage.getItem(k)) || 'null'); } catch (e) { return null; } }
 function readLocal() { const l = readJSON(LKEY); return { ...LOCAL_DEFAULTS, audioSync: {}, ...(isObj(l) ? l : {}) }; }
 
-/** 读入本机数据。storage 不传就用 localStorage（没有也行，数据只在内存里） */
-export function load({ storage: st } = {}) {
+/** 读入本机数据。storage 不传就用 localStorage；只有显式传 null 的测试模式允许纯内存保存。 */
+export function load({ storage: st, locks } = {}) {
+  usesBrowserStorage = st === undefined;
+  persistenceLocks = locks;
   storage = st !== undefined ? st : defaultStorage();
-  S = normalizeState(readJSON(KEY));
+  memoryOnly = st === null;                   // 仅显式的 storage:null（Node 测试）允许把内存当成保存成功
+  persistence = createPersistence(storage, { locks });
+  try { S = persistence.read(); lastSaveOk = !!storage || memoryOnly; storageFault = !storage && !memoryOnly ? new Error('storage-unavailable') : null; }
+  catch (e) { S = e instanceof LocalDataError ? e.state : normalizeState(null); lastSaveOk = false; storageFault = e; }
   L = readLocal();
   undoStack.length = 0;
   return S;
 }
 /** 别的标签页改了数据（storage 事件）：重新读入并通知 */
 export function reload() {
-  S = normalizeState(readJSON(KEY));
-  L = readLocal();
-  emit({ source: 'storage', saved: true, ids: [] });
+  const before = S;
+  const retrying = !lastSaveOk;
+  try {
+    if (usesBrowserStorage) {
+      // 权限恢复后必须重新拿浏览器的存储对象；仍不可访问时继续保护，不能当成读到了一本空白记录。
+      const next = defaultStorage();
+      if (!next) throw new Error('storage-unavailable');
+      if (next !== storage) { storage = next; persistence = createPersistence(storage, { locks: persistenceLocks }); }
+    }
+    S = mergeStates(S, persistence.read());
+    L = readLocal();
+    storageFault = null;
+  }
+  catch (e) { lastSaveOk = false; storageFault = e; if (e instanceof LocalDataError) S = mergeStates(S, e.state); }
+  const changed = canon(before) !== canon(S);
+  const saved = saveState();                 // 内存里上次没存下的修改也保留、重试，不用别的标签页覆盖它
+  if (changed || retrying) { version++; markDirty(); } // 重试落盘时，磁盘上旧的同步配置也不能清掉「待上传」
+  emit({ source: 'storage', saved, changed: changed || retrying, ids: [] });
   return S;
 }
 
@@ -61,13 +87,29 @@ export const getState = () => S;
 export const getLocal = () => L;
 export const editVersion = () => version;
 export const saveOk = () => lastSaveOk;
+export const storageIssue = () => storageFault ? { code: storageFault.code || 'unavailable', count: storageFault.issues?.length || 0 } : null;
+export function recoveryExport() {
+  if (!storage) return null;
+  try { return storageFault ? persistence.evidence() : persistence.archive(); } catch (e) { return null; }
+}
+export function recoveryArchive() { try { return persistence.archive(); } catch (e) { return null; } }
+export async function recoverFrom(other) {
+  const next = await persistence.recover(mergeStates(S, normalizeState(other)));
+  S = next; storageFault = null; lastSaveOk = true; version++;
+  if (L.sync) { L.sync.sha = L.sync.etag = null; markDirty(); }
+  emit({ source: 'merge', saved: true, ids: Object.keys(S.data.entries) });
+  return S;
+}
 
 /** 保存数据；存不下（空间满）返回 false */
 export function saveState() {
-  if (!storage) return (lastSaveOk = true);
-  try { storage.setItem(KEY, JSON.stringify(S)); lastSaveOk = true; } catch (e) { lastSaveOk = false; }
+  if (storageFault) return (lastSaveOk = false);
+  if (!storage) return (lastSaveOk = memoryOnly);
+  try { S = persistence.save(S); lastSaveOk = true; }
+  catch (e) { lastSaveOk = false; if (e instanceof LocalDataError) storageFault = e; }
   return lastSaveOk;
 }
+export const idle = () => persistence.idle();
 export function saveLocal() {
   if (!storage) return true;
   try { storage.setItem(LKEY, JSON.stringify(L)); return true; } catch (e) { return false; }   // 本机设置存不下也不影响使用
@@ -162,12 +204,17 @@ function diff(before, after, now, by) {
  * @returns fn 的返回值
  */
 export function mutate(fn, { undoLabel = null, cause = null } = {}) {
+  if (storageFault) throw storageFault;
   const before = structuredClone(S);
   let result;
   try { result = fn(S); } catch (e) { S = before; throw e; }
   const by = author(), now = Date.now();
   const d = diff(before, S, now, by);
-  if (!d.recs.length && !d.settings.length) return result;
+  if (!d.recs.length && !d.settings.length) {
+    // 编辑页保存失败后再次点保存，内存已经是新值，也仍须重试落盘。
+    if (!lastSaveOk) emit({ source: 'local', saved: saveState(), ids: [] });
+    return result;
+  }
   version++;
   const saved = saveState();
   markDirty();
@@ -189,6 +236,7 @@ export const peekUndo = () => (undoStack.length ? undoStack[undoStack.length - 1
 
 /** 撤销：把那次改过的字段改回旧值（盖上新的修改时间，同步时会赢）；之后别的设备改的其它字段留着。撤销「新建」= 软删除 */
 export function undo() {
+  if (storageFault) return null;
   const u = undoStack.pop();
   if (!u) return null;
   const now = Date.now(), by = author();
@@ -222,6 +270,7 @@ export function undo() {
 
 /** 同步合并出的新数据（已经包含本机的修改）：不算本机修改 */
 export function applyRemote(merged, info = {}) {
+  if (storageFault) return false;
   const old = S;
   S = normalizeState(merged);
   const saved = saveState();
@@ -232,6 +281,7 @@ export function applyRemote(merged, info = {}) {
 
 /** 导入备份：逐条合并，较新的为准，不会删掉本机的条目 */
 export function mergeIn(other) {
+  if (storageFault) throw storageFault;
   const before = S;
   const next = mergeStates(S, normalizeState(other));
   const ids = Object.keys(next.data.entries).filter(id => canon(before.data.entries[id]) !== canon(next.data.entries[id]));

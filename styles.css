@@ -1131,3 +1131,10 @@ textarea.im-paths { min-height: 92px; font: 13px/1.5 ui-monospace, SFMono-Regula
 .dev-ask-emoji { font-size: 30px; line-height: 1.2; }
 :root[data-theme="dark"] .dev-emoji { filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, .45)); }   /* 深色底上黑色的表情（🥷🏻）也看得清 */
 .dev-emoji { display: inline-block; }
+
+/* 数据恢复覆盖页面，底下的编辑器仍保留，避免清理页面时删掉未保存的草稿。 */
+.recovery-screen { position: fixed; inset: 0; z-index: 200; overflow: auto; background: var(--bg); color: var(--ink); padding: max(20px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+.recovery-screen .page { max-width: 720px; margin: 0 auto; }
+.recovery-screen .row { flex-wrap: wrap; gap: 10px; }
+.recovery-screen h1 { font-size: 24px; }
+.boot-error { position: fixed; inset: 0; z-index: 210; display: grid; place-content: center; gap: 16px; padding: 24px; text-align: center; background: var(--bg, Canvas); color: var(--ink, CanvasText); }

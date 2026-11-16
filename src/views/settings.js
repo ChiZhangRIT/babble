@@ -101,6 +101,7 @@ function mainPage(main, params, ctx) {
         linkRow('#/import', 'import', t('nav.import')),
         linkRow('#/import/notes', 'bubble', t('nav.importNotes')),
         linkRow('#/deleted', 'trash', t('nav.deleted'), deletedN ? String(deletedN) : null),
+        ctx.recoveryArchive?.() ? h('button.group-row.set-link', { type: 'button', onclick: () => download('babble-recovery-original.json', JSON.stringify(ctx.recoveryArchive(), null, 2), 'application/json') }, t('recovery.archive')) : null,
       ]),
       tipsSec(),
       sec('diag', t('set.diagH'), [linkRow('#/diag', 'mic', t('nav.diag'))], t('set.diagFoot')),
@@ -210,7 +211,7 @@ function mainPage(main, params, ctx) {
   function aboutSec() {
     return h('section.set-sec#set-about', null, h('h2.group-h', null, t('set.aboutH')),
       h('div.card.set-about', null,
-        h('div.set-about-top', null, h('img', { src: 'icons/icon-180.png', alt: '', width: 48, height: 48, onerror: (e) => e.target.remove() }),
+        h('div.set-about-top', null, h('img', { src: 'icons/icon-180-v4.png', alt: '', width: 48, height: 48, onerror: (e) => e.target.remove() }),
           h('div', null, h('b.kai', null, t('common.appName')), h('p.small.muted', null, t('set.aboutLine')))),
         h('ul.small', null, ['about1', 'about2', 'about3'].map(k => h('li', null, t('set.' + k))))));
   }

@@ -6,6 +6,7 @@ import {
 } from '../src/core/history.js';
 import { blankState, makeEntry, stamp, deletedRecord, restoredRecord, normalizeState, mergeStates, canon } from '../src/core/store.js';
 import * as state from '../src/core/state.js';
+import { readStoredState } from '../src/core/persistence.js';
 import { createSync, SYNC_FILE, toB64, SyncError } from '../src/core/sync.js';
 import { fmtAgo, madeAt } from '../src/views/history.js';
 import { byLabel } from '../src/views/device.js';
@@ -17,7 +18,7 @@ const NN = '👰🏻‍♀️', ME = '🥷🏻';
 const SP = { nn: { name: 'NN', emoji: NN, aliases: [] }, me: { name: '', emoji: ME, aliases: [] } };
 const fakeStorage = () => {
   const m = new Map();
-  return { m, getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); }, removeItem: k => m.delete(k) };
+  return { m, get length() { return m.size; }, key: i => [...m.keys()][i] ?? null, getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); }, removeItem: k => m.delete(k) };
 };
 const quiet = () => {};
 
@@ -121,7 +122,7 @@ test('签名：本机改过的条目带 updatedBy { who, device, at }；没设�
   let cur = state.getState().data.entries[e.id];
   assert.deepEqual(cur.updatedBy, { who: 'nn', device: '测试 iPad', at: cur.updatedAt });
   assert.equal(versionBy(cur), cur.updatedBy);
-  assert.deepEqual(JSON.parse(st.m.get(state.KEY)).data.entries[e.id].updatedBy, cur.updatedBy, '存进本机');
+  assert.deepEqual(readStoredState(st).data.entries[e.id].updatedBy, cur.updatedBy, '存进本机');
   state.setLocal({ who: null, device: '  ' });
   state.mutate(s => { s.data.entries[e.id].fav = true; });
   cur = state.getState().data.entries[e.id];
@@ -208,7 +209,7 @@ test('记录本坏了也不影响保存：同步抛错、异步失败，数据�
       const off = state.subscribe(() => notified++);
       state.mutate(s => { s.data.entries[e.id] = e; });
       state.mutate(s => { s.data.entries[e.id].fav = true; }, { undoLabel: '收藏' });
-      assert.equal(JSON.parse(st.m.get(state.KEY)).data.entries[e.id].fav, true);
+      assert.equal(readStoredState(st).data.entries[e.id].fav, true);
       assert.equal(state.undo(), '收藏');
       assert.equal(state.getState().data.entries[e.id].fav, false);
       state.applyRemote({ ...structuredClone(state.getState()), data: { entries: { [e.id]: { ...state.getState().data.entries[e.id], text: '“改了”', updatedAt: Date.now() + 1e6 } } } });

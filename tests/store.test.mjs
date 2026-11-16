@@ -5,13 +5,14 @@ import {
   makeEntry, byNewest, clipIndex, DEFAULT_SETTINGS, NN_EMOJI, ME_EMOJI,
 } from '../src/core/store.js';
 import * as state from '../src/core/state.js';
+import { readStoredState } from '../src/core/persistence.js';
 
 // 测试只用编出来的数据
 const SHA_A = 'a'.repeat(64), SHA_B = 'b'.repeat(64);
 const withEntry = (s, id, fields) => { s.data.entries[id] = { id, date: '2026-01-02', text: '', ...fields }; return s; };
 const fakeStorage = () => {
   const m = new Map();
-  return { m, getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); }, removeItem: k => m.delete(k) };
+  return { m, get length() { return m.size; }, key: i => [...m.keys()][i] ?? null, getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); }, removeItem: k => m.delete(k) };
 };
 
 test('合并：每条取较新的一份，两边顺序无关', () => {
@@ -179,7 +180,7 @@ test('state：没有 localStorage 也能用；mutate 保存、计数、补盖修
   const ret = state.mutate(s => { s.data.entries[e.id] = e; return 'ok'; });
   assert.equal(ret, 'ok');
   assert.equal(state.editVersion(), v0 + 1);
-  assert.equal(JSON.parse(st.m.get(state.KEY)).data.entries[e.id].text, '“今天吃什么”');
+  assert.equal(readStoredState(st).data.entries[e.id].text, '“今天吃什么”');
   // 直接改字段、忘了盖时间：自动补上
   const before = state.getState().data.entries[e.id].updatedAt;
   state.mutate(s => { s.data.entries[e.id].fav = true; });
@@ -240,7 +241,7 @@ test('state：fn 抛错时数据不变；同步合并不算本机修改；导入
   assert.equal(state.getLocal().sync.dirty, true);
   assert.deepEqual(state.mergeIn(backup), { changed: 0 }, '再导入一次什么也不变');
   assert.equal(JSON.parse(st.m.get(state.LKEY)).sync.token, 'x', '本机设置单独存');
-  assert.equal(JSON.parse(st.m.get(state.KEY)).sync, undefined, '令牌不进数据');
+  assert.equal(readStoredState(st).sync, undefined, '令牌不进数据');
 });
 
 test('state：存储空间满时 mutate 照常改内存，info.saved = false', () => {

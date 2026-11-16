@@ -23,7 +23,7 @@
   try {
     var shown = false;
     var show = function () {
-      if (shown || window.__babble || !document.body) return;
+      if (shown || window.__babble || window.__babbleBootError || !document.body) return;
       shown = true;
       var lang = '';
       try { lang = (JSON.parse(localStorage.getItem('babble.local') || 'null') || {}).lang || ''; } catch (e) { /* 用系统语言 */ }

@@ -7,10 +7,11 @@ import { STRINGS as more } from './strings/more.js';
 import { STRINGS as cal } from './strings/cal.js';
 import { STRINGS as history } from './strings/history.js';
 import { STRINGS as stt } from './strings/stt.js';
+import { STRINGS as recovery } from './strings/recovery.js';
 
 export const LANGS = ['zh-Hans', 'zh-Hant-TW', 'en'];
 export const LANG_LABELS = { 'zh-Hans': '简体中文', 'zh-Hant-TW': '繁體中文（台灣）', en: 'English' };
-export const TABLES = { core, list, more, cal, history, stt };
+export const TABLES = { core, list, more, cal, history, stt, recovery };
 
 /** 各部分合并成 { 'zh-Hans': {...}, 'zh-Hant-TW': {...}, en: {...} }；同一个键出现两次时后面的覆盖前面的（测试会查重复） */
 export const STRINGS = Object.fromEntries(LANGS.map(l => [l, Object.assign({}, ...Object.values(TABLES).map(tb => (tb && tb[l]) || {}))]));

@@ -6,6 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { createHash, webcrypto } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = f => fs.readFileSync(path.join(root, f), 'utf8');
@@ -67,12 +69,12 @@ test('CORE 里的每个文件都存在，没有重复', () => {
 
 test('index.html 引用的文件都存在，都在 CORE 里', () => {
   const refs = htmlRefs();
-  for (const want of ['./src/app.js', './styles.css', './manifest.webmanifest', './icons/icon-180.png']) assert.ok(refs.includes(want), `index.html 应该引用 ${want}`);
+  for (const want of ['./src/start.js', './styles.css', './manifest.webmanifest', './icons/icon-180-v4.png']) assert.ok(refs.includes(want), `index.html 应该引用 ${want}`);
   for (const f of refs) { assert.ok(exists(f), `index.html 引用的 ${f} 不存在`); inCore(f, 'index.html'); }
 });
 
-test('从 src/app.js 顺着 import 走到的模块都存在，都在 CORE 里', () => {
-  const graph = importGraph('./src/app.js');
+test('从启动器顺着 import 走到的模块都存在，都在 CORE 里', () => {
+  const graph = importGraph('./src/start.js');
   assert.ok(graph.size > 10, `只走到了 ${graph.size} 个模块，解析 import 的正则可能坏了`);
   for (const [f, by] of graph) { assert.ok(exists(f), `${by} import 的 ${f} 不存在`); inCore(f, `${by} import`); }
 });
@@ -139,166 +141,136 @@ test('图标 PNG：正方形，尺寸和文件名一致', () => {
     assert.equal(b.toString('latin1', 1, 4), 'PNG', `${f} 不是 PNG`);
     const w = b.readUInt32BE(16), hgt = b.readUInt32BE(20);
     assert.equal(w, hgt, `${f} 不是正方形`);
-    assert.equal(w, Number(f.match(/(\d+)\.png$/)[1]), `${f} 实际是 ${w}px`);
+    assert.equal(w, Number(f.match(/icon-(?:maskable-)?(\d+)(?:-v\d+)?\.png$/)[1]), `${f} 实际是 ${w}px`);
   }
 });
 
-// ---------- 在假的 service worker 环境里跑 sw.js ----------
+// ---------- 在假的 service worker 环境里跑真实 sw.js（响应体与摘要使用 Node 的真实 Web API） ----------
 const SCOPE = 'https://example.github.io/babble/';
-function loadSw({ fetch: fakeFetch = () => Promise.reject(new TypeError('offline')), caches: initial = {}, addAllFails = false } = {}) {
+const digest = text => createHash('sha256').update(text).digest('hex');
+const fixture = file => 'core:' + file;
+const VENDOR_FILE = './vendor/transformers/transformers.min.js';
+const release = () => ({ cache: CACHE, vendorCache: VENDOR_CACHE,
+  core: Object.fromEntries(CORE.map(file => [file, digest(fixture(file))])), vendor: { [VENDOR_FILE]: digest('vendor') } });
+const response = (body, status = 200) => new Response(body, { status });
+function loadSw({ fetch: fakeFetch, caches: initial = {}, manifest = release() } = {}) {
   const location = new URL(SCOPE + 'sw.js');
   const abs = r => new URL(typeof r === 'string' ? r : r.url, location).href;
-  const noSearch = u => u.split('?')[0];
   const stores = new Map(Object.entries(initial).map(([name, files]) => [name, new Map(Object.entries(files).map(([u, v]) => [abs(u), v]))]));
-  const handlers = {}, fetched = [], timers = [];
+  const handlers = {}, fetched = [];
+  let skipped = 0, claimed = 0;
   const caches = {
     async open(name) {
       if (!stores.has(name)) stores.set(name, new Map());
       const m = stores.get(name);
-      return {
-        async addAll(reqs) {
-          if (addAllFails) throw new TypeError('Load failed');     // 和浏览器一样：有一个失败就整个失败，什么都不存
-          for (const r of reqs) m.set(abs(r), { body: 'core:' + abs(r), status: 200, cacheMode: r.cache });
-        },
-        async put(req, res) { m.set(abs(req), res); },
-        async match(req) { return m.get(abs(req)); },
-      };
+      return { async put(req, res) { m.set(abs(req), res.clone()); }, async match(req) { return m.get(abs(req))?.clone(); } };
     },
-    async keys() { return [...stores.keys()]; },
-    async delete(name) { return stores.delete(name); },
-    async match(req, opts = {}) {
-      const want = opts.ignoreSearch ? noSearch(abs(req)) : abs(req);
-      for (const m of stores.values()) for (const [u, v] of m) if ((opts.ignoreSearch ? noSearch(u) : u) === want) return v;
-    },
+    async keys() { return [...stores.keys()]; }, async delete(name) { return stores.delete(name); },
   };
-  class Request { constructor(u, init = {}) { this.url = new URL(u, location).href; this.method = 'GET'; this.mode = 'cors'; this.cache = init.cache || 'default'; } }
-  const sandbox = {
-    self: { addEventListener: (type, fn) => { handlers[type] = fn; }, skipWaiting() {}, clients: { claim() {} } },
-    caches, location, URL, Request,
-    Response: { error: () => ({ type: 'error', status: 0 }) },
-    fetch: (req, init) => { fetched.push({ url: req.url, init }); return fakeFetch(req, init); },
-    setTimeout: (fn, ms) => timers.push({ fn, ms }), clearTimeout: id => { if (timers[id - 1]) timers[id - 1].fn = null; },
-  };
-  vm.runInNewContext(SW, sandbox, { filename: 'sw.js' });
+  class Request extends globalThis.Request { constructor(url, init = {}) { super(abs(url), init); } }
+  const network = fakeFetch || (async req => {
+    const path = './' + new URL(req.url).pathname.slice(new URL(SCOPE).pathname.length);
+    return path === './release.json' ? response(JSON.stringify(manifest)) : response(fixture(path));
+  });
+  vm.runInNewContext(SW, {
+    self: { addEventListener: (type, fn) => { handlers[type] = fn; }, skipWaiting() { skipped++; }, clients: { claim() { claimed++; } } },
+    caches, location, URL, Request, Response, crypto: webcrypto,
+    fetch: (req, init) => { fetched.push({ url: req.url, cache: req.cache, init }); return network(req, init); },
+  }, { filename: 'sw.js' });
   const fire = (type, props = {}) => {
-    const waits = [];
-    let responded = null;
+    const waits = []; let responded = null;
     handlers[type]({ ...props, waitUntil: p => waits.push(p), respondWith: p => { responded = Promise.resolve(p); } });
     return { settled: () => Promise.all(waits), get responded() { return responded; } };
   };
-  const tick = () => { for (const t of timers.splice(0)) if (t.fn) { assert.equal(t.ms, 3000); t.fn(); } };
-  return { fire, stores, fetched, tick, keys: name => [...(stores.get(name) || new Map()).keys()] };
+  return { fire, stores, fetched, get skipped() { return skipped; }, get claimed() { return claimed; }, keys: name => [...(stores.get(name) || new Map()).keys()] };
 }
 const req = (p, extra = {}) => ({ request: { url: new URL(p, SCOPE).href, method: 'GET', mode: 'cors', ...extra } });
-const res = (body, status = 200) => ({ body, status, clone() { return { ...this, cloned: true }; } });
-const flush = () => new Promise(r => setImmediate(r));
-const PENDING = Symbol('pending');
-const peek = async p => { await flush(); return Promise.race([p, flush().then(() => PENDING)]); };
-// 坏掉的 sw 可能让 respondWith 永远不回：每个用例最多等 3 秒，算失败而不是卡住
 const swTest = (name, fn) => test(name, { timeout: 3000 }, fn);
-const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
+const activeFiles = files => ({ 'release.json': response(JSON.stringify(release())), ...files });
 
-swTest('sw 安装：CORE 全部存进当前版本的缓存，绕过 HTTP 缓存', async () => {
-  assert.match(SW, /const CACHE = 'babble-v\d+';/);
-  const sw = loadSw();
-  await sw.fire('install').settled();
-  assert.deepEqual(sw.keys(CACHE), CORE.map(u => new URL(u, SCOPE).href));
-  for (const v of sw.stores.get(CACHE).values()) assert.equal(v.cacheMode, 'reload');
+swTest('sw 安装：按发布清单校验完整 CORE，绕过 HTTP 缓存；安装结束不强制接管页面', async () => {
+  const sw = loadSw(); await sw.fire('install').settled();
+  assert.deepEqual(sw.keys(CACHE), [...CORE, './release.json'].map(u => new URL(u, SCOPE).href));
+  assert.equal(sw.fetched.find(r => r.url.endsWith('/release.json')).cache, 'no-store');
+  for (const r of sw.fetched.filter(r => !r.url.endsWith('/release.json'))) assert.equal(r.cache, 'reload');
+  assert.equal(sw.skipped, 0); assert.equal(sw.claimed, 0);
 });
 
-swTest('sw 安装：有文件没取到 → 安装失败（浏览器留着旧版本和旧缓存），不会装上一个空缓存', async () => {
-  const sw = loadSw({ addAllFails: true, caches: { 'babble-v0': { 'index.html': res('old index') } } });
-  await assert.rejects(sw.fire('install').settled());
-  assert.equal(sw.keys(CACHE).length, 0);
-  assert.deepEqual(sw.keys('babble-v0'), [SCOPE + 'index.html'], '旧缓存还在');
+swTest('sw 安装：断网、缺文件、混入别版内容或清单版本不符都失败，旧版缓存不动', async () => {
+  for (const fault of ['offline', 'missing', 'mixed', 'version']) {
+    const manifest = release(); if (fault === 'version') manifest.cache = 'babble-v0';
+    const sw = loadSw({ caches: { 'babble-v0': { 'index.html': response('old index') } }, fetch: async request => {
+      const path = './' + new URL(request.url).pathname.slice(new URL(SCOPE).pathname.length);
+      if (path === './release.json') return response(JSON.stringify(manifest));
+      if (path === './src/app.js') {
+        if (fault === 'offline') throw new Error('offline');
+        if (fault === 'missing') return response('missing', 404);
+        if (fault === 'mixed') return response('another release');
+      }
+      return response(fixture(path));
+    } });
+    await assert.rejects(sw.fire('install').settled());
+    assert.deepEqual(sw.keys('babble-v0'), [SCOPE + 'index.html']);
+    assert.equal(sw.keys(CACHE).length, 0, fault + ': 未验证全套之前不开始写缓存');
+  }
 });
 
-swTest('sw 启用：只删自己的旧缓存，同域名下别的 app 的缓存不动', async () => {
-  const sw = loadSw({ caches: { 'babble-v0': {}, 'babble-v1': {}, [CACHE]: {}, 'house-ledger-v13': {}, 'vshelf-v2': {}, babbleish: {} } });
+swTest('sw 启用：清理旧程序缓存和旧 vendor；保留其它 App 与模型；不 claim 活跃页面', async () => {
+  const sw = loadSw({ caches: { 'babble-v0': {}, [CACHE]: {}, [VENDOR_CACHE]: {}, 'babble-vendor-old': {}, 'house-ledger-v13': {}, 'transformers-cache': {} } });
   await sw.fire('activate').settled();
-  assert.deepEqual([...sw.stores.keys()].sort(), [CACHE, 'babbleish', 'house-ledger-v13', 'vshelf-v2'].sort());
+  assert.deepEqual([...sw.stores.keys()].sort(), [CACHE, VENDOR_CACHE, 'house-ledger-v13', 'transformers-cache'].sort());
+  assert.equal(sw.claimed, 0);
 });
 
-swTest('sw 启用：语音转文字的第三方文件缓存（当前版本）留着，旧版本的删掉；transformers.js 的模型缓存不碰', async () => {
-  assert.match(VENDOR_CACHE, /^babble-vendor-/);
-  assert.notEqual(VENDOR_CACHE, CACHE);
-  const sw = loadSw({ caches: { 'babble-v0': {}, [CACHE]: {}, [VENDOR_CACHE]: { 'vendor/transformers/transformers.min.js': res('tf') }, 'babble-vendor-tf000': {}, 'transformers-cache': {} } });
-  await sw.fire('activate').settled();
-  assert.deepEqual([...sw.stores.keys()].sort(), [CACHE, VENDOR_CACHE, 'transformers-cache'].sort());
-  assert.deepEqual(sw.keys(VENDOR_CACHE), [SCOPE + 'vendor/transformers/transformers.min.js']);
-});
-
-swTest('sw 第三方文件（vendor/）：第一次从网络取并存起来，以后先用缓存（离线也能用）；404 不存', async () => {
-  const sw = loadSw({ fetch: async r => res('net:' + r.url, r.url.endsWith('missing.wasm') ? 404 : 200) });
-  const wasm = 'vendor/transformers/ort-wasm-simd-threaded.wasm';
-  const first = sw.fire('fetch', req(wasm));
-  assert.equal((await first.responded).body, 'net:' + SCOPE + wasm);
-  await first.settled();
-  assert.deepEqual(sw.keys(VENDOR_CACHE), [SCOPE + wasm]);
-  assert.deepEqual(sw.keys(CACHE), [], '不放进程序文件的缓存（换版本时不用重下）');
-  assert.equal(sw.fetched.length, 1);
-  const again = sw.fire('fetch', req(wasm));
-  assert.equal((await again.responded).body, 'net:' + SCOPE + wasm);
-  assert.equal(sw.fetched.length, 1, '有缓存就不再联网');
-  const miss = sw.fire('fetch', req('vendor/transformers/missing.wasm'));
-  assert.equal((await miss.responded).status, 404);
-  await miss.settled();
-  assert.deepEqual(sw.keys(VENDOR_CACHE), [SCOPE + wasm]);
-  // 离线：缓存里有的照样能用
-  const off = loadSw({ caches: { [VENDOR_CACHE]: { [wasm]: res('cached wasm') } } });
-  assert.equal((await off.fire('fetch', req(wasm)).responded).body, 'cached wasm');
-  assert.equal(off.fetched.length, 0);
-});
-
-swTest('sw 不碰 api.github.com、别的网站和非 GET 请求', () => {
-  const sw = loadSw({ fetch: async () => res('net') });
-  for (const e of [
-    req('https://api.github.com/repos/someone/babble-data/contents/babble.json'),
-    req('https://api.github.com/repos/someone/babble-data/contents/audio/abc.m4a', { mode: 'cors' }),
-    req('https://example.com/babble/src/app.js'),
-    req('https://huggingface.co/onnx-community/whisper-base/resolve/abc/onnx/encoder_model_quantized.onnx'),
-    req('src/app.js', { method: 'POST' }),
-  ]) assert.equal(sw.fire('fetch', e).responded, null, e.request.url);
+swTest('sw 有网也始终用当前版本：程序和带查询参数的资源不混用网络或别版缓存', async () => {
+  const sw = loadSw({ caches: { 'babble-v0': { 'src/app.js': response('wrong old app') }, [CACHE]: activeFiles({ 'src/app.js': response('pinned app'), 'styles.css': response('pinned css'), 'index.html': response('pinned index') }) }, fetch: async () => response('newer server') });
+  assert.equal(await (await sw.fire('fetch', req('src/app.js?v=next')).responded).text(), 'pinned app');
+  assert.equal(await (await sw.fire('fetch', req('styles.css')).responded).text(), 'pinned css');
+  assert.equal(await (await sw.fire('fetch', req('./?x=1', { mode: 'navigate' })).responded).text(), 'pinned index');
   assert.equal(sw.fetched.length, 0);
 });
 
-swTest('sw 有网：用网络的新版本，并更新缓存（206 之类不存）', async () => {
-  const sw = loadSw({ fetch: async r => res('net:' + r.url, r.url.endsWith('.m4a') ? 206 : 200) });
-  const e = sw.fire('fetch', req('src/app.js'));
-  assert.equal((await e.responded).body, 'net:' + SCOPE + 'src/app.js');
-  await e.settled();
-  assert.deepEqual(sw.keys(CACHE), [SCOPE + 'src/app.js']);
-  assert.equal(sw.fetched[0].init.cache, 'no-cache');
-  const partial = sw.fire('fetch', req('test.m4a'));
-  assert.equal((await partial.responded).status, 206);
-  await partial.settled();
-  assert.deepEqual(sw.keys(CACHE), [SCOPE + 'src/app.js']);
+swTest('sw 当前缓存意外缺文件：只补回校验通过的同版文件，不能借用旧缓存', async () => {
+  for (const good of [true, false]) {
+    const sw = loadSw({ caches: { 'babble-v0': { 'src/app.js': response('other version') }, [CACHE]: activeFiles({}) }, fetch: async () => response(good ? fixture('./src/app.js') : 'wrong version') });
+    const result = await sw.fire('fetch', req('src/app.js')).responded;
+    if (good) { assert.equal(await result.text(), fixture('./src/app.js')); assert.ok(sw.keys(CACHE).includes(SCOPE + 'src/app.js')); }
+    else { assert.equal(result.type, 'error'); assert.ok(!sw.keys(CACHE).includes(SCOPE + 'src/app.js')); }
+  }
 });
 
-swTest('sw 没网：用缓存；打开页面时没有这个地址就用 index.html；缓存里也没有就报错', async () => {
-  const sw = loadSw({ caches: { [CACHE]: { 'src/app.js': res('cached app'), 'index.html': res('cached index') } } });
-  assert.equal((await sw.fire('fetch', req('src/app.js?v=2')).responded).body, 'cached app');
-  assert.equal((await sw.fire('fetch', req('./?x=1#/rec', { mode: 'navigate' })).responded).body, 'cached index');
-  assert.equal((await sw.fire('fetch', req('src/views/nope.js')).responded).type, 'error');
+swTest('sw 离线或服务器失败：已有完整版本仍立即可用；缺少文件时明确失败', async () => {
+  const sw = loadSw({ caches: { [CACHE]: activeFiles({ 'index.html': response('offline index') }) }, fetch: async () => { throw new Error('offline'); } });
+  assert.equal(await (await sw.fire('fetch', req('./', { mode: 'navigate' })).responded).text(), 'offline index');
+  assert.equal((await sw.fire('fetch', req('src/app.js')).responded).type, 'error');
 });
 
-swTest('sw 网络慢：3 秒后先用缓存；缓存里没有就继续等网络', async () => {
-  const slow = deferred();
-  const sw = loadSw({ fetch: () => slow.promise, caches: { [CACHE]: { 'index.html': res('cached index') } } });
-  const nav = sw.fire('fetch', req('./', { mode: 'navigate' }));
-  const js = sw.fire('fetch', req('src/core/dates.js'));
-  assert.equal(await peek(nav.responded), PENDING);
-  sw.tick();
-  assert.equal((await nav.responded).body, 'cached index');
-  assert.equal(await peek(js.responded), PENDING, '缓存里没有 → 继续等网络');
-  slow.resolve(res('net'));
-  assert.equal((await js.responded).body, 'net');
-  await nav.settled();
-  assert.ok(sw.keys(CACHE).includes(SCOPE), '网络回来后照样更新缓存');
+swTest('sw vendor 按需下载并校验，缓存后离线复用；错版本或 404 都不能写缓存', async () => {
+  const sw = loadSw({ caches: { [CACHE]: activeFiles({}) }, fetch: async () => response('vendor') });
+  assert.equal(await (await sw.fire('fetch', req(VENDOR_FILE)).responded).text(), 'vendor');
+  assert.equal(await (await sw.fire('fetch', req(VENDOR_FILE)).responded).text(), 'vendor');
+  assert.equal(sw.fetched.length, 1);
+  assert.deepEqual(sw.keys(VENDOR_CACHE), [new URL(VENDOR_FILE, SCOPE).href]);
+  for (const bad of [response('wrong version'), response('not found', 404)]) {
+    const failed = loadSw({ caches: { [CACHE]: activeFiles({}) }, fetch: async () => bad });
+    assert.equal((await failed.fire('fetch', req(VENDOR_FILE)).responded).type, 'error');
+    assert.deepEqual(failed.keys(VENDOR_CACHE), []);
+  }
 });
 
-swTest('sw 服务器 5xx：缓存里有就用缓存，没有就把错误页交给页面', async () => {
-  const sw = loadSw({ fetch: async () => res('oops', 503), caches: { [CACHE]: { 'styles.css': res('cached css') } } });
-  assert.equal((await sw.fire('fetch', req('styles.css')).responded).body, 'cached css');
-  assert.equal((await sw.fire('fetch', req('manifest.webmanifest')).responded).status, 503);
+swTest('sw 不碰 GitHub、模型、其它 App 路径、非 GET 或未列入清单的资源', () => {
+  const sw = loadSw();
+  for (const props of [req('https://api.github.com/repos/test/data'), req('https://huggingface.co/model'), req('/other-app/src/app.js'), req('src/app.js', { method: 'POST' }), req('not-an-app-file.txt')]) assert.equal(sw.fire('fetch', props).responded, null);
+  assert.equal(sw.fetched.length, 0);
+});
+
+swTest('sw 版本查询只答复缓存版本，不触发更新或接管', () => {
+  const sw = loadSw(); let version;
+  sw.fire('message', { data: 'babble-build', ports: [{ postMessage: value => { version = value; } }] });
+  assert.equal(version, CACHE); assert.equal(sw.claimed, 0); assert.equal(sw.skipped, 0);
+});
+
+test('发布清单与当前代码、资源和启动版本一致，遗漏准备发布步骤时测试失败', () => {
+  const result = spawnSync(process.execPath, ['scripts/prepare-release.mjs', '--check'], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
