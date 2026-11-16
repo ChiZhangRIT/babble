@@ -439,9 +439,9 @@ function renderShell(r) {
       item('record', '#/rec', icon('snout'), t('nav.rec')),
       item('import', '#/import', icon('import'), t('nav.import'))),
     h('div.side-foot', null,
-      syncBadge(),
       h('nav', { 'aria-label': t('nav.settings') },
-        item('settings', '#/settings', icon('gear'), t('nav.settings')))),
+        item('settings', '#/settings', icon('gear'), t('nav.settings'))),
+      syncBadge()),
   );
   const tabs = $('#tabs');
   tabs.setAttribute('aria-label', t('nav.label'));
