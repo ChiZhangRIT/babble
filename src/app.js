@@ -437,9 +437,11 @@ function renderShell(r) {
     h('nav', { 'aria-label': t('nav.label') },
       item('list', '#' + home(), icon('bubble'), t('nav.list')),
       item('record', '#/rec', icon('snout'), t('nav.rec')),
-      item('import', '#/import', icon('import'), t('nav.import')),
-      item('settings', '#/settings', icon('gear'), t('nav.settings'))),
-    h('div.side-foot', null, syncBadge()),
+      item('import', '#/import', icon('import'), t('nav.import'))),
+    h('div.side-foot', null,
+      syncBadge(),
+      h('nav', { 'aria-label': t('nav.settings') },
+        item('settings', '#/settings', icon('gear'), t('nav.settings')))),
   );
   const tabs = $('#tabs');
   tabs.setAttribute('aria-label', t('nav.label'));
