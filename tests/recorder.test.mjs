@@ -7,6 +7,8 @@ import { sha256Hex } from '../src/core/sha256.js';
 
 const flush = async (n = 4) => { for (let i = 0; i < n; i++) await new Promise(r => setTimeout(r, 0)); };
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+/** 等到 ok() 成立（最多 ms 毫秒）：整套测试一起跑、机器忙的时候，固定睡几毫秒不一定够 */
+const until = async (ok, ms = 2000) => { for (const end = Date.now() + ms; !ok() && Date.now() < end;) await sleep(5); };
 const text = async (blob) => new TextDecoder().decode(await blob.arrayBuffer());
 
 class FakeTrack extends EventTarget {
@@ -122,7 +124,7 @@ test('麦克风被打断（track mute / ended）→ 自动停止并保存', asyn
     await rec.start();
     env.recorders[0].emit('一点点');
     env.streams[0].tracks[0].dispatchEvent(new Event(ev));
-    await sleep(10);
+    await until(() => rec.state === 'saved');
     assert.equal(rec.state, 'saved', ev);
     const saved = env.states.at(-1)[1];
     assert.equal(saved.reason, 'interrupted');
@@ -139,7 +141,7 @@ test('MediaRecorder 出错 → 已录的照样保存（等最后一片）；出�
   mr.state = 'inactive';                                   // 和浏览器一样：error 之后异步给最后一片、发 stop
   mr.dispatchEvent(new Event('error'));
   setTimeout(() => { mr.emit('|最后'); mr.dispatchEvent(new Event('stop')); }, 5);
-  await sleep(30);
+  await until(() => rec.state === 'saved');
   assert.equal(rec.state, 'saved');
   assert.equal(env.states.at(-1)[1].reason, 'error');
   assert.equal(await text((await env.store.getClip(env.states.at(-1)[1].sha256)).blob), '前半段|最后');
@@ -150,7 +152,7 @@ test('MediaRecorder 出错 → 已录的照样保存（等最后一片）；出�
   quiet.recorders[0].emit('只有这些');
   quiet.recorders[0].state = 'inactive';
   quiet.recorders[0].dispatchEvent(new Event('error'));    // 之后什么都不来
-  await sleep(1700);
+  await until(() => r2.state === 'saved', 4000);
   assert.equal(r2.state, 'saved');
   assert.equal(await text((await quiet.store.getClip(quiet.states.at(-1)[1].sha256)).blob), '只有这些');
 });
@@ -179,7 +181,7 @@ test('到 maxMs 自动停止', async () => {
   const rec = env.make({ maxMs: 30 });
   await rec.start();
   env.recorders[0].emit('十分钟');
-  await sleep(80);
+  await until(() => rec.state === 'saved');
   assert.equal(rec.state, 'saved');
   assert.equal(env.states.at(-1)[1].reason, 'max');
 });

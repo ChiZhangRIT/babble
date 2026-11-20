@@ -76,7 +76,8 @@ export function pickEngine(key, { mobile = false, gpu = false, f16 = false, useG
  * 30 ms 一帧算响度；噪声底取较安静的 15% 分位，往上 6–10 dB 算有声（最低 -55 dBFS）；停顿 < 0.6 秒的并在一起，
  * 有声不到 0.25 秒的当咔哒声丢掉，前后各留 0.25 秒；相邻的再合成窗口（停顿 ≤ 1.5 秒、窗口 ≤ 20 秒），一个窗口是一行；
  * 一口气超过 28 秒的在 20–28 秒之间最安静的地方切开（Whisper 一次只看 30 秒）。
- * 整段差不多一样响：很响（> -30 dBFS）当作一直在说，否则当作只有杂音 / 静音（不识别，免得它编字幕套话）。
+ * 「响」取 95% 分位；说话不到整段的 5%（10 分钟里只说了二十几秒）时它还落在噪声里，这时看最响的 0.25 秒是不是明显高出一截。
+ * 整段差不多一样响：很响（≥ -30 dBFS）当作一直在说，否则当作只有杂音 / 静音（不识别，免得它编字幕套话）。
  * @param {Float32Array} pcm 单声道
  * @param {number} [sr]
  * @returns {Array<[number, number]>}
@@ -93,23 +94,30 @@ export function speechSegments(pcm, sr = SR, o = {}) {
   }
   const sorted = Float32Array.from(db).sort();
   const pct = (q) => sorted[Math.min(n - 1, Math.floor(n * q))];
-  const floor = pct(0.15), loud = pct(0.95);
-  let spans;
+  const floor = pct(0.15), loud = pct(0.95), K = Math.ceil(minSec / frameSec);
+  let thr = Math.max(floor + Math.min(10, Math.max(6, (loud - floor) / 2)), -55), minOn = 1, spans;
   if (loud - floor < 8) {
-    if (loud < -30) return [];
-    spans = [[0, len]];
-  } else {
-    const thr = Math.max(floor + Math.min(10, Math.max(6, (loud - floor) / 2)), -55);
+    // 95% 分位还在噪声里：要么说话不到整段的 5%（长录音里只说了几句），要么整段一样响 / 只有杂音。
+    // 最响的 0.25 秒比噪声底高 8 dB、也比 95% 分位高 6 dB 才算有人说话（鼾声、呼吸、慢慢起伏的杂音只是噪声里偏响的那头，过不了）；
+    // 很响的整段只有特别平（风扇、白噪声机）才这样找，不然还是当作一直在说
+    const peak = sorted[Math.max(0, n - K)];
+    if (peak - floor >= 8 && peak - loud >= 6 && (loud < -30 || loud - floor < 3)) {
+      thr = Math.max(floor + 6, loud + 3, -55);
+      minOn = K;                                // 每段里真正响的帧也要凑够 0.25 秒，零星的杂音帧连不成一段
+    } else if (loud >= -30) spans = [[0, len]];
+    else return [];
+  }
+  if (!spans) {
     const gapF = Math.round(gapSec / frameSec), pad = Math.round(padSec * sr);
     const runs = [];
     let cur = null;
     for (let i = 0; i < n; i++) {
       if (db[i] <= thr) continue;
-      if (cur && i - cur[1] <= gapF) cur[1] = i;
-      else { if (cur) runs.push(cur); cur = [i, i]; }
+      if (cur && i - cur[1] <= gapF) { cur[1] = i; cur[2]++; }
+      else { if (cur) runs.push(cur); cur = [i, i, 1]; }
     }
     if (cur) runs.push(cur);
-    spans = runs.filter(([a, b]) => (b - a + 1) * frameSec >= minSec).map(([a, b]) => [Math.max(0, a * F - pad), Math.min(len, (b + 1) * F + pad)]);
+    spans = runs.filter(([a, b, on]) => (b - a + 1) * frameSec >= minSec && on >= minOn).map(([a, b]) => [Math.max(0, a * F - pad), Math.min(len, (b + 1) * F + pad)]);
   }
   // 合成识别窗口
   const joined = [];
@@ -139,10 +147,13 @@ export function speechSegments(pcm, sr = SR, o = {}) {
 const CJK = '\\u3400-\\u9fff\\uf900-\\ufaff';
 // Whisper 在静音、杂音上常编的话（训练数据里的字幕、片尾），在简体化以后的文字上找
 const HALLU = [
-  /(?:中文)?字幕(?:由|提供|制作|志愿者|组|翻译|校对|[：:])[^，。！？!?\n]*/g,
+  /(?:中文)?字幕(?:由|提供|制作|志愿者|组|翻译|校对|[：:]|\s*by)[^，。！？!?\n]*/gi,
   /(?:请)?不吝点赞[^。！\n]*/g,
   /明镜(?:与|和)?点点(?:栏目)?/g,
-  /(?:谢谢|感谢)(?:大家|各位|您)?(?:的)?(?:观看|收看|收听)[！!。.]*/g,
+  /(?:谢谢|感谢|多谢)(?:大家|各位|您)?(?:的)?(?:观看|收看|收听)[！!。.]*/g,
+  /(?:我们)?下期(?:节目)?再见[！!。.]*/g,
+  /thank you (?:so much )?for watching[.!]*/gi,
+  /ming pao(?: canada| toronto|\s*\|)*/gi,
   /(?:请|欢迎|记得)?(?:点赞|订阅|转发|打赏|关注)(?:[、，,和与及]?(?:点赞|订阅|转发|打赏|关注|支持)(?:我们|本频道|频道)?)+/g,
   /(?:请|欢迎)订阅(?:我的|我们的|本)?频道/g,
   /amara\.org[^\n]*/gi,

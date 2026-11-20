@@ -82,6 +82,39 @@ test('分段：静音、只有均匀的小杂音 → 不识别；数字静音里
   near(secs(T.speechSegments(signal(10, [[3, 5, -50]], { noiseDb: null }))), [[2.75, 5.25]]);
 });
 
+test('分段：长录音里只说了几句（不到整段的 5%）也找得到；只有一下咔哒声还是不识别', () => {
+  near(secs(T.speechSegments(signal(600, [[100, 120]]))), [[99.75, 120.25]]);
+  near(secs(T.speechSegments(signal(600, [[100, 103], [400, 401.5, -45]]))), [[99.75, 103.25], [399.75, 401.75]]);
+  near(secs(T.speechSegments(signal(600, [[200, 215, -50], [400, 400.4, -12]]))), [[199.75, 215.25], [399.75, 400.65]]);   // 一声关门不会把小声的话挤掉
+  assert.deepEqual(T.speechSegments(signal(600, [[300, 300.2, -10]])), []);
+  // 风扇 / 白噪声机（-28 dBFS，很平）里说了几句：只识别说话那段，不再整段送去
+  near(secs(T.speechSegments(signal(120, [[50, 52, -10]], { noiseDb: -28 }))), [[49.75, 52.25]]);
+});
+
+/** 鼾声 / 呼吸似的：每 every 秒一下、每下 dur 秒的噪声，比底噪响 relDb（每下 ±jit dB） */
+function bursts(sec, { every = 4, dur = 1, relDb = 6, jit = 2, noiseDb = -60, seed = 9 } = {}) {
+  const x = signal(sec, [], { noiseDb, seed }), r = lcg(seed + 1), r2 = lcg(seed + 2), D = Math.round(dur * SR), ramp = Math.round(0.1 * SR);
+  for (let t = 1; t + dur < sec; t += every) {
+    const g = Math.pow(10, (noiseDb + relDb + jit * r()) / 20) * Math.sqrt(3), s = Math.round(t * SR);
+    for (let i = 0; i < D; i++) x[s + i] += g * Math.min(1, i / ramp, (D - i) / ramp) * r2();
+  }
+  return x;
+}
+
+test('分段：长录音里只有鼾声、呼吸、慢慢起伏的底噪 → 还是不识别', () => {
+  assert.deepEqual(T.speechSegments(bursts(600, { relDb: 5 })), []);
+  assert.deepEqual(T.speechSegments(bursts(600, { relDb: 6 })), []);
+  assert.deepEqual(T.speechSegments(bursts(600, { every: 4.5, dur: 1.6, relDb: 5, noiseDb: -55 })), []);
+  // 自动增益让底噪慢慢起伏（约 ±2.5 dB，1 秒左右变一次）
+  const x = signal(600, []), r = lcg(11);
+  let g = 0;
+  for (let i = 0; i < x.length; i += 160) {
+    g = 0.99 * g + 0.6 * r();
+    const k = Math.pow(10, g / 20);
+    for (let j = i; j < Math.min(x.length, i + 160); j++) x[j] *= k;
+  }
+  assert.deepEqual(T.speechSegments(x), []);
+});
 test('分段：一直在说（60 秒）→ 切成 ≤ 28 秒的几段，首尾相接、一点不漏', () => {
   const x = signal(60, [[0, 60, -18]]);
   const segs = T.speechSegments(x);
@@ -121,10 +154,13 @@ test('整理识别结果：繁→简、全角标点、词组间空格换逗号�
 });
 
 test('整理识别结果：去掉静音 / 杂音上编出来的字幕套话', () => {
-  for (const s of ['字幕製作人', '謝謝觀看', '谢谢大家收看!', '請不吝點贊 訂閱 轉發 打賞支持明鏡與點點欄目', '字幕由Amara.org社区提供', '(音乐)', '♪♪']) assert.equal(T.cleanText(s), '', s);
+  for (const s of ['字幕製作人', '謝謝觀看', '谢谢大家收看!', '請不吝點贊 訂閱 轉發 打賞支持明鏡與點點欄目', '字幕由Amara.org社区提供', '(音乐)', '♪♪',
+    '多谢您的观看', '我们下期再见', '字幕by索兰娅', 'Thank you for watching.', 'MING PAO CANADA | MING PAO TORONTO']) assert.equal(T.cleanText(s), '', s);
   assert.equal(T.cleanText('今天好累 謝謝觀看'), '今天好累');
   assert.equal(T.cleanText('[音乐] 你别走'), '你别走');
   assert.equal(T.cleanText('谢谢你'), '谢谢你');                    // 正常的话不动
+  assert.equal(T.cleanText('谢谢大家'), '谢谢大家');
+  assert.equal(T.cleanText('下次见'), '下次见');
   assert.equal(T.cleanText('我订阅了杂志'), '我订阅了杂志');
 });
 
