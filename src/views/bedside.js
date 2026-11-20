@@ -246,15 +246,16 @@ export function render(main, params, ctx, deps = {}) {
  * 今晚最后一次床头模式断了（App 被关掉、离开了那一页）、断了不到 6 小时 → 「床头模式 凌晨2:10 断了，点这里接着听」
  */
 export function bedLink(ctx) {
-  const label = h('span', null, t('bed.link'));
-  const btn = h('button.n-link.bed-link', { type: 'button', onclick: () => ctx.navigate('/rec?bed=1') }, icon('clock'), label);
+  const label = h('small', null, t('bed.link'));
+  const btn = h('button.n-link.bed-link', { type: 'button', onclick: () => ctx.navigate('/rec?bed=1') },
+    h('span.bed-link-ic', null, icon('moon')), h('span.bed-link-txt', null, h('b', null, t('bed.title')), label), icon('chev'));
   const night = ctx.night;
   if (night && night.listSessions) {
     Promise.resolve(ctx.nightRecovered).then(() => night.listSessions()).then(ss => {
       const s = ss && ss[ss.length - 1], now = Date.now();           // listSessions 按开始时间排好
       if (!s || !s.endedAt || now - s.endedAt >= BROKEN_MS || !(s.status === 'crashed' || s.endReason === 'leave')) return;
       if (s.nightOf !== nightKey(now, (ctx.state && ctx.state.settings) || {}, s.tz)) return;
-      label.textContent = t('bed.linkBroken', { time: clock(s.endedAt, ctx.lang(), s.tz) });
+      label.textContent = t('bed.linkBroken', { time: clock(s.endedAt, ctx.lang(), s.tz) }); label.classList.add('broken');
     }).catch(() => {});
   }
   return btn;

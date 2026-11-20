@@ -1,13 +1,13 @@
 {
   "app": "babble",
   "v": 1,
-  "cache": "babble-v25",
+  "cache": "babble-v26",
   "vendorCache": "babble-vendor-tf432",
-  "worker": "540325f78c95510849d4685b2efe3303df83ece447a8f3e193437c471f6d20be",
+  "worker": "b0d2793f9ecf6b205cec8a0484f335c413cf1523d10706cf601455654ed17aa1",
   "core": {
     "./": "d5ea341e1817d46dec0ddc2ba3c5b368c0be35ac2f0ae7a3a526ae5e4ba6bef1",
     "./index.html": "d5ea341e1817d46dec0ddc2ba3c5b368c0be35ac2f0ae7a3a526ae5e4ba6bef1",
-    "./styles.css": "cca9d0e3d231da192ae33d0c7ffb617730e8aadecbc3c6801a41424be8325428",
+    "./styles.css": "375ecde4136094422a6d812a8b94ed34bcf229883575d631558ea2ebf9372f06",
     "./manifest.webmanifest": "c06b3c1fd5af25f7d2ed5e77eaedbc20d323c931c4b12f2878c66cb92d33216a",
     "./manifest.zh-Hant-TW.webmanifest": "d27d07082c9ed05ba53ce7c9ae9a635e21b0011790a4db9400ef0d1471e8a367",
     "./icons/icon.svg": "cd30815818631df3cb6f29082bed3e07c679a1964122db5478b291d5f0f0b644",
@@ -30,7 +30,7 @@
     "./src/app.js": "5a08dd2441e4e50cc0a69bb51a255f91db0c2be1ae471608f9f0262b9b42cf7e",
     "./src/boot.js": "16718476615fd9fb31788972936fdea917744e3b69fc492e2a9a6bf5cada4e63",
     "./src/i18n.js": "3a69d9c695172e817c0faa9d453cc4b4eb0ab58538a1413fd0b438ff9e779b00",
-    "./src/start.js": "d7a48be10c67b4f5f97ee9541c9e76909f336951c9d5ce58a4f58304450ffd5a",
+    "./src/start.js": "cc378ac97999a5bb9736e9b769776874252422f2e923e0b90de2d2041cd03d09",
     "./src/ui/recovery.js": "8a253b487507d68d010988bdb56f733d0400156e9f77c59cb670b38f14380486",
     "./src/strings/recovery.js": "828eea447b71f184762bf7d7c4913ccdaef6c410ee9c23a642692b62fbe29d7a",
     "./src/core/audioStore.js": "1a6ff0b4c9e2c490a497c51b9307e31349684a03264ecb4a451972964917436b",
@@ -61,7 +61,7 @@
     "./src/strings/stt.js": "3344712ce7725e3e41720a7b4dea970c03f75225f47b957e0c855a9dcf2d41d5",
     "./src/core/transcribe.js": "8fe466c8c29699b9945f02415cb1b80b881724f1adca3717693b666bc4404c4b",
     "./src/workers/transcribe.worker.js": "127d802615e63a1806019c77065e5715cccb9f5ae2a398377f49679ca51804fb",
-    "./src/ui/dom.js": "b13bd50e01f8795d513b671278724a882e9b50d4f122baee9ae15abdf82b3306",
+    "./src/ui/dom.js": "731ff7ba05ce11fd296ff848c1665e3f88b2a763ffc9635c719456b21897ed27",
     "./src/ui/player.js": "336b8a0ed9e05f6c5572795909718b0367b3386aa42fcf7b0d1f848fc4d671ee",
     "./src/ui/stt.js": "4a4d3dd4173697d428cc456d0dee60399b0d18ccb19180251123be223194b7f4",
     "./src/ui/writer.js": "7a3c6a2e5fce661c44cf56db7ac86105cb21d2928d218ae17930bddcd6f9eb13",
@@ -84,9 +84,9 @@
     "./src/core/nightKeep.js": "dc51a90c993e1e2ea334b1496d7ab8425ffb9c2121626100d692929ceab3a419",
     "./src/worklets/capture.worklet.js": "11b97b5a9ba2f417634779aae997101558286dc3acf642517d6407da76627085",
     "./src/workers/vad.worker.js": "644ef3d90b8d67c01a426f3f132229ddca402bb5983fb30cfebdbf401b2b580f",
-    "./src/views/bedside.js": "861190a422535661c54ca1cf5678be0b6ebe4b0805273493548c74a4d51e8ba3",
+    "./src/views/bedside.js": "b41c9fe9f967b0766953a5cf1b0de070805ffc51e0485de9c7ed237661aa814a",
     "./src/views/night.js": "39558c6024d20ea7a0531f5bb12fc91e45541ff903eeff226ccfd9dc58d80b67",
-    "./src/strings/night.js": "c79248000645c6e120ebaf8bcc53a62aa112821cb37f5e8a2be728eb844a392f"
+    "./src/strings/night.js": "9a34ae0b4d286f85dff1e4fd680f2681cdb328ffeb68840b1e5356b8ac254917"
   },
   "vendor": {
     "./vendor/transformers/ort-wasm-simd-threaded.asyncify.mjs": "0966b6105cd936744498aa60df7a22cbd47af3374dbc64a9ab561c08a71e3611",

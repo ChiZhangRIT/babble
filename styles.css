@@ -773,17 +773,23 @@ textarea.ed-note { min-height: 56px; overflow-y: hidden; resize: none; }
 .n-attach-what { color: var(--n-ink); }
 
 /* 开始：暗色圆盘里一个暗玫瑰色的猪鼻子 */
-.n-start { display: flex; flex-direction: column; align-items: center; gap: 22px; padding: 6px; border: 0; border-radius: 24px; background: none; color: var(--n-ink); }
-.n-snout { --s: 1; position: relative; display: block; flex: none; width: calc(176px * var(--s)); height: calc(176px * var(--s)); border-radius: 50%; background: var(--n-panel); box-shadow: inset 0 0 0 1px var(--n-line); }
+/* 开始录音：圆盘一圈玫瑰色的边 + 淡淡的光晕，下面的字放在浅玫瑰色的胶囊里，一看就是能按的；按下去整个缩一点 */
+.n-start { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 6px; border: 0; border-radius: 24px; background: none; color: var(--n-ink); }
+.n-snout { --s: 1; position: relative; display: block; flex: none; width: calc(176px * var(--s)); height: calc(176px * var(--s)); border-radius: 50%;
+  background: radial-gradient(circle at 50% 36%, #1a1b25, var(--n-panel) 72%);
+  box-shadow: inset 0 0 0 2px rgba(184, 87, 106, .55), 0 0 0 calc(8px * var(--s)) rgba(184, 87, 106, .07), 0 8px 26px rgba(0, 0, 0, .45); transition: transform .12s; }
 .n-snout::before { content: ""; position: absolute; left: 50%; top: 50%; width: calc(120px * var(--s)); height: calc(88px * var(--s)); margin: calc(-44px * var(--s)) 0 0 calc(-60px * var(--s)); border-radius: 50%; background: var(--n-rose); opacity: .72; }
 .n-snout i { position: absolute; top: 50%; width: calc(18px * var(--s)); height: calc(31px * var(--s)); margin-top: calc(-15.5px * var(--s)); border-radius: 50%; background: #2c1219; }
 .n-snout i:first-child { left: calc(50% - 30px * var(--s)); }
 .n-snout i:last-child { right: calc(50% - 30px * var(--s)); }
+.n-start:active .n-snout { transform: scale(.97); }
 .n-start:active .n-snout::before { opacity: .55; }
-.n-start b { font-size: 21px; font-weight: 500; letter-spacing: .16em; margin-right: -.16em; }
+.n-start b { padding: 9px 22px 9px calc(22px + .16em); border-radius: 999px; background: rgba(184, 87, 106, .16); box-shadow: inset 0 0 0 1px rgba(184, 87, 106, .32);
+  color: #c98493; font-size: 20px; font-weight: 500; letter-spacing: .16em; }
 .n-start:disabled { cursor: default; }
 .n-start:disabled .n-snout::before { opacity: .35; }
-.n-start:disabled b { color: var(--n-muted); }
+.n-start:disabled .n-snout { box-shadow: inset 0 0 0 1px var(--n-line); transform: none; }
+.n-start:disabled b { background: var(--n-panel); box-shadow: inset 0 0 0 1px var(--n-line); color: var(--n-muted); }
 .n-hint { font-size: 12.5px; color: var(--n-faint); }
 .n-links { display: flex; justify-content: center; gap: 24px; padding-top: 6px; }
 .n-link { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 12px; border: 0; border-radius: 12px; background: none; color: var(--n-muted); font-size: 15px; }
@@ -861,7 +867,7 @@ textarea.ed-note { min-height: 56px; overflow-y: hidden; resize: none; }
 .n-tight .n-hero .n-start { flex-direction: row; justify-content: center; gap: 12px; width: 100%; min-height: 56px; padding: 6px 16px; border-radius: 18px;
   background: var(--n-panel); box-shadow: inset 0 0 0 1px var(--n-line); }
 .n-tight .n-hero .n-snout { --s: .26; background: none; box-shadow: none; }
-.n-tight .n-hero .n-start b { font-size: 18px; }
+.n-tight .n-hero .n-start b { padding: 0; background: none; box-shadow: none; font-size: 18px; }
 .n-bar { display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 4px 0 8px; }
 .n-bar .n-discard { flex: none; padding: 0; min-width: 44px; min-height: 44px; }
 .n-bar .n-discard i { width: 40px; height: 40px; }
@@ -938,9 +944,17 @@ body[data-route="record"] #toast button { color: var(--n-rose); }
 .bed-start:disabled { cursor: default; border-color: var(--n-line); background: var(--n-panel); color: var(--n-faint); }
 .bed-why { max-width: 360px; font-size: 13px; line-height: 1.6; color: #8c7552; }
 .bed-sum { max-width: 360px; font-size: 14px; line-height: 1.6; color: var(--n-muted); }
-/* 录音页上的入口（提示下面一行暗字）；边录边写时键盘弹出来（.n-tight）就收起来 */
-.n-link.bed-link { max-width: min(100%, 360px); padding: 6px 12px; font-size: 13.5px; line-height: 1.5; color: var(--n-faint); text-align: left; }
-.n-link.bed-link .ic { width: 16px; height: 16px; }
+/* 录音页上的入口：提示下面一张小卡片（月亮、「床头模式」、一行用途、›），一看就是能点的；边录边写时键盘弹出来（.n-tight）就收起来 */
+.n-link.bed-link { gap: 12px; width: min(100%, 340px); min-height: 62px; margin-top: 12px; padding: 10px 12px 10px 12px; border-radius: 16px;
+  background: var(--n-panel); box-shadow: inset 0 0 0 1px #262733; color: var(--n-ink); text-align: left; }
+.n-link.bed-link:active { background: #15161f; }
+.bed-link-ic { display: grid; place-items: center; flex: none; width: 38px; height: 38px; border-radius: 50%; background: rgba(184, 87, 106, .16); color: var(--n-rose); }
+.n-link.bed-link .bed-link-ic .ic { width: 19px; height: 19px; }
+.bed-link-txt { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.bed-link-txt b { color: #aeabb8; font-size: 15.5px; font-weight: 600; }
+.bed-link-txt small { color: var(--n-muted); font-size: 12.5px; line-height: 1.4; }
+.bed-link-txt small.broken { color: #b39060; }
+.n-link.bed-link > .ic { flex: none; width: 16px; height: 16px; color: var(--n-faint); }
 .n-tight .n-hero .bed-link { display: none; }
 /* 整夜：纯黑（OLED 不发光），盖住整个屏幕（刘海、Home 条也是黑的）；字 13px #2a2b33，位置由行内 transform 每分钟换一次（防烙印）。
    没有动画、没有过渡；不能拖动、不能选字；按住结束时只亮一圈 */

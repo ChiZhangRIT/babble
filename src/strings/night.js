@@ -7,7 +7,7 @@ const en = (one, many) => (v) => (Number(v.n) === 1 ? one : many).replace(/\{(\w
 export const STRINGS = {
   'zh-Hans': {
     // ---------- 床头模式 ----------
-    'bed.link': '床头模式：整夜放着，听到说话自动录', 'bed.linkBroken': '床头模式 {time} 断了，点这里接着听',
+    'bed.link': '整夜放在床头，听到说话自动录', 'bed.linkBroken': '{time} 断了，点这里接着听',
     'bed.title': '床头模式',
     'bed.intro': '手机插上电放在床头，整夜开着这一页。听到像说话的声音就存一小段（连同前面 8 秒），早上在「昨夜」里挑要留的。',
     'bed.tipPower': '插上电源：屏幕要亮一整夜。',
@@ -100,7 +100,7 @@ export const STRINGS = {
 
   'zh-Hant-TW': {
     // ---------- 床頭模式 ----------
-    'bed.link': '床頭模式：整夜放著，聽到說話自動錄', 'bed.linkBroken': '床頭模式 {time} 中斷了，點這裡接著聽',
+    'bed.link': '整夜放在床頭，聽到說話自動錄', 'bed.linkBroken': '{time} 中斷了，點這裡接著聽',
     'bed.title': '床頭模式',
     'bed.intro': '手機插上電放在床頭，整夜開著這一頁。聽到像說話的聲音就存一小段（連同前面 8 秒），早上在「昨夜」裡挑要留的。',
     'bed.tipPower': '插上電源：螢幕要亮一整夜。',
@@ -193,7 +193,7 @@ export const STRINGS = {
 
   en: {
     // ---------- Bedside mode ----------
-    'bed.link': 'Bedside mode: leave it on all night; it records when it hears talking', 'bed.linkBroken': 'Bedside mode stopped at {time}. Tap to keep listening',
+    'bed.link': 'Leave it by the bed all night; it records when it hears talking', 'bed.linkBroken': 'Stopped at {time}. Tap to keep listening',
     'bed.title': 'Bedside mode',
     'bed.intro': 'Plug in the phone, put it by the bed and leave this page open all night. When it hears something like talking, it saves a short clip (with the 8 seconds before it). In the morning, pick what to keep under “Last night”.',
     'bed.tipPower': 'Plug it in: the screen stays on all night.',

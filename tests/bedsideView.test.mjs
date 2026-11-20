@@ -412,22 +412,23 @@ test('录音页的入口：平时是一般的说法；今晚断了（App 被关�
     } finally { dom.restore(); }
   };
   const now = Date.now(), tonight = nightKey(now, S);
+  const L = (k, v) => t('bed.title') + t(k, v);                     // 按钮上：「床头模式」+ 下面一行小字
   const s = (o) => ({ id: 'n_' + Math.random(), nightOf: tonight, startedAt: now - 5 * 3600000, endedAt: now - 3600000, status: 'ended', endReason: 'user', gaps: [], ...o });
   const plain = await link([]);
-  assert.equal(plain.first, t('bed.link'));
-  assert.equal(plain.text, t('bed.link'));
+  assert.equal(plain.first, L('bed.link'));
+  assert.equal(plain.text, L('bed.link'));
   assert.deepEqual(plain.nav, ['/rec?bed=1']);
   assert.equal(plain.b.tag, 'button');
   const crashed = await link([s({ startedAt: now - 9 * 3600000 }), s({ status: 'crashed', endReason: 'killed' })]);
-  assert.equal(crashed.text, t('bed.linkBroken', { time: clock(now - 3600000) }));
+  assert.equal(crashed.text, L('bed.linkBroken', { time: clock(now - 3600000) }));
   assert.deepEqual(crashed.nav, ['/rec?bed=1']);
-  assert.equal((await link([s({ endReason: 'leave' })])).text, t('bed.linkBroken', { time: clock(now - 3600000) }));
-  assert.equal((await link([s({})])).text, t('bed.link'));                                        // 自己结束的
-  assert.equal((await link([s({ endReason: 'auto' })])).text, t('bed.link'));
-  assert.equal((await link([s({ status: 'crashed', endReason: 'killed', endedAt: now - 7 * 3600000 })])).text, t('bed.link'));   // 太久了
-  assert.equal((await link([s({ status: 'crashed', endReason: 'killed', nightOf: '2020-01-01' })])).text, t('bed.link'));        // 不是今晚
-  assert.equal((await link([s({ status: 'crashed' }), s({ startedAt: now - 1800000 })])).text, t('bed.link'));                   // 看最后一次
-  assert.equal((await link(null, { night: null })).text, t('bed.link'));                                                      // 没有 ctx.night 也行
+  assert.equal((await link([s({ endReason: 'leave' })])).text, L('bed.linkBroken', { time: clock(now - 3600000) }));
+  assert.equal((await link([s({})])).text, L('bed.link'));                                        // 自己结束的
+  assert.equal((await link([s({ endReason: 'auto' })])).text, L('bed.link'));
+  assert.equal((await link([s({ status: 'crashed', endReason: 'killed', endedAt: now - 7 * 3600000 })])).text, L('bed.link'));   // 太久了
+  assert.equal((await link([s({ status: 'crashed', endReason: 'killed', nightOf: '2020-01-01' })])).text, L('bed.link'));        // 不是今晚
+  assert.equal((await link([s({ status: 'crashed' }), s({ startedAt: now - 1800000 })])).text, L('bed.link'));                   // 看最后一次
+  assert.equal((await link(null, { night: null })).text, L('bed.link'));                                                      // 没有 ctx.night 也行
   // 等开机找回（recoverNights）做完再看：之前崩掉的还标着 live
   let done;
   const gate = new Promise(r => { done = r; });
@@ -435,9 +436,9 @@ test('录音页的入口：平时是一般的说法；今晚断了（App 被关�
   try {
     const b = bedLink({ t, lang: () => 'zh-Hans', state: { settings: S }, navigate() {}, nightRecovered: gate, night: { listSessions: async () => [s({ status: 'crashed', endReason: 'killed' })] } });
     await tick(); await tick();
-    assert.equal(b.textContent, t('bed.link'));
+    assert.equal(b.textContent, L('bed.link'));
     done(); await tick(); await tick(); await tick();
-    assert.equal(b.textContent, t('bed.linkBroken', { time: clock(now - 3600000) }));
+    assert.equal(b.textContent, L('bed.linkBroken', { time: clock(now - 3600000) }));
   } finally { dom.restore(); }
 });
 
