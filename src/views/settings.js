@@ -34,7 +34,8 @@ const sec = (id, title, kids, foot) => h('section.set-sec', { id: id ? 'set-' + 
 const row = (label, control, help) => h((/^(INPUT|SELECT|TEXTAREA)$/.test(control.tagName) ? 'label' : 'div') + '.group-row.set-row', null,
   h('span.set-label', null, label, help ? h('small', null, help) : null), control);
 const toggleRow = (label, checked, onchange, help) => row(label, h('input.toggle', { type: 'checkbox', role: 'switch', checked, onchange: (e) => onchange(e.target.checked) }), help);
-const linkRow = (href, ic, label, value) => h('a.group-row.set-link', { href }, ic ? icon(ic) : null, h('span', null, label), h('span.sp'), value != null ? h('span.value', null, value) : null);
+const linkRow = (href, ic, label, value, help) => h('a.group-row.set-link', { href }, ic ? icon(ic) : null,
+  help ? h('span.set-label', null, label, h('small', null, help)) : h('span', null, label), h('span.sp'), value != null ? h('span.value', null, value) : null);
 
 /** 同步状态的一句话和颜色（ok / wait / err / off） */
 export function syncState(st, lang) {
@@ -154,6 +155,9 @@ function mainPage(main, params, ctx) {
       toggleRow(t('set.nightDark'), S.nightForcesDark, (v) => ctx.setSetting('nightForcesDark', v)),
       row(t('set.maxRec'), h('select.set-in.set-select', { onchange: (e) => ctx.setSetting('maxRecordMin', Number(e.target.value)) },
         uniq([...MAX_MIN, S.maxRecordMin]).sort((a, b) => a - b).map(n => h('option', { value: n, selected: n === S.maxRecordMin }, t('set.minutes', { n }))))),
+      // 床头模式（不在夜里打开 App 的时候、iPad、Mac 上从这里找）和每一晚的记录（views/night.js）
+      linkRow('#/rec?bed=1', 'mic', t('night.setBed'), null, t('night.setBedHelp')),
+      linkRow('#/night', 'clock', t('night.setNights')),
     ], ctx.isNight() ? t('set.nightNow') : t('set.nightFoot'));
   }
 

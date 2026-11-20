@@ -11,14 +11,17 @@ const check = process.argv.includes('--check');
 let source = read('sw.js').toString(), cache = source.match(/const CACHE = '(babble-v\d+)'/)[1];
 let vendorCache = source.match(/const VENDOR_CACHE = '([^']+)'/)[1];
 const files = [...source.match(/const CORE = \[([\s\S]*?)\];/)[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
+// vendor/ 里按需下载、sw.js 按这张表核对的文件：transformers.js + onnxruntime（转文字、说话识别共用）、Silero VAD 模型（床头模式）。没有这个文件夹就跳过
+const vendorFiles = (dir, keep) => (fs.existsSync(path.join(root, 'vendor', dir)) ? fs.readdirSync(path.join(root, 'vendor', dir)).filter(file => keep.test(file)).sort().map(file => `vendor/${dir}/${file}`) : []);
 const manifest = () => ({ app: 'babble', v: 1, cache, vendorCache, worker: hash('sw.js'),
   core: Object.fromEntries(files.map(file => [file, hash(file === './' ? 'index.html' : file)])),
-  vendor: Object.fromEntries(fs.readdirSync(path.join(root, 'vendor/transformers')).filter(file => /\.(js|mjs|wasm)$/.test(file)).sort().map(file => ['./vendor/transformers/' + file, hash('vendor/transformers/' + file)])),
+  vendor: Object.fromEntries([...vendorFiles('transformers', /\.(js|mjs|wasm)$/), ...vendorFiles('silero-vad', /\.onnx$/)].map(file => ['./' + file, hash(file)])),
 });
 const previous = fs.existsSync(path.join(root, 'release.json')) ? JSON.parse(read('release.json')) : null;
 if (!check) {
+  // 已有的第三方文件改了或去掉了才给 vendor 缓存改名（旧的会被清掉、要重新下载）；只是加了文件不改名：缓存里有的照样能用，新的用到时再下载
   const vendor = manifest().vendor;
-  if (previous && previous.vendorCache === vendorCache && JSON.stringify(previous.vendor) !== JSON.stringify(vendor)) {
+  if (previous && previous.vendorCache === vendorCache && Object.entries(previous.vendor || {}).some(([file, sha]) => vendor[file] !== sha)) {
     vendorCache = 'babble-vendor-' + createHash('sha256').update(JSON.stringify(vendor)).digest('hex').slice(0, 12);
     source = source.replace(/const VENDOR_CACHE = '[^']+';/, `const VENDOR_CACHE = '${vendorCache}';`);
     fs.writeFileSync(path.join(root, 'sw.js'), source);

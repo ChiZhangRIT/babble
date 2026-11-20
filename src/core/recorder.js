@@ -14,7 +14,7 @@ const msgOf = (e) => (e && (e.message || e.name)) || String(e);
 const localTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch (e) { return null; } };
 const newRecId = () => 'r_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 /** getUserMedia 的错误 → denied（没给权限）| nomic（没有麦克风 / 被占用）| unsupported | failed */
-function micError(e) {
+export function micError(e) {
   const n = e && e.name;
   if (n === 'NotAllowedError' || n === 'SecurityError' || n === 'PermissionDeniedError') return 'denied';
   if (n === 'NotFoundError' || n === 'OverconstrainedError' || n === 'NotReadableError' || n === 'AbortError') return 'nomic';

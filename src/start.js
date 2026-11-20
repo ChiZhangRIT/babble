@@ -1,5 +1,5 @@
 // 无依赖启动器：安装完成后才加载 App；当前页面和控制它的 worker 必须属于同一版。
-export const BUILD = 'babble-v20';
+export const BUILD = 'babble-v25';
 
 function within(promise, ms) {
   let timer;
@@ -13,6 +13,7 @@ export function workerBuild(controller, { Channel = globalThis.MessageChannel, t
 export async function start({ nav = globalThis.navigator, loc = globalThis.location, win = globalThis.window,
   load = () => import('./app.js'), Channel = globalThis.MessageChannel, timeout = 15000 } = {}) {
   win.__babbleBootError = true;                 // 等待期间由这里负责超时提示，避免旧看门狗再盖一层
+  win.__babbleBuild = BUILD;                    // App 里要知道是哪一版（床头模式的记录里写上）：App 不能 import 这个文件（会再启动一次）
   if (loc.protocol === 'https:') {
     if (!nav.serviceWorker) throw new Error('worker-unavailable');
     if (!nav.serviceWorker.controller) {

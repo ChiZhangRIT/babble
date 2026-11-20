@@ -1,9 +1,10 @@
 // 每次启动固定使用同一份完整缓存。新版安装时按 release.json 校验文件，等旧页面全部关闭后再启用。
 // 只管本网站的文件。同步（api.github.com）不经过这里，也不进缓存；录音存在 IndexedDB，不在这里。
-// 语音转文字的第三方文件（vendor/，几十 MB）不预先缓存：第一次用到时存进 VENDOR_CACHE，以后先用缓存（之后离线也能转文字）；
-// 名字带版本号，App 发新版不用重新下载，换版本时改名字，旧的会被清掉。模型文件在 Hugging Face（别的网站），
+// 语音转文字、床头模式说话识别的第三方文件（vendor/：transformers.js 和 onnxruntime 几十 MB、Silero VAD 模型 1.3 MB）不预先缓存：
+// 第一次用到时按 release.json 的 vendor 核对 sha256，存进 VENDOR_CACHE，以后先用缓存（之后离线也能用）；
+// 名字带版本号，App 发新版不用重新下载；已有的文件换了版本（或去掉了）才改名字，旧的会被清掉，只是加了文件不改。Whisper 模型文件在 Hugging Face（别的网站），
 // 由 transformers.js 自己存在「transformers-cache」里，这里不碰。
-const CACHE = 'babble-v20';
+const CACHE = 'babble-v25';
 const VENDOR_CACHE = 'babble-vendor-tf432';
 const VENDOR = new URL('./vendor/', location).pathname;
 // 程序文件全部预先缓存（tests/sw.test.mjs 检查这张表和磁盘上的文件、index.html、import 关系一致），第一次打开之后就能离线用
@@ -25,6 +26,10 @@ const CORE = [
   './src/ui/dom.js', './src/ui/player.js', './src/ui/stt.js', './src/ui/writer.js',
   './src/views/calendar.js', './src/views/deleted.js', './src/views/device.js', './src/views/diagnostics.js', './src/views/editor.js', './src/views/entry.js', './src/views/history.js', './src/views/import.js',
   './src/views/list.js', './src/views/record.js', './src/views/settings.js',
+  // 床头模式（整夜录音的引擎、采集 worklet、说话识别 worker、昨夜页）
+  './src/core/nightDetect.js', './src/core/nightReport.js', './src/core/nightStore.js', './src/core/vad.js', './src/core/bedside.js',
+  './src/core/nightKeep.js', './src/worklets/capture.worklet.js', './src/workers/vad.worker.js',
+  './src/views/bedside.js', './src/views/night.js', './src/strings/night.js',
 ];
 const RELEASE = './release.json';
 const BASE = new URL('./', location).pathname;

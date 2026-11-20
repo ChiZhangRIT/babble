@@ -7,6 +7,7 @@
 // 写的字每 400 毫秒、切到后台时另存一份（babble.edit.rec，见 core/drafts.js）：App 被杀掉，下次启动时和找回的录音放进同一条。
 // 「再录一段」接着放进同一条，写字的地方不变。没录音就离开：写了字就存成一条待整理（不会悄悄丢掉）。
 // 自己管更新（返回 onChange）：同步、别的页面改数据都不会重画这一页，不打断录音和打字。
+// #/rec?bed=1 是床头模式：第一行就整个交给 views/bedside.js（外壳的近黑、没有底栏侧栏这些照样有）；空闲时提示下面放它的入口（bedLink）。
 import { h, icon, longPress, download } from '../ui/dom.js';
 import { stopAll } from '../ui/player.js';
 import { createRecorder } from '../core/recorder.js';
@@ -17,6 +18,7 @@ import { clipName } from '../core/clips.js';
 import { REC_DRAFT, writeDraft, dropDraft, clipOf, recTimeFields } from '../core/drafts.js';
 import { writeTools, insertLine, startTemplate, keepFocus, revealCaret } from '../ui/writer.js';
 import { t } from '../i18n.js';
+import * as bedside from './bedside.js';
 /** replaceChildren，但跳过 null / false（DOM 会把 null 写成文字「null」） */
 const fill = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter(k => k != null && k !== false));
 
@@ -56,6 +58,7 @@ export function entryLabel(e, speakers, lang) {
 }
 
 export function render(main, params, ctx) {
+  if (params.query && params.query.bed) return bedside.render(main, params, ctx);
   const lang = ctx.lang();
   const maxMin = ctx.state.settings.maxRecordMin || 10;
   const sp = () => ctx.state.settings.speakers;
@@ -278,6 +281,8 @@ export function render(main, params, ctx) {
     h('span.n-snout', { 'aria-hidden': 'true' }, h('i'), h('i')),
     h('b', null, waiting ? t('rec.requesting') : t('rec.start')));
   const backLink = () => h('button.n-link', { type: 'button', onclick: () => ctx.back(backTo()) }, icon('back'), t('common.back'));
+  // 床头模式的入口（推入 #/rec?bed=1，「返回」回到这里）：接到某一条时、正在等麦克风权限时不放
+  const bedEntry = (waiting) => (attachId || waiting ? null : bedside.bedLink(ctx));
   const textOnlyLink = () => h('button.n-link', { type: 'button', onclick: textOnly }, icon('pencil'), t('rec.textOnly'));
   /** 长按丢弃：点一下只提示 */
   function discardBtn(stopping, withLabel) {
@@ -305,7 +310,7 @@ export function render(main, params, ctx) {
   function idleView() {
     const waiting = phase === 'requesting';
     return [
-      h('div.n-center', null, attachLine(), startBtn(waiting), h('p.n-hint', null, t('rec.hint', { n: maxMin }))),
+      h('div.n-center', null, attachLine(), startBtn(waiting), h('p.n-hint', null, t('rec.hint', { n: maxMin })), bedEntry(waiting)),
       h('nav.n-links', null,
         waiting ? h('button.n-link', { type: 'button', onclick: () => stop('cancel') }, t('common.cancel')) : textOnlyLink(),
         waiting ? null : h('button.n-link', { type: 'button', onclick: () => setWrite(true) }, icon('bubble'), t('rec.writeToo')),
@@ -421,7 +426,7 @@ export function render(main, params, ctx) {
       acts.classList.add('n-acts-row');
       return [h('div.n-errbox', null, title, msg, acts)];
     }
-    return [h('div.n-hero', null, attachLine(), startBtn(phase === 'requesting'), h('p.n-hint', null, t('rec.hint', { n: maxMin })))];
+    return [h('div.n-hero', null, attachLine(), startBtn(phase === 'requesting'), h('p.n-hint', null, t('rec.hint', { n: maxMin })), bedEntry(phase === 'requesting'))];
   }
   function writeFoot() {
     const only = h('button.n-link', { type: 'button', onclick: () => setWrite(false) }, icon('mic'), t('rec.recOnly'));

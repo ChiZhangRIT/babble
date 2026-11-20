@@ -4,10 +4,12 @@
 // 键盘：方向键在日子之间移动，Home / End 到这周头尾，PageUp / PageDown 翻月（加 Shift 翻年）。
 // 宽屏双栏时在左栏（params.pane === 'list'），点卡片右栏显示条目；看着条目时（地址是 #/e/<id>）日历停在那条的那一天。
 // 翻月、选日子只换地址（ctx.replaceHash，不加历史记录、不整页重画）；自己管更新（返回 onChange）。
+// 页头下面和列表一样放「昨夜」卡片（views/night.js 的 nightBanner；每次打开建一个，重画页头时放回同一个）。
 import { h, icon } from '../ui/dom.js';
 import { fmtDate, fmtMonth, fmtYear, monthKey, today, isISODate } from '../core/dates.js';
 import { pad2 } from '../core/util.js';
 import { entryCard, listHead } from './list.js';
+import { nightBanner } from './night.js';
 
 // ---------- 纯计算（Node 里能测） ----------
 
@@ -113,7 +115,7 @@ export function render(main, params, ctx) {
   const shownDay = () => (mem.day && monthKey(mem.day) === month ? mem.day : null);
   const syncHash = () => { if (own) ctx.replaceHash('/cal/' + (shownDay() || month)); };
 
-  const head = h('div.list-head'), body = h('div.page.cal');
+  const head = h('div.list-head'), body = h('div.page.cal'), nightEl = nightBanner(ctx);
   main.append(head, body);
 
   // ---------- 操作 ----------
@@ -157,7 +159,7 @@ export function render(main, params, ctx) {
     for (const p of players) p.destroy();
     players = [];
     const all = ctx.entries(), index = dayIndex(all);
-    head.replaceChildren(listHead(ctx, all, 'cal'));
+    head.replaceChildren(listHead(ctx, all, 'cal'), nightEl);
     body.replaceChildren(...(view === 'year' ? yearView(index) : monthView(index, all)));
     slide = 0;
     if (keep) { const el = body.querySelector(keep); if (el) el.focus({ preventScroll: true }); }

@@ -1,14 +1,15 @@
-// 牙牙呓语：启动、外壳（手机底栏 / 侧栏 / 双栏）、路由、主题与夜间、同步调度、录音恢复。页面在 views/，计算在 core/。
+// 牙牙呓语：启动、外壳（手机底栏 / 侧栏 / 双栏）、路由、主题与夜间、同步调度、录音恢复（含上次没收尾的床头模式）。页面在 views/，计算在 core/。
 //
 // ===== 页面接口 =====
 // export function render(main, params, ctx) → 清理函数 | { cleanup?(), onChange?(info) } | undefined
 //   main    空的容器（<section class="pane view view-<name>">），页面自己画顶栏和内容
 //   params  { name, path, id, sub, query, pane, selected, hash }
-//           name: 'list' | 'calendar' | 'entry' | 'editor' | 'deleted' | 'record' | 'import' | 'settings' | 'diag'
+//           name: 'list' | 'calendar' | 'entry' | 'editor' | 'deleted' | 'record' | 'night' | 'import' | 'settings' | 'diag'
 //           #/ → list；#/cal、#/cal/YYYY-MM、#/cal/YYYY-MM-DD → calendar（sub 是后面那段或 null）
 //           #/e/<id> → entry（id）；#/e/<id>/history → entry（sub 'history'，修改记录）
 //           #/new → editor（sub 'new'，id null）；#/edit/<id> → editor（sub 'edit'）
-//           #/rec、#/rec?attach=<id> → record（query.attach）；#/import → import（sub 'audio'）；#/import/notes → import（sub 'notes'）
+//           #/rec、#/rec?attach=<id> → record（query.attach）；#/rec?bed=1 → record（query.bed：床头模式，record.js 交给 views/bedside.js）
+//           #/night → night（id null：最新一晚）；#/night/<YYYY-MM-DD> → night（id，那一晚）；#/import → import（sub 'audio'）；#/import/notes → import（sub 'notes'）
 //           #/settings、#/settings/sync → settings（sub null | 'sync'）；#/deleted → deleted；#/diag → diag；不认识的地址 → list
 //           pane: 'main'（单栏）| 'list'（双栏左）| 'detail'（双栏右）；selected: 双栏时右栏正在看的条目 id（给列表高亮）
 //   数据变了：页面返回了 onChange 就只调 onChange(info)，页面自己更新（编辑页、录音页必须这样，免得打断输入和录音）；
@@ -22,7 +23,7 @@
 // ===== ctx =====
 // 数据（src/core/state.js 的包装；改数据一律走这些，app 会保存、同步、重画）
 //   ctx.state                  当前数据（只读）：{ app, v, data: { entries }, settings, settingsAt }
-//   ctx.local                  本机设置 babble.local（只读）：{ lang, theme, device, sync, lastBackupAt, audioSync }
+//   ctx.local                  本机设置 babble.local（只读）：{ lang, theme, device, sync, lastBackupAt, audioSync }（页面自己的：recOnly、listMode、床头模式的 bedAutoEnd / bedVadOk / bedKeepNoted…）
 //   ctx.entries()              没删除的条目，新的在前（byNewest）；缓存到下次数据变化
 //   ctx.entry(id)              按 id 取条目（含已删除的），没有 → null
 //   ctx.mutate(fn, { undoLabel })  fn(state) 直接改（同步函数），返回 fn 的返回值；修改时间自动补；给 undoLabel 会弹 10 秒「撤销」提示
@@ -45,7 +46,8 @@
 //   ctx.setListMode('list'|'cal')  「列表 | 日历」切换：记下来；在列表 / 日历页就换过去，双栏看着条目时只换左栏
 //   ctx.route                  当前路由（同 params 的结构，不含 pane/selected）
 //   ctx.refresh()              重画当前所有页面
-//   ctx.guard(isDirty)         离开前检查：isDirty() 为 true 时先确认（路由切换、关闭标签页）；ctx.guard(null) 取消；页面清理时自动取消
+//   ctx.guard(isDirty, msg)    离开前检查：isDirty() 为 true 时先确认（路由切换、关闭标签页）；ctx.guard(null) 取消；页面清理时自动取消
+//                              msg 可选 { message, confirmLabel, cancelLabel }：换掉「有没保存的修改」那套说法（床头模式：「离开这页就不听了」）
 //   ctx.layout()               'phone'（<720）| 'side'（720–999，有侧栏）| 'two'（≥1000，双栏）
 // 界面
 //   ctx.t(key, vars)、ctx.lang()、ctx.setLang(l)、ctx.setTheme('auto'|'light'|'dark')、ctx.theme()（当前生效的 'light'|'dark'）
@@ -60,8 +62,15 @@
 //   ctx.recovered              Promise<string[]>：启动时找回的录音（和边录边写没存完的字）放进的条目 id；录音页、编辑页要等它，再读草稿
 //   ctx.bootAt                 这次启动的时刻（毫秒）
 //   ctx.takeFiles()            拖进窗口的录音文件（File[]，取一次就清空；没有 → null）。导入页打开时调一下
+// 床头模式
+//   ctx.night                  src/core/nightStore.js 整个模块（IndexedDB babble-night：每晚的记录、候选片段，只在本机）
+//   ctx.nightRecovered         Promise：启动时把上次被关掉的床头模式收尾（recoverNights）、按期限清理（purgeNights）；
+//                              床头页、昨夜页、列表的「昨夜」卡片要等它再读 babble-night（数据有问题时直接 resolve，不碰）
+//   ctx.build                  这一版的名字（src/start.js 的 BUILD，启动器放在 window.__babbleBuild；开发时没有 → null）
 // 同步
-//   ctx.sync.now()             立即同步 → Promise<{ ok, skipped?, error?, offline? }>
+//   ctx.sync.now()             立即同步 → Promise<{ ok, skipped?, error?, offline? }>（暂停着也照样同步：「立即同步」是用户自己点的）
+//   ctx.sync.pause(tag)        暂停自动同步，返回 resume()：有人暂停着时改了数据、定时、联网、切到后台都不同步；最后一个 resume() 后马上排一次。
+//                              床头模式开着时（'bedside'）、昨夜页每次留下以后 10.5 秒（'night-undo'：提示条上撤销时录音还没传上去）用
 //   ctx.sync.connect({ repo, token, tokenExp })  保存同步设置并马上同步一次 → 同上（tokenExp：用户填的令牌到期时刻，可选）
 //   ctx.sync.stop()            停止同步（只清本机设置）
 //   ctx.sync.checkRepo(repo, token) → Promise<仓库全名>（不是私有 / 没权限会抛 SyncError）
@@ -81,6 +90,8 @@ import { createSync } from './core/sync.js';
 import { journal, createCloudHistory, platformDevice } from './core/history.js';
 import * as audio from './core/audioStore.js';
 import { recoverPending } from './core/recorder.js';
+import * as nightStore from './core/nightStore.js';
+import { recoverNights, purgeNights } from './core/bedside.js';
 import { t, setLang, getLang, guessLang, LANGS } from './i18n.js';
 import { h, $, icon, toast, sheet, confirmDialog, download } from './ui/dom.js';
 import * as list from './views/list.js';
@@ -90,6 +101,7 @@ import * as editor from './views/editor.js';
 import { EDIT_PREFIX, REC_DRAFT, NEW_DRAFT, readDraft, writeDraft, applyRecovery } from './core/drafts.js';
 import * as deleted from './views/deleted.js';
 import * as record from './views/record.js';
+import * as nightView from './views/night.js';
 import * as importView from './views/import.js';
 import * as settings from './views/settings.js';
 import * as diagnostics from './views/diagnostics.js';
@@ -97,7 +109,7 @@ import { askWho, shouldAskWho } from './views/device.js';
 import { recoveryPanel } from './ui/recovery.js';
 
 const BOOT = Date.now();
-const VIEWS = { list, calendar, entry, editor, deleted, record, import: importView, settings, diag: diagnostics };
+const VIEWS = { list, calendar, entry, editor, deleted, record, night: nightView, import: importView, settings, diag: diagnostics };
 const DEVICE = platformDevice();
 const THEME_COLOR = { light: '#f8f3ee', dark: '#141216', night: '#0b0c12' };
 
@@ -127,6 +139,7 @@ function parseRoute(hash) {
   else if (a === 'edit' && b) r = { name: 'editor', id: b, sub: 'edit' };
   else if (a === 'new') r = { name: 'editor', sub: 'new' };
   else if (a === 'rec') r = { name: 'record' };
+  else if (a === 'night') r = { name: 'night', id: b || null };
   else if (a === 'import') r = { name: 'import', sub: b === 'notes' ? 'notes' : 'audio' };
   else if (a === 'settings') r = { name: 'settings', sub: b || null };
   else if (a === 'deleted') r = { name: 'deleted' };
@@ -170,7 +183,8 @@ let currentHash = null, skipGuard = false;
 async function confirmLeave() {
   const dirty = Object.values(mounted).filter(m => m.guard && safeCall(m.guard));
   if (!dirty.length) return true;
-  const ok = await confirmDialog({ message: t('common.unsaved'), confirmLabel: t('common.leave'), cancelLabel: t('common.stay'), danger: true });
+  const msg = dirty.map(m => m.guardMsg).find(Boolean) || {};       // 页面自己的说法（床头模式：「离开这页就不听了」）
+  const ok = await confirmDialog({ message: msg.message || t('common.unsaved'), confirmLabel: msg.confirmLabel || t('common.leave'), cancelLabel: msg.cancelLabel || t('common.stay'), danger: true });
   if (ok) for (const m of Object.values(mounted)) m.guard = null;
   return ok;
 }
@@ -271,8 +285,15 @@ const syncApi = {
   status: syncStatus,
   getAudio: (sha) => syncer.getAudio(sha),
 };
-const syncSoon = debounce(() => { if (L().sync) syncApi.now(); }, 3000);
-const syncIfStale = () => { if (L().sync && Date.now() - lastSyncTry > 5000) syncApi.now(); };
+// 暂停自动同步（床头模式整夜开着、昨夜页留下后等撤销）：每次 pause 一个记号，都 resume 了才恢复，并马上排一次
+const holds = new Set(), held = () => holds.size > 0;
+syncApi.pause = (tag) => {
+  const hold = { tag };
+  holds.add(hold); syncSoon.cancel();
+  return () => { if (holds.delete(hold) && !held()) syncSoon(); };
+};
+const syncSoon = debounce(() => { if (L().sync && !held()) syncApi.now(); }, 3000);
+const syncIfStale = () => { if (L().sync && !held() && Date.now() - lastSyncTry > 5000) syncApi.now(); };
 
 // ---------- 主题和夜间 ----------
 const prefersDark = matchMedia('(prefers-color-scheme: dark)');
@@ -391,6 +412,9 @@ const ctx = {
   recovered: null,
   bootAt: BOOT,
   takeFiles: () => { const f = droppedFiles; droppedFiles = null; return f; },
+  night: nightStore,
+  nightRecovered: null,
+  get build() { return window.__babbleBuild || null; },
 
   sync: syncApi,
   history: {
@@ -429,7 +453,7 @@ function renderShell(r) {
   document.body.dataset.layout = layout();
   document.body.dataset.tabs = TOP_LEVEL(r) ? '1' : '0';
   document.body.dataset.drop = t('common.dropHint');
-  const cur = HOME(r) || r.name === 'entry' || r.name === 'editor' ? 'list' : r.name === 'import' || r.name === 'deleted' || r.name === 'diag' ? 'settings' : r.name;
+  const cur = HOME(r) || r.name === 'entry' || r.name === 'editor' || r.name === 'night' ? 'list' : r.name === 'import' || r.name === 'deleted' || r.name === 'diag' ? 'settings' : r.name;
   const side = r.name === 'import' ? 'import' : cur;          // 侧栏有「导入录音」这一项；手机底栏没有，算在设置下面
   const item = (id, href, ic, label) => h('a.nav-item' + (side === id ? '.on' : ''), { href, 'aria-current': side === id ? 'page' : null }, ic, h('span', null, label));
   $('#side').replaceChildren(
@@ -453,7 +477,7 @@ function renderShell(r) {
 }
 
 // ---------- 页面挂载 ----------
-const mounted = {};           // slot → { slot, name, key, params, el, handle, offs, guard }
+const mounted = {};           // slot → { slot, name, key, params, el, handle, offs, guard, guardMsg }
 const scroller = (el) => (layout() === 'phone' ? document.scrollingElement : el);
 function scrollTop() {
   if (layout() === 'phone') return window.scrollY;
@@ -464,12 +488,12 @@ function viewCtx(m) {
   const c = Object.create(ctx);
   c.on = (ev, fn) => { const off = on(ev, fn); m.offs.push(off); return off; };
   c.onChange = (fn) => c.on('change', fn);
-  c.guard = (fn) => { m.guard = typeof fn === 'function' ? fn : null; };
+  c.guard = (fn, msg) => { m.guard = typeof fn === 'function' ? fn : null; m.guardMsg = (m.guard && msg) || null; };
   c.params = m.params;
   return c;
 }
 function runView(m) {
-  m.offs = []; m.guard = null; m.handle = null;
+  m.offs = []; m.guard = m.guardMsg = null; m.handle = null;
   if (m.name === 'empty') {
     m.el.append(h('div.detail-empty', null, h('img', { src: 'icons/icon.svg', alt: '', width: 96, height: 96, onerror: e => e.target.remove() }), h('p', null, t('common.pickEntry'))));
     return;
@@ -481,7 +505,7 @@ function runView(m) {
 }
 function cleanupView(m) {
   for (const off of m.offs || []) off();
-  m.offs = []; m.guard = null;
+  m.offs = []; m.guard = m.guardMsg = null;
   try { if (m.handle && m.handle.cleanup) m.handle.cleanup(); } catch (e) { console.error(e); }
   m.handle = null;
 }
@@ -503,7 +527,7 @@ function mount(p, main, force) {
   const el = old ? old.el : h('section.pane');
   el.className = `pane pane-${p.slot} view view-${p.name}`;
   el.replaceChildren();
-  const m = { slot: p.slot, name: p.name, key, params: p.params, el, handle: null, offs: [], guard: null };
+  const m = { slot: p.slot, name: p.name, key, params: p.params, el, handle: null, offs: [], guard: null, guardMsg: null };
   mounted[p.slot] = m;
   if (!old) main.append(el);
   runView(m);
@@ -560,6 +584,7 @@ function recoveryScreen() {
 }
 function resumeAfterRecovery() {
   ctx.recovered = recover();
+  ctx.nightRecovered = bootNight();
   render();
 }
 function render() {
@@ -678,6 +703,11 @@ async function recover() {
   return res.ids;
 }
 
+// ---------- 启动时给上次的床头模式收尾 ----------
+// App 被杀掉时还开着的那次标成「断了」（记下最后一次心跳、没收尾的片段剪好），然后按期限清理旧片段；都在本机 babble-night 里，
+// 不进条目、不同步。出错就留着，下次启动再来（床头页、昨夜页照样能打开）
+const bootNight = () => recoverNights({ store: nightStore, before: BOOT }).then(() => purgeNights(nightStore)).catch(e => console.warn('night', e));
+
 // ---------- 拖进窗口的录音（Mac） ----------
 let droppedFiles = null, dragDepth = 0;
 const hasFiles = e => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
@@ -726,10 +756,10 @@ document.addEventListener('visibilitychange', () => {
     syncIfStale();
   } else {
     hiddenAt = Date.now();
-    if (L().sync && L().sync.dirty) { syncSoon.cancel(); syncApi.now(); }      // 切走前把改动传上去
+    if (L().sync && L().sync.dirty && !held()) { syncSoon.cancel(); syncApi.now(); }      // 切走前把改动传上去（暂停着就不传）
   }
 });
-window.addEventListener('online', () => { if (L().sync) syncApi.now(); });
+window.addEventListener('online', () => { if (L().sync && !held()) syncApi.now(); });
 window.addEventListener('storage', e => { if (e.key === state.KEY || e.key === state.LKEY || e.key?.startsWith(state.PENDING_PREFIX)) state.reload(); });   // 别的标签页改了数据
 setInterval(() => { if (document.visibilityState === 'visible') { syncIfStale(); applyTheme(); } }, 60000);
 prefersDark.addEventListener('change', () => applyTheme());
@@ -745,6 +775,7 @@ else if (!nightRedirect() && route().name === 'list' && !route().path.length && 
 currentHash = location.hash || '#/';
 track(currentHash);
 ctx.recovered = state.storageIssue() ? Promise.resolve([]) : recover();
+ctx.nightRecovered = state.storageIssue() ? Promise.resolve() : bootNight();      // 数据有问题时不碰 babble-night（修好以后 resumeAfterRecovery 再做）
 render();
-if (L().sync) syncApi.now();
+if (L().sync && !held()) syncApi.now();
 window.__babble = { state, ctx, mounted, get S() { return S(); } };   // 方便在浏览器控制台里查看

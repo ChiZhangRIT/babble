@@ -1,4 +1,4 @@
-// 梦话列表（#/）：标题和条数、「列表 | 日历」切换、待整理横幅、搜索（简繁互通）、筛选、按年 / 月分组的卡片。
+// 梦话列表（#/）：标题和条数、「列表 | 日历」切换、「昨夜」卡片（床头模式，views/night.js）、待整理横幅、搜索（简繁互通）、筛选、按年 / 月分组的卡片。
 // 宽屏双栏时在左栏（params.pane === 'list'），params.selected 是右栏正在看的条目（高亮；j / k 换上一条下一条）。
 // 自己管更新（返回 onChange）：数据变了只重画标题和卡片，搜索框原样留着，不丢输入和光标。
 // 卡片（entryCard）和页头（listHead）日历页（views/calendar.js）也用。
@@ -10,6 +10,7 @@ import { parseDialogue, isDescOnly } from '../core/dialogue.js';
 import { matchEntry, highlight } from '../core/search.js';
 import { clipName } from '../core/clips.js';
 import { sayNodes } from './entry.js';
+import { nightBanner } from './night.js';
 
 /** 同一行里日期和时间之间：中文空格（11月4日 凌晨2:58），英文逗号（Nov 4, 2:58 AM） */
 const daySep = lang => (lang === 'en' ? ', ' : ' ');
@@ -216,6 +217,7 @@ export function render(main, params, ctx) {
     h('div.search', { role: 'search' }, icon('search'), qInput, qClear),
     h('div.chips.list-chips', { role: 'group', 'aria-label': t('list.filters') }, chips));
   const head = h('div.list-head'), body = h('div.page.list-body');
+  const nightEl = nightBanner(ctx);              // 「昨夜」卡片：每次打开列表建一个，自己读 babble-night、自己更新；重画页头时放回同一个
   main.append(head, tools, body);
 
   function setQ(v) { ui.q = v; qInput.value = v; paintTools(); drawBody(); }
@@ -226,7 +228,7 @@ export function render(main, params, ctx) {
 
   function drawHead(all) {
     const inbox = all.filter(e => e.status === 'inbox');
-    head.replaceChildren(listHead(ctx, all, 'list'), inbox.length && !ui.inbox ? h('div.page', null, inboxBanner(inbox)) : '');
+    head.replaceChildren(listHead(ctx, all, 'list'), nightEl, inbox.length && !ui.inbox ? h('div.page', null, inboxBanner(inbox)) : '');
   }
   // 横幅的小字：最新一条待整理的日期时间（还没写原话才说「还没写原话」）
   function inboxBanner(inbox) {

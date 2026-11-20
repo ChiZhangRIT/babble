@@ -99,6 +99,26 @@ test('语音转文字：worker 在 CORE 里；vendor/ 的大文件不预先缓�
   for (const m of src.matchAll(/ort-wasm-simd-threaded\$\{v\}\.(mjs|wasm)/g)) for (const v of ['', '.asyncify']) assert.ok(exists(`./vendor/transformers/ort-wasm-simd-threaded${v}.${m[1]}`));
 });
 
+test('床头模式：说话识别 worker 和采集 worklet 在 CORE 里；worker import 的在 vendor/ 或 CORE 里，worklet 没有 import；模型只在 vendor 清单里', () => {
+  inCore('./src/workers/vad.worker.js', 'createVad 的 new Worker');
+  inCore('./src/worklets/capture.worklet.js', 'audioWorklet.addModule');
+  const src = read('src/workers/vad.worker.js');
+  const specs = [...src.matchAll(/^\s*import\b[^;]*?from\s*['"]([^'"]+)['"]/gm)].map(m => resolve('./src/workers/vad.worker.js', m[1]));
+  assert.ok(specs.length >= 2, 'vad.worker.js 应该 import transformers.js 和 core/vad.js');
+  for (const f of specs) assert.ok(exists(f) && (f.startsWith('./vendor/') || CORE.includes(f)), `vad.worker.js import 的 ${f}：要么在 vendor/，要么在 CORE 里`);
+  for (const m of src.matchAll(/ort-wasm-simd-threaded\.(mjs|wasm)/g)) assert.ok(exists('./vendor/transformers/ort-wasm-simd-threaded.' + m[1]));
+  // worklet 在音频线程里按模块加载：每个 import 都要再取一次文件（离线、CSP 都可能失败），所以一个也不要
+  assert.ok(!/\bimport\b/.test(read('src/worklets/capture.worklet.js')), 'capture.worklet.js 里不该有 import');
+  // 模型：按需下载（sw.js 的 vendor() 按 release.json 核对），不进 CORE（每次发版都会整个重新下载）
+  const model = './vendor/silero-vad/silero_vad_16k_op15.onnx';
+  assert.ok(exists(model), '模型文件不在 vendor/silero-vad/');
+  assert.ok(src.includes("model_file_name: 'silero_vad_16k_op15'") && src.includes("from_pretrained('silero-vad'"), 'worker 载入的应该是这个模型');
+  const manifest = JSON.parse(read('release.json'));
+  assert.equal(manifest.vendor[model], createHash('sha256').update(fs.readFileSync(path.join(root, model))).digest('hex'), 'release.json 的 vendor 里要有模型和它的 sha256');
+  assert.ok(!CORE.includes(model));
+  for (const f of filesUnder('vendor/silero-vad')) if (!f.endsWith('.onnx')) assert.equal(manifest.vendor[f], undefined, `${f} 不会被取，不用进清单`);
+});
+
 test('JS 里写到的图标和 CSS 里 url() 的文件都存在，都在 CORE 里', () => {
   for (const f of filesUnder('src', f => f.endsWith('.js'))) {
     for (const m of read(f).matchAll(/['"`](?:\.\/)?(icons\/[\w.-]+)['"`]/g)) {
@@ -254,6 +274,20 @@ swTest('sw vendor 按需下载并校验，缓存后离线复用；错版本或 4
   for (const bad of [response('wrong version'), response('not found', 404)]) {
     const failed = loadSw({ caches: { [CACHE]: activeFiles({}) }, fetch: async () => bad });
     assert.equal((await failed.fire('fetch', req(VENDOR_FILE)).responded).type, 'error');
+    assert.deepEqual(failed.keys(VENDOR_CACHE), []);
+  }
+});
+
+swTest('sw 说话识别模型和 vendor 其它文件一样：按清单校验后存进 VENDOR_CACHE，不在清单里或内容不对都不缓存', async () => {
+  const MODEL = './vendor/silero-vad/silero_vad_16k_op15.onnx';
+  const withModel = () => { const m = release(); m.vendor[MODEL] = digest('model'); return m; };
+  const files = (manifest) => ({ [CACHE]: { 'release.json': response(JSON.stringify(manifest)) } });
+  const sw = loadSw({ caches: files(withModel()), fetch: async () => response('model') });
+  assert.equal(await (await sw.fire('fetch', req(MODEL)).responded).text(), 'model');
+  assert.deepEqual(sw.keys(VENDOR_CACHE), [new URL(MODEL, SCOPE).href]);
+  for (const [manifest, body] of [[release(), 'model'], [withModel(), 'other bytes']]) {
+    const failed = loadSw({ caches: files(manifest), fetch: async () => response(body) });
+    assert.equal((await failed.fire('fetch', req(MODEL)).responded).type, 'error');
     assert.deepEqual(failed.keys(VENDOR_CACHE), []);
   }
 });
