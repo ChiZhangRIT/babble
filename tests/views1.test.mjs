@@ -9,7 +9,7 @@ import { canon, normalizeEntry } from '../src/core/store.js';
 import { parseDialogue } from '../src/core/dialogue.js';
 import { makeEntry, byNewest } from '../src/core/store.js';
 
-// 页面里不碰 DOM 的部分��列表的筛选 / 分组 / 卡片上的原话和折叠，详情的气泡分组、分享文字，最近删除的排序。
+// 页面里不碰 DOM 的部分：列表的筛选 / 分组 / 卡片上的原话和折叠，详情的气泡分组、分享文字，最近删除的排序。
 // 全是编的例子（仓库是公开的，不放真的梦话）
 const SP = { nn: { name: 'NN', emoji: '👰🏻‍♀️', aliases: [] }, me: { name: '', emoji: '🥷🏻', aliases: [] } };
 const NN = '👰🏻‍♀️', ME = '🥷🏻';

@@ -117,7 +117,7 @@ export function toast(msg, { ms = 4000, action = null, onAction = null } = {}) {
   return { close: () => { clearTimeout(toastTimer); close(); } };
 }
 
-// 提示条要让开的按钮：手机底栏、底部按钮条（整理好了、确认导入）、顶栏、录音页的按钮（只记文字 / 返回、停止、长按丢弃、保存后的几个按钮）。
+// 提示条要让开的按钮：手机底栏、底部按钮条（整理好了、确认导入）、顶栏、录音页的按钮（只记文字 / 返回、停止、✕ 取消、保存后的几个按钮）。
 // 页面里别的固定按钮可以加 data-toast-avoid
 const TOAST_AVOID = '#tabs, .bottom-bar, .navbar, .n-links, .n-acts, .n-stop, .n-discard, [data-toast-avoid]';
 let safeProbe = null;

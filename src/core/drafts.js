@@ -3,7 +3,7 @@
 //   babble.edit.<条目 id> / babble.edit.new   编辑页：{ w: 工作副本, added, removed, at, rec? }
 //   babble.edit.rec                            录音页边录边写（views/record.js）：{ v: 1, text, target, base, rec, at }
 //       text 还没写进条目的原话（预填的「👰🏻‍♀️ “”」已经当成空的）；target 写进哪一条（还没建 → null）；
-//       base 上次写进条目时的原话；rec 正在录的那段的 recId（没在录 → null）。只有写了没存进条目的字时才有这份。
+//       base 上次写进条目时的原话；rec 正在录的那段（或者刚点 ✕ 取消、还能撤销的那段）的 recId（都没有 → null）。只有写了没存进条目的字时才有这份。
 // rec：草稿另存时正在录音。启动时 App 先找回录音（core/recorder.js recoverPending），再用 applyRecovery 把录音和字放进同一条。
 import { makeEntry, clipIndex } from './store.js';
 import { localParts, today, isISODate, isTime } from './dates.js';

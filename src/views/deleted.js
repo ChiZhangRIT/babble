@@ -1,6 +1,7 @@
 // 最近删除（#/deleted）：删除的梦话（新删的在前），逐条恢复；点一条先看看原话（详情页只读显示，也能恢复）。
 // 没有永久删除（v1）。恢复后其他设备同步时也会一起恢复。数据变了 app 整页重画，这里不用 onChange。
 // 删除时签了名（deletedBy）的显示是谁、用哪台设备删的。
+// 录音页「放弃这段录音」整条丢掉的（discarded，没有字也没有录音了）不放进来：什么都没有，恢复了也只是一条空的。
 import { h, icon } from '../ui/dom.js';
 import { fmtEntryDate, fmtInstant } from '../core/dates.js';
 import { previewLines } from '../core/dialogue.js';
@@ -11,9 +12,10 @@ import { deletionBy } from '../core/history.js';
 /** 同一行里日期和时间之间：中文空格（11月4日 凌晨2:58），英文逗号（Nov 4, 2:58 AM） */
 const daySep = lang => (lang === 'en' ? ', ' : ' ');
 
-/** 已删除的条目，新删的在前 */
+/** 已删除的条目，新删的在前（「放弃这段录音」丢掉的空条目不算） */
 export function deletedEntries(state) {
-  return Object.values((state && state.data && state.data.entries) || {}).filter(e => e.deleted)
+  const empty = e => e.discarded && !String(e.text || '').trim() && !(e.audio || []).length;
+  return Object.values((state && state.data && state.data.entries) || {}).filter(e => e.deleted && !empty(e))
     .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0) || String(a.id).localeCompare(String(b.id)));
 }
 

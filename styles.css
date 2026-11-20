@@ -790,6 +790,9 @@ textarea.ed-note { min-height: 56px; overflow-y: hidden; resize: none; }
 .n-start:disabled .n-snout::before { opacity: .35; }
 .n-start:disabled .n-snout { box-shadow: inset 0 0 0 1px var(--n-line); transform: none; }
 .n-start:disabled b { background: var(--n-panel); box-shadow: inset 0 0 0 1px var(--n-line); color: var(--n-muted); }
+/* 焦点（页面一打开就把焦点放在这里，有时会显示成键盘焦点）：不画外面那个把圆盘和字一起框住的大方框，只把圆盘的玫瑰色边、光晕加亮 */
+.n-start:focus-visible { outline: none; }
+.n-start:focus-visible .n-snout { box-shadow: inset 0 0 0 3px rgba(214, 122, 141, .9), 0 0 0 calc(8px * var(--s)) rgba(184, 87, 106, .16), 0 8px 26px rgba(0, 0, 0, .45); }
 .n-hint { font-size: 12.5px; color: var(--n-faint); }
 .n-links { display: flex; justify-content: center; gap: 24px; padding-top: 6px; }
 .n-link { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 12px; border: 0; border-radius: 12px; background: none; color: var(--n-muted); font-size: 15px; }
@@ -802,8 +805,7 @@ textarea.ed-note { min-height: 56px; overflow-y: hidden; resize: none; }
   -webkit-touch-callout: none; touch-action: manipulation; }
 .n-discard i { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; border: 1px solid #24252f; }
 .n-discard .ic { width: 15px; height: 15px; stroke-width: 1.6; }
-.n-discard.pressing { color: var(--n-ink); }
-.n-discard.pressing i { border-color: var(--n-rose); color: var(--n-rose); }
+.n-discard:active i { border-color: var(--n-rose); color: var(--n-rose); }
 .n-head { padding: 10px 0 22px; text-align: center; }
 .n-status { font-size: 14px; letter-spacing: .2em; color: var(--n-muted); }
 .n-status i { display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--n-rose); opacity: .85; vertical-align: 1px; }
@@ -822,6 +824,8 @@ textarea.ed-note { min-height: 56px; overflow-y: hidden; resize: none; }
 .n-stop:disabled { cursor: default; }
 .n-stop:disabled .n-stop-ic { opacity: .35; }
 .n-stop:disabled b { color: var(--n-muted); }
+/* 一打开就自动放焦点的几个（停止、「已保存」/ 出错时的主按钮）：和「开始录音」一样不画外面那圈框，焦点只把自己的边换成亮一点的玫瑰色 */
+.n-stop:focus-visible, .n-stopbar:focus-visible, .n-btn.main:focus-visible { outline: none; border-color: rgba(214, 122, 141, .75); box-shadow: inset 0 0 0 1px rgba(214, 122, 141, .45); }
 /* 横屏（iPhone 横过来高度只有 390 左右）：计时缩小、停止键变矮，整块都在屏幕里 */
 @media (max-height: 500px) {
   .n-top { min-height: 44px; }
@@ -848,6 +852,11 @@ textarea.ed-note { min-height: 56px; overflow-y: hidden; resize: none; }
 .n-btn .ic { width: 18px; height: 18px; }
 .n-btn.main { border-color: #3a2029; background: #22141a; }
 .n-btn:active { background: #14151d; }
+/* 「不要这段」：排在最后，不是按钮块的样子（没有边和底色、字暗一点），免得和「再录一段」「完成」抢 */
+/* 放弃这段录音：和「去编辑页」「只录音」一样的安静链接，放在下面；误点了有 10 秒撤销 */
+.n-link.n-drop { color: var(--n-muted); }
+.n-link.n-drop .ic { width: 17px; height: 17px; }
+.n-done-slot { display: contents; }
 .n-error { gap: 12px; }
 .n-err-t { font-size: 20px; font-weight: 500; letter-spacing: .06em; color: var(--n-ink); }
 .n-err { max-width: 420px; font-size: 14px; line-height: 1.75; color: var(--n-muted); text-align: left; -webkit-user-select: text; user-select: text; }
@@ -868,6 +877,8 @@ textarea.ed-note { min-height: 56px; overflow-y: hidden; resize: none; }
   background: var(--n-panel); box-shadow: inset 0 0 0 1px var(--n-line); }
 .n-tight .n-hero .n-snout { --s: .26; background: none; box-shadow: none; }
 .n-tight .n-hero .n-start b { padding: 0; background: none; box-shadow: none; font-size: 18px; }
+.n-tight .n-hero .n-start:focus-visible { box-shadow: inset 0 0 0 2px rgba(214, 122, 141, .8); }      /* 紧凑的一条：焦点画在这条上 */
+.n-tight .n-hero .n-start:focus-visible .n-snout { box-shadow: none; }
 .n-bar { display: flex; align-items: center; gap: 10px; min-height: 60px; padding: 4px 0 8px; }
 .n-bar .n-discard { flex: none; padding: 0; min-width: 44px; min-height: 44px; }
 .n-bar .n-discard i { width: 40px; height: 40px; }
@@ -893,7 +904,7 @@ textarea.ed-note { min-height: 56px; overflow-y: hidden; resize: none; }
 .n-dur { margin-left: 2px; letter-spacing: .04em; font-variant-numeric: tabular-nums; color: var(--n-muted); }
 .n-bar-saved .n-sub { margin-top: 2px; font-size: 12.5px; color: var(--n-muted); }
 .n-bar-saved .n-why { margin-top: 2px; }
-.n-acts.n-acts-row { flex-direction: row; width: 100%; margin: 2px 0 6px; gap: 8px; }
+.n-acts.n-acts-row { flex-direction: row; flex-wrap: wrap; width: 100%; margin: 2px 0 6px; gap: 8px; }
 .n-acts-row .n-btn { flex: 1 1 auto; min-width: 0; min-height: 48px; padding: 0 10px; font-size: 15px; letter-spacing: .02em; white-space: nowrap; }
 .n-errbox { display: flex; flex-direction: column; gap: 6px; padding: 6px 2px 8px; }
 .n-errbox .n-err { font-size: 13.5px; line-height: 1.65; }

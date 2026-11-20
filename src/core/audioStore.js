@@ -144,6 +144,13 @@ export function idbStore(getIDB = () => globalThis.indexedDB) {
     }),
     /** → 还没上传的录音：[{ sha256, mime, bytes, addedAt, uploaded: false }]，旧的在前 */
     pendingUploads: async () => (await api.listClips()).filter(r => !r.uploaded).sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0)),
+    /** 删掉一段还没上传的录音（录音页取消 / 「放弃这段录音」用）→ 删了没有。已经上传过的不删（返回 false）；有没有条目在用由调用的人查 */
+    deleteClip: (sha) => run('clips', 'readwrite', (tx) => {
+      const st = tx.objectStore('clips'), g = st.get(sha);
+      let ok = false;
+      g.onsuccess = () => { if (g.result && !g.result.uploaded) { st.delete(sha); ok = true; } };
+      return () => ok;
+    }),
 
     putChunk: (recId, seq, blob) => storing(async (asBuffer) => {
       const v = asBuffer ? await blob.arrayBuffer() : blob;
@@ -186,6 +193,7 @@ export function memoryStore() {
     async listClips() { await tick(); return [...clips.values()].map(stripBlob); },
     async markUploaded(sha, uploaded = true) { await tick(); const r = clips.get(sha); if (r) r.uploaded = !!uploaded; },
     pendingUploads: async () => (await api.listClips()).filter(r => !r.uploaded).sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0)),
+    async deleteClip(sha) { await tick(); const r = clips.get(sha); if (!r || r.uploaded) return false; clips.delete(sha); return true; },
     async putChunk(recId, seq, blob) { await tick(); rec.set(recId + '\u0000' + seq, { recId, seq, blob }); },
     async getChunks(recId) { await tick(); return [...rec.values()].filter(c => c.recId === recId).sort((a, b) => a.seq - b.seq).map(c => c.blob); },
     async clearChunks(recId) { await tick(); for (const [k, c] of [...rec]) if (c.recId === recId) rec.delete(k); },
@@ -223,6 +231,7 @@ export const hasClip = (sha) => db.hasClip(sha);
 export const listClips = () => db.listClips();
 export const markUploaded = (sha, uploaded = true) => db.markUploaded(sha, uploaded);
 export const pendingUploads = () => db.pendingUploads();
+export const deleteClip = (sha) => db.deleteClip(sha);
 export const putChunk = (recId, seq, blob) => db.putChunk(recId, seq, blob);
 export const getChunks = (recId) => db.getChunks(recId);
 export const clearChunks = (recId) => db.clearChunks(recId);

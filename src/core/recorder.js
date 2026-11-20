@@ -192,7 +192,7 @@ export function createRecorder(o = {}) {
     });
   }
 
-  // ---------- 丢弃（长按 ✕） ----------
+  // ---------- 丢弃（等权限时点「取消」、录音诊断；录音页的 ✕ 不用它：照常 stop 存好，等撤销时间过了再删） ----------
   async function discard() {
     const r = cur;
     if (!r || state === 'stopping') { if (!r && state !== 'idle' && state !== 'stopping') set('idle'); return; }

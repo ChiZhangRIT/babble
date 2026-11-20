@@ -1,6 +1,6 @@
 // 床头模式接进 App：冷启动真实的 app.js（同 tests/recovery.test.mjs 的做法），看路由、ctx 和外壳接对了没有——
 // #/night/<日期> 挂上昨夜页（读的是 babble-night，等启动时的收尾做完），#/rec?bed=1 挂上床头模式的准备页（这里没有 AudioContext：
-// 说话识别用不了，点开始是「不支持」），昨夜页开着不挡同步，列表、日历上都有「昨夜」卡片，ctx.sync.pause 挡住自动同步（联网、切到后台、开机那次）但不挡「立即同步」，
+// 说话识别用不了，点开始是「不支持」），昨夜页开着不挡同步，列表、日历上都有「昨夜」卡片，ctx.sync.pause 挡住自动同步（联网、切到后台、开机那次；别的标签页暂停着也算，在后台 resume 马上补一次）但不挡「立即同步」，
 // 床头模式开着时离开要用它自己的说法确认。全是编的：假的 localStorage、indexedDB、网络、麦克风，不碰真的文件或用户数据。
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -131,6 +131,39 @@ test('ctx.sync.pause(tag)：暂停时联网、切到后台都不同步，「立�
   await window.fire('online'); await flush();
   assert.equal(env.network, n, '还有一个没 resume：照样暂停');
   b();
+});
+
+test('ctx.sync.pause：别的标签页暂停着（它拿着 Web Lock babble-sync-hold:…）也不自动同步，「立即同步」照样；切到后台以后才 resume → 马上同步', async () => {
+  const other = 'babble-sync-hold:rec-fresh:9:othertab';
+  env.held.add(other);
+  let n = env.network;
+  await window.fire('online'); await flush();
+  env.dom.doc.visibilityState = 'hidden'; await env.dom.doc.fire('visibilitychange'); await flush();
+  env.dom.doc.visibilityState = 'visible';
+  assert.equal(env.network, n, '别的标签页暂停着：不自动同步');
+  await env.app.ctx.sync.now();
+  assert.ok(env.network > n, '「立即同步」照样同步');
+  env.held.delete(other);
+  n = env.network;
+  await window.fire('online'); await flush();
+  assert.ok(env.network > n, '别的标签页放开了：照常同步');
+  // 这一页自己暂停：拿着锁，但自己的锁不算「别的标签页」
+  const resume = env.app.ctx.sync.pause('rec-fresh');
+  assert.ok([...env.held].some(name => name.startsWith('babble-sync-hold:rec-fresh:')), '暂停时拿着 Web Lock');
+  env.dom.doc.visibilityState = 'hidden'; await env.dom.doc.fire('visibilitychange'); await flush();
+  n = env.network;
+  assert.ok(env.app.state.getLocal().sync.dirty, '还有没传上去的改动');
+  resume(); await flush();
+  assert.ok(env.network > n, '在后台 resume：马上同步（后台的定时器不跑，不能等 3 秒）');
+  assert.ok(![...env.held].some(name => name.startsWith('babble-sync-hold:')), 'resume 以后锁放了');
+  env.dom.doc.visibilityState = 'visible';
+  const again = env.app.ctx.sync.pause('x');
+  n = env.network;
+  again(); await flush();
+  assert.equal(env.network, n, '在前台 resume：照旧排到 3 秒后');
+  n = env.network;
+  await window.fire('online'); await flush();
+  assert.ok(env.network > n, '自己放开以后照常同步');
 });
 
 test('#/rec 空闲时提示下面有床头模式的入口；#/rec?bed=1 是准备页：没有 AudioContext → 说话识别用不了，点开始 → 不支持（同步暂停了又恢复）', async () => {

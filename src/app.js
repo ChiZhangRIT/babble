@@ -69,8 +69,10 @@
 //   ctx.build                  这一版的名字（src/start.js 的 BUILD，启动器放在 window.__babbleBuild；开发时没有 → null）
 // 同步
 //   ctx.sync.now()             立即同步 → Promise<{ ok, skipped?, error?, offline? }>（暂停着也照样同步：「立即同步」是用户自己点的）
-//   ctx.sync.pause(tag)        暂停自动同步，返回 resume()：有人暂停着时改了数据、定时、联网、切到后台都不同步；最后一个 resume() 后马上排一次。
-//                              床头模式开着时（'bedside'）、昨夜页每次留下以后 10.5 秒（'night-undo'：提示条上撤销时录音还没传上去）用
+//   ctx.sync.pause(tag)        暂停自动同步，返回 resume()：有人暂停着时改了数据、定时、联网、切到后台都不同步；最后一个 resume() 后马上排一次
+//                              （已经在后台了就马上同步）。别的标签页暂停着也算（每个暂停拿一个 Web Lock「babble-sync-hold:…」）。
+//                              床头模式开着时（'bedside'）、昨夜页每次留下以后 10.5 秒（'night-undo'：提示条上撤销时录音还没传上去）、
+//                              录音页刚存好的录音（'rec-fresh'：给「放弃这段录音」留时间，见 views/record.js）用
 //   ctx.sync.connect({ repo, token, tokenExp })  保存同步设置并马上同步一次 → 同上（tokenExp：用户填的令牌到期时刻，可选）
 //   ctx.sync.stop()            停止同步（只清本机设置）
 //   ctx.sync.checkRepo(repo, token) → Promise<仓库全名>（不是私有 / 没权限会抛 SyncError）
@@ -285,15 +287,45 @@ const syncApi = {
   status: syncStatus,
   getAudio: (sha) => syncer.getAudio(sha),
 };
-// 暂停自动同步（床头模式整夜开着、昨夜页留下后等撤销）：每次 pause 一个记号，都 resume 了才恢复，并马上排一次
-const holds = new Set(), held = () => holds.size > 0;
+// 暂停自动同步（床头模式整夜开着、昨夜页留下后等撤销、录音页刚存好的录音）：每次 pause 一个记号，都 resume 了才恢复，并马上排一次
+//（这时已经切到后台了：不等 3 秒，马上传——后台的定时器要等回到前台才跑）。
+// 别的标签页暂停着也算：每个记号拿一个 Web Lock（babble-sync-hold:…，标签页没了自动放开），自动同步之前查一下（查不了就只看这一页）
+const HOLD_LOCK = 'babble-sync-hold:';
+const holds = new Set(), held = () => holds.size > 0, ownHoldLocks = new Set();
+let holdSeq = 0;
 syncApi.pause = (tag) => {
   const hold = { tag };
   holds.add(hold); syncSoon.cancel();
-  return () => { if (holds.delete(hold) && !held()) syncSoon(); };
+  const lk = globalThis.navigator && navigator.locks;
+  if (lk && lk.request) {
+    const name = HOLD_LOCK + tag + ':' + (++holdSeq) + ':' + Math.random().toString(36).slice(2, 8);
+    const freed = new Promise(res => { hold.unlock = res; });
+    ownHoldLocks.add(name);
+    try { Promise.resolve(lk.request(name, () => freed)).catch(() => {}).finally(() => ownHoldLocks.delete(name)); }
+    catch (e) { ownHoldLocks.delete(name); }
+  }
+  return () => {
+    if (!holds.delete(hold)) return;
+    if (hold.unlock) hold.unlock();
+    if (held()) return;
+    if (document.visibilityState === 'hidden' && L().sync && L().sync.dirty) { syncSoon.cancel(); autoSync(); }
+    else syncSoon();
+  };
 };
-const syncSoon = debounce(() => { if (L().sync && !held()) syncApi.now(); }, 3000);
-const syncIfStale = () => { if (L().sync && !held() && Date.now() - lastSyncTry > 5000) syncApi.now(); };
+/** 别的标签页暂停着自动同步吗（这一页自己的不算） */
+async function heldElsewhere() {
+  const lk = globalThis.navigator && navigator.locks;
+  if (!lk || !lk.query) return false;
+  try { const q = await lk.query(); return (q.held || []).some(l => l && typeof l.name === 'string' && l.name.startsWith(HOLD_LOCK) && !ownHoldLocks.has(l.name)); }
+  catch (e) { return false; }
+}
+/** 自动同步（改了数据、定时、联网、切到后台、开机）：这一页、别的标签页暂停着都不同步；ok() 是另外的条件（查完锁再看一遍） */
+function autoSync(ok = () => true) {
+  if (!L().sync || held() || !ok()) return;
+  heldElsewhere().then(other => { if (!other && L().sync && !held() && ok()) syncApi.now(); });
+}
+const syncSoon = debounce(() => autoSync(), 3000);
+const syncIfStale = () => autoSync(() => Date.now() - lastSyncTry > 5000);
 
 // ---------- 主题和夜间 ----------
 const prefersDark = matchMedia('(prefers-color-scheme: dark)');
@@ -756,10 +788,10 @@ document.addEventListener('visibilitychange', () => {
     syncIfStale();
   } else {
     hiddenAt = Date.now();
-    if (L().sync && L().sync.dirty && !held()) { syncSoon.cancel(); syncApi.now(); }      // 切走前把改动传上去（暂停着就不传）
+    if (L().sync && L().sync.dirty && !held()) { syncSoon.cancel(); autoSync(); }      // 切走前把改动传上去（暂停着就不传）
   }
 });
-window.addEventListener('online', () => { if (L().sync && !held()) syncApi.now(); });
+window.addEventListener('online', () => autoSync());
 window.addEventListener('storage', e => { if (e.key === state.KEY || e.key === state.LKEY || e.key?.startsWith(state.PENDING_PREFIX)) state.reload(); });   // 别的标签页改了数据
 setInterval(() => { if (document.visibilityState === 'visible') { syncIfStale(); applyTheme(); } }, 60000);
 prefersDark.addEventListener('change', () => applyTheme());
@@ -777,5 +809,5 @@ track(currentHash);
 ctx.recovered = state.storageIssue() ? Promise.resolve([]) : recover();
 ctx.nightRecovered = state.storageIssue() ? Promise.resolve() : bootNight();      // 数据有问题时不碰 babble-night（修好以后 resumeAfterRecovery 再做）
 render();
-if (L().sync && !held()) syncApi.now();
+autoSync();
 window.__babble = { state, ctx, mounted, get S() { return S(); } };   // 方便在浏览器控制台里查看

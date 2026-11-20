@@ -1,4 +1,4 @@
-// 本机录音库测试：扩展名 / mime、内存版的去重和分片、没有 IndexedDB 时的报错、sha256（合成数据）
+// 本机录音库测试：扩展名 / mime、内存版的去重和分片、deleteClip（内存版和假的 IndexedDB）、没有 IndexedDB 时的报错、sha256（合成数据）
 // IndexedDB 版的读写在 WebKit 里实测过（Blob 直接存；不收 Blob 的无痕环境退回 ArrayBuffer）；Node 里没有 indexedDB。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -42,6 +42,59 @@ test('内存版：同样内容只存一份；uploaded 标记；待上传按加�
   assert.deepEqual((await s.pendingUploads()).map(r => r.sha256), [b.sha256]);
   await s.putClip(new Blob(['测试录音B']), { uploaded: true });    // 同步下载来的：已知云端有
   assert.equal((await s.pendingUploads()).length, 0);
+});
+
+test('deleteClip：没上传的删掉（true）；已经上传的、没有的不删（false）；别的录音、分片不受影响', async () => {
+  const s = memoryStore();
+  const a = await s.putClip(new Blob(['测试录音：取消的']), { mime: 'audio/mp4' });
+  const b = await s.putClip(new Blob(['测试录音：传上去了的']), { mime: 'audio/mp4' });
+  const c = await s.putClip(new Blob(['测试录音：同步下载来的']), { mime: 'audio/mp4', uploaded: true });
+  await s.markUploaded(b.sha256);
+  await s.putChunk('r_1', 0, new Blob(['分片']));
+  await s.putRecMeta({ recId: 'r_1', startedAt: 1, mime: 'audio/mp4', tz: null, done: true, sha256: a.sha256 });
+  assert.equal(await s.deleteClip(a.sha256), true);
+  assert.equal(await s.hasClip(a.sha256), false);
+  assert.equal(await s.deleteClip(a.sha256), false, '已经没有了');
+  assert.equal(await s.deleteClip(b.sha256), false, '上传过的不删');
+  assert.equal(await s.deleteClip(c.sha256), false, '云端来的不删');
+  assert.deepEqual((await s.listClips()).map(r => r.sha256).sort(), [b.sha256, c.sha256].sort());
+  assert.equal((await s.getChunks('r_1')).length, 1, '分片、recMeta 不归它管（clearRec 才删）');
+  assert.ok(await s.getRecMeta('r_1'));
+  await s.markUploaded(b.sha256, false);                      // 换了仓库：以前的「已上传」不算数了 → 又能删
+  assert.equal(await s.deleteClip(b.sha256), true);
+  assert.equal(typeof audio.deleteClip, 'function');
+  await assert.rejects(audio.deleteClip('x'), /no-indexeddb/);   // 模块级的照样只在用的时候才碰 IndexedDB
+});
+
+/** 最小的假 IndexedDB（只有 clips 用到的 get / put / delete / count；请求、事务完成都异步）：只测 idbStore 自己的逻辑 */
+function fakeIDB() {
+  const stores = new Map();
+  const db = {
+    objectStoreNames: { contains: (n) => stores.has(n) }, createObjectStore: (n, o) => { stores.set(n, { key: o && o.keyPath, m: new Map() }); }, close() {},
+    transaction() {
+      const tx = {};
+      let pending = 1;
+      const done = () => { if (--pending === 0) setTimeout(() => tx.oncomplete && tx.oncomplete()); };
+      const req = (fn) => { pending++; const r = {}; setTimeout(() => { r.result = fn(); if (r.onsuccess) r.onsuccess(); done(); }); return r; };
+      tx.objectStore = (n) => { const s = stores.get(n); return { get: k => req(() => s.m.get(k)), put: v => req(() => { s.m.set(v[s.key], v); }), delete: k => req(() => { s.m.delete(k); }), count: k => req(() => (s.m.has(k) ? 1 : 0)) }; };
+      setTimeout(done);
+      return tx;
+    },
+  };
+  return { stores, open() { const r = {}; setTimeout(() => { r.result = db; r.onupgradeneeded({ oldVersion: 0 }); r.onsuccess(); }); return r; } };
+}
+
+test('IndexedDB 版 deleteClip（假的 IndexedDB）：没上传的删掉；上传过的不删', async () => {
+  const idb = fakeIDB(), s = idbStore(() => idb);
+  const a = await s.putClip(new Blob(['测试录音：取消的']), { mime: 'audio/mp4' });
+  const b = await s.putClip(new Blob(['测试录音：传上去了的']), { mime: 'audio/mp4' });
+  await s.markUploaded(b.sha256);
+  assert.equal(await s.deleteClip(b.sha256), false);
+  assert.equal(await s.deleteClip(a.sha256), true);
+  assert.equal(await s.deleteClip(a.sha256), false);
+  assert.equal(await s.hasClip(a.sha256), false);
+  assert.equal(await s.hasClip(b.sha256), true);
+  assert.deepEqual([...idb.stores.get('clips').m.keys()], [b.sha256]);
 });
 
 test('内存版：分片按 seq 排序；clearChunks 只删分片；clearRec 全删', async () => {
