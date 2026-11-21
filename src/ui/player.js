@@ -19,6 +19,13 @@ const levelOn = () => (leveled === null ? (leveled = !!(getLocal() || {}).levele
 
 /** 停掉正在放的录音（比如开始录音前）；均衡还在算的，算好也不放 */
 export function stopAll() { if (active) hush(active); }
+/** 这段录音永久删除了（core/purge.js 删本机的录音前调）：正在放的停掉、释放，算好的均衡版本丢掉；播放器回到 ▶，再点会重新取（取不到显示「找不到」） */
+export function forgetClip(sha) {
+  if (!sha) return;
+  cache.delete(sha);
+  for (const p of [...players]) p.forget(sha);
+  if (active && active.key === sha) kill(active);
+}
 
 /**
  * @param {{ getBlob: () => Promise<Blob|null>, durationSec?: number|null, compact?: boolean, key?: string, level?: boolean }} o
@@ -51,6 +58,7 @@ export function audioPlayer({ getBlob, durationSec = null, compact = false, key 
     release: () => { if (s && s !== active && s.owner === api) { if (off) { off.abort(); off = null; } kill(s); s = null; paintAll(); } },
     applyMode: (autoplay) => applyMode(autoplay),
     loaded: () => !!s,
+    forget: (sha) => { if (!s || s.key !== sha) return; if (off) { off.abort(); off = null; } if (s.owner === api) kill(s); s = null; paintAll(); },
   };
   players.add(api);
 

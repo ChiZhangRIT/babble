@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildBackup, readBackup, restoreBackup, backupMarkdown, clipFileName, backupFileName, markdownName, BackupError } from '../src/core/backup.js';
 import { createZip, readZip } from '../src/core/zip.js';
-import { blankState, normalizeState, canon, makeEntry, NN_EMOJI, ME_EMOJI } from '../src/core/store.js';
+import { blankState, normalizeState, normalizeEntry, mergeStates, canon, makeEntry, NN_EMOJI, ME_EMOJI } from '../src/core/store.js';
 import { sha256Hex } from '../src/core/sha256.js';
 
 // 测试只用编出来的数据
@@ -189,8 +189,46 @@ test('恢复：先存录音再合并；已经有的录音不重复存', async ()
   await target.putClip(fakeAudio('一'), { mime: 'audio/mp4' });
   const merged = [];
   const r = await restoreBackup(back, { audioStore: target, mergeIn: st => { merged.push(st); return { changed: Object.keys(st.data.entries).length }; } });
-  assert.deepEqual(r, { changed: 4, clips: 2 });
+  assert.deepEqual(r, { changed: 4, clips: 2, skipped: 0 });
   assert.equal(merged.length, 1);
   assert.ok(await target.hasClip(A.sha256));
   assert.equal(target.clips.size, 3);
+});
+
+// 永久删除：墓碑（id 不变、没有内容，gone 里记着它的录音）
+const tombOf = (e, at = 9000) => normalizeEntry({ id: e.id, updatedAt: at, purged: true, purgedAt: at, purgedFrom: e.updatedAt, deleted: true,
+  gone: e.audio.map(a => ({ sha256: a.sha256, mime: a.mime, purgedAt: at, from: e.updatedAt })) }, e.id);
+
+test('备份：永久删除了的录音不带、墓碑留在 babble.json 里；移除的录音（「最近删除」里的）本机有就带上，没有不去下载', async () => {
+  const { store, s, a, A, C } = await fixture();
+  const R = await store.putClip(fakeAudio('移除的'), { mime: 'audio/mp4' });
+  const M = { sha256: await sha256Hex(fakeAudio('移除的、不在本机')), mime: 'audio/mp4' };
+  s.data.entries.e_c = tombOf(s.data.entries.e_c);
+  s.data.entries.e_a = normalizeEntry({ ...a, removedAudio: [{ ...R, durationSec: 2, origName: '', addedAt: 1, removedAt: 3000 }, { ...M, bytes: 1, durationSec: 1, origName: '', addedAt: 1, removedAt: 3001 }] }, 'e_a');
+  const asked = [], info = {};
+  const zip = await buildBackup(s, store, { now: NOW, info, getBlob: async sha => { asked.push(sha); return null; } });
+  const json = JSON.parse(dec.decode((await readZip(zip))[0].data));
+  assert.equal(json.files[C.sha256], undefined, '永久删除了的录音本机还有也不带');
+  assert.ok(json.state.data.entries.e_c.purged, '墓碑带着：恢复这份备份时永久删除照样算数');
+  assert.ok(json.files[R.sha256] && json.files[A.sha256]);
+  assert.ok(!asked.includes(M.sha256) && !json.missing.includes(M.sha256), '移除的录音本机没有：不去下载、不算缺');
+  const back = await readBackup(zip);
+  assert.ok(back.clips.some(x => x.sha256 === R.sha256));
+  assert.equal(info.entries, 3);
+});
+
+test('恢复：按合并以后的样子挑录音——本机已经永久删除的不存回来（skipped），旧备份里的那条照样是墓碑；合并后没有条目在用的照样存（备份可能是它唯一的一份）', async () => {
+  const { store, s, a, A, C } = await fixture();
+  const back = await readBackup(await buildBackup(s, store, { now: NOW }));      // 永久删除以前导出的旧备份：e_c 带着录音 C
+  assert.ok(back.clips.some(x => x.sha256 === C.sha256));
+  const here = normalizeState(s);
+  here.data.entries.e_c = tombOf(here.data.entries.e_c);                          // 后来在这台（或别的）设备上永久删除了
+  here.data.entries.e_a = normalizeEntry({ ...a, audio: [], updatedAt: 99999 }, 'e_a');   // 老版本 App 移除了录音（没留记录）：较新的这份为准
+  const target = memAudio(), merged = [];
+  const r = await restoreBackup(back, { audioStore: target, getState: () => here, mergeIn: st => { merged.push(st); return { changed: 1 }; } });
+  assert.deepEqual(r, { changed: 1, clips: 2, skipped: 1 });
+  assert.ok(!(await target.hasClip(C.sha256)), '永久删除了的不存回来');
+  assert.ok(await target.hasClip(A.sha256), '合并后没有条目在用（老版本移除的）：照样存，和以前一样');
+  const m = mergeStates(here, back.state);
+  assert.ok(m.data.entries.e_c.purged && m.data.entries.e_c.text === '', '旧备份里的那条盖不过墓碑');
 });

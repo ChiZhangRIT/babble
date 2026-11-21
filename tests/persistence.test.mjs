@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPersistence, readStoredState, STATE_KEY, PENDING_PREFIX, ARCHIVE_PREFIX, LocalDataError } from '../src/core/persistence.js';
-import { blankState, makeEntry, setSetting, deletedRecord, canon } from '../src/core/store.js';
+import { blankState, makeEntry, setSetting, deletedRecord, purgedRecord, canon } from '../src/core/store.js';
 
 const fakeStorage = () => {
   const m = new Map();
@@ -338,4 +338,61 @@ test('state 损坏期间阻止修改和云端合并；恢复后解除保护，�
   a.load({ storage: st, locks: fakeLocks() });
   assert.equal(a.getState().data.entries.backup.text, 'backup');
   assert.equal(a.recoveryExport().records[0].raw, '{broken');
+});
+
+// ---------- 永久删除以后清掉磁盘上的旧原话 ----------
+const tombOf = (rec, at) => purgedRecord(rec, rec.updatedAt, at);
+const logOf = (s) => JSON.stringify({ app: 'babble', v: 1, patch: s });
+const withRec = (rec) => { const s = blankState(); s.data.entries[rec.id] = rec; return s; };
+
+test('scrub：快照、日志里墓碑盖得过的旧版本换成墓碑；更新的那份（让永久删除作废的）不动；墓碑里带着的字去掉；有锁、没锁都行', async () => {
+  for (const locks of [null, fakeLocks()]) {
+    const st = fakeStorage();
+    const old = makeEntry({ id: 'x', text: '“很早的原话”' }, 1000), del = deletedRecord({ ...old, text: '“删之前的原话”' }, 2000);
+    const t = tombOf(del, 3000);
+    st.setItem(STATE_KEY, JSON.stringify(withRec(old)));
+    st.setItem(PENDING_PREFIX + 'w.1', logOf(withRec(del)));
+    st.setItem(PENDING_PREFIX + 'w.2', logOf(withRec({ ...t, text: '旧版 app 写进墓碑的字' })));
+    st.setItem(PENDING_PREFIX + 'w.3', logOf(withRec(makeEntry({ id: 'x', text: '“作废它的那份”' }, 2500))));
+    st.setItem(PENDING_PREFIX + 'w.4', logOf(withRec(makeEntry({ id: 'other', text: '“别的条目”' }, 1000))));
+    const p = createPersistence(st, { locks });
+    const r = await p.scrub(['x', 'missing'], () => ({ data: { entries: { x: t } } }));
+    assert.deepEqual(r, { changed: 3, left: [] });
+    const all = [...st.m.values()].join('\n');
+    for (const text of ['很早的原话', '删之前的原话', '旧版 app 写进墓碑的字']) assert.ok(!all.includes(text), text);
+    assert.ok(all.includes('作废它的那份') && all.includes('别的条目'), '更新的那份、别的条目不动');
+    assert.equal(JSON.parse(st.getItem(STATE_KEY)).data.entries.x.purged, true);
+    assert.deepEqual(await p.scrub(['x'], { data: { entries: { x: t } } }), { changed: 0, left: [] }, '再做一次：没什么可换');
+    assert.deepEqual(await p.scrub(['x'], { data: { entries: { x: old } } }), { changed: 0, left: [] }, '不是墓碑：不动');
+  }
+});
+
+test('scrub：修复存档里整理出的 state、能读懂的原件（快照、日志）换掉；读不懂的原件一个字不改，报出来；写不回去也报', async () => {
+  const st = fakeStorage();
+  const del = deletedRecord(makeEntry({ id: 'e_x1', text: '“存档里的原话”' }, 1000), 2000), t = tombOf(del, 3000);
+  const archive = (records, rec = del) => JSON.stringify({ app: 'babble', v: 1, kind: 'local-recovery', exportedAt: '2026-11-20T00:00:00Z', state: withRec(rec), records, issues: [] });
+  const good = ARCHIVE_PREFIX + '1.a', bad = ARCHIVE_PREFIX + '2.b', other = ARCHIVE_PREFIX + '3.c', broken = ARCHIVE_PREFIX + '4.d';
+  st.setItem(good, archive([{ key: STATE_KEY, raw: JSON.stringify(withRec(del)) }, { key: PENDING_PREFIX + 'q', raw: logOf(withRec(del)) }]));
+  const unreadable = '{坏的 "e_x1": "“存档里的原话”"';
+  st.setItem(bad, archive([{ key: STATE_KEY, raw: unreadable }]));
+  const otherRaw = archive([{ key: STATE_KEY, raw: '{坏的，但没提到这一条' }], makeEntry({ id: 'e_y1', text: '“别的条目”' }, 1000));
+  st.setItem(other, otherRaw);
+  st.setItem(broken, '{整份坏了 "e_x1"');
+  const p = createPersistence(st, { locks: fakeLocks() });
+  const r = await p.scrub(['e_x1'], { data: { entries: { e_x1: t } } });
+  assert.deepEqual(r.left.sort(), [bad, broken].sort());
+  assert.ok(!st.getItem(good).includes('存档里的原话'));
+  assert.equal(JSON.parse(JSON.parse(st.getItem(good)).records[1].raw).patch.data.entries.e_x1.purged, true);
+  assert.equal(JSON.parse(st.getItem(bad)).records[0].raw, unreadable, '读不懂的原件原样留着');
+  assert.equal(JSON.parse(st.getItem(bad)).state.data.entries.e_x1.purged, true, '同一份存档里能换的照样换');
+  assert.equal(st.getItem(broken), '{整份坏了 "e_x1"');
+  assert.equal(st.getItem(other), otherRaw, '没提到这一条的存档不碰（坏的原件也不报）');
+  // 存档写不回去（空间满）：报出来，原件不动
+  const st2 = fakeStorage(); st2.setItem(good, archive([{ key: STATE_KEY, raw: JSON.stringify(withRec(del)) }]));
+  const before = st2.getItem(good), write = st2.setItem;
+  st2.setItem = (k, v) => { if (k.startsWith(ARCHIVE_PREFIX)) throw new Error('quota'); return write(k, v); };
+  const r2 = await createPersistence(st2, { locks: null }).scrub(['e_x1'], { data: { entries: { e_x1: t } } });
+  assert.deepEqual(r2.left, [good]);
+  assert.equal(st2.getItem(good), before);
+  assert.deepEqual(await createPersistence(null).scrub(['e_x1'], { data: { entries: { e_x1: t } } }), { changed: 0, left: [] });
 });

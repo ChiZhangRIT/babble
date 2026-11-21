@@ -83,9 +83,11 @@ const dur = (g) => Math.max(0, g.to - g.from);
  * 一晚的报告（同一个 nightOf 的所有 session 合在一起；两次之间没开着的时间也算没在听）
  * @returns {null | { nightOf, tz, from, to, live, listenedMs, pct, gaps, short: {n, ms}, notes, stopped, userEndedAt,
  *   clips, deleted, episodes, pending, energyMs, empty: null|'stopped'|'userEnded'|'gappy'|'allNight', reviewed }}
- *   gaps 只有 ≥ 30 秒的（{ from, to, reason, tap? }），短的合进 short；clips 是 state 'new' 的片段（带 kept）
+ *   gaps 只有 ≥ 30 秒的（{ from, to, reason, tap? }），短的合进 short；clips 是 state 'new' 的片段（带 kept、purged）。
+ *   isPurged(c)：这段的录音永久删除了（views/night.js 的 purgedBy：记着的 sha256 在 goneShas 里）→ purged（留下了的不算），
+ *   不算待听、不在「已删掉」里（恢复不了）；清理删掉它的声音以前也是这样（放不了、留不了）
  */
-export function nightReport({ sessions = [], cands = [], nightOf: key, now = Date.now(), isKept = () => false } = {}) {
+export function nightReport({ sessions = [], cands = [], nightOf: key, now = Date.now(), isKept = () => false, isPurged = () => false } = {}) {
   const ss = sessions.filter(s => s && s.nightOf === key).sort(byStarted);
   if (!ss.length) return null;
   const end = (s) => endOf(s, now), show = P.GAP_SHOW_SEC * 1000;
@@ -105,14 +107,14 @@ export function nightReport({ sessions = [], cands = [], nightOf: key, now = Dat
     : last.endReason === 'leave' || last.endReason === 'error' ? { at: to, why: last.endReason } : null;
   const userEndedAt = last.endReason === 'user' ? to : null;
   const ids = new Set(ss.map(s => s.id)), mine = cands.filter(c => c && ids.has(c.s)), liveIds = new Set(ss.filter(s => s.status === 'live').map(s => s.id));
-  const clips = mine.filter(c => c.state === 'new').map(c => ({ ...c, kept: !!isKept(c) })).sort(byStart);
-  const deleted = mine.filter(c => c.state === 'deleted' && !c.gone).sort(byStart);
+  const clips = mine.filter(c => c.state === 'new').map(c => { const kept = !!isKept(c); return { ...c, kept, purged: !kept && !!isPurged(c) }; }).sort(byStart);
+  const deleted = mine.filter(c => c.state === 'deleted' && !c.gone && !isPurged(c)).sort(byStart);
   const notes = mergeHeld(ss.flatMap(s => (s.notes || []).map(n => ({ ...n, to: n.to ?? end(s) }))));
   return {
     nightOf: key, tz: ss[0].tz || null, from, to, live: last.status === 'live', listenedMs, pct,
     gaps, short: { n: rest.length, ms: sum(rest.map(dur)) }, notes, stopped, userEndedAt,
     clips, deleted, episodes: episodes(clips),
-    pending: clips.filter(c => !c.kept && !c.gone).length,                // 声音已经清掉的（7 天后）留不了，不算待听
+    pending: clips.filter(c => !c.kept && !c.gone && !c.purged).length,   // 声音已经清掉的（7 天后）、永久删除了的留不了，不算待听
     energyMs: sum(notes.filter(n => n.kind === 'vad').map(dur)),
     // 还在录的（open）不算有片段；结束了的那晚里还 open 的（收段没写进去，下次启动时收）算：别说「没听到说话」
     empty: mine.some(c => c.state !== 'open' || !liveIds.has(c.s)) ? null : stopped ? 'stopped' : userEndedAt ? 'userEnded' : pct < 90 ? 'gappy' : 'allNight',
@@ -138,10 +140,10 @@ function mergeHeld(notes) {
  * 给了 t（和 lang）就顺便把文字拼好：label（昨夜 / 11月15日夜里）、title（卡片粗体那行）、sub（时间和听了多久）
  * @returns {null | { kind: 'clips'|'allNight'|'gappy'|'stopped'|'userEnded', nightOf, last: boolean, n, report, label?, title?, sub? }}
  */
-export function nightCard({ sessions = [], cands = [], now = Date.now(), isKept, today = todayOf(new Date(now)), t, lang } = {}) {
+export function nightCard({ sessions = [], cands = [], now = Date.now(), isKept, isPurged, today = todayOf(new Date(now)), t, lang } = {}) {
   const key = sessions.filter(s => s && s.status !== 'live' && s.nightOf).map(s => s.nightOf).sort().pop();
   if (!key) return null;
-  const r = nightReport({ sessions, cands, nightOf: key, now, isKept });
+  const r = nightReport({ sessions, cands, nightOf: key, now, isKept, isPurged });
   if (!r || now - r.from > P.CARD_DAYS * DAY) return null;
   const kind = r.pending > 0 ? 'clips' : r.empty && !r.reviewed ? r.empty : null;
   if (!kind) return null;

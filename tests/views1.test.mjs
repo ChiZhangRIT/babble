@@ -2,12 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { filterEntries, groupByMonth, totalDuration, cardLines, foldLines, cardExtra, startOpen, CARD_FOLD, CARD_SHOW } from '../src/views/list.js';
 import { chatRuns, shareText } from '../src/views/entry.js';
-import { deletedEntries } from '../src/views/deleted.js';
+import { deletedEntries, removedList, trashCount } from '../src/views/deleted.js';
 import { REACTIONS, workingCopy, savedFields } from '../src/views/editor.js';
 import { audioEntry, noteEntry } from '../src/views/import.js';
 import { canon, normalizeEntry } from '../src/core/store.js';
 import { parseDialogue } from '../src/core/dialogue.js';
-import { makeEntry, byNewest } from '../src/core/store.js';
+import { makeEntry, byNewest, removedClips } from '../src/core/store.js';
 
 // 页面里不碰 DOM 的部分：列表的筛选 / 分组 / 卡片上的原话和折叠，详情的气泡分组、分享文字，最近删除的排序。
 // 全是编的例子（仓库是公开的，不放真的梦话）
@@ -134,6 +134,23 @@ test('最近删除：只要删除的，新删的在前', () => {
   } } };
   assert.deepEqual(deletedEntries(state).map(e => e.id), ['z', 'x']);
   assert.deepEqual(deletedEntries({}), []);
+});
+
+test('最近删除：永久删除了的（墓碑）、录音页丢掉的空条目不算；「移除的录音」新移除的在前（删除了的梦话里的跟着那条走）；设置里的数 = 两样加起来', () => {
+  const clip = (c, removedAt) => ({ sha256: sha(c), mime: 'audio/mp4', bytes: 9, durationSec: 4, origName: '', addedAt: 1, removedAt });
+  const entries = Object.fromEntries([
+    { id: 'x', deleted: true, deletedAt: 5 },
+    { id: 't', deleted: true, deletedAt: 99, purged: true, purgedAt: 99, purgedFrom: 98, gone: [{ sha256: sha('f'), mime: 'audio/mp4', purgedAt: 99, from: 98 }] },
+    { id: 'q', deleted: true, deletedAt: 7, discarded: true, text: '', audio: [] },
+    E('l', { date: '2026-11-04', audio: [], removedAudio: [clip('a', 10), clip('b', 20)] }),
+    E('m', { date: '2026-11-05', removedAudio: [clip('c', 15)] }),
+    { ...E('n', { date: '2026-11-06', removedAudio: [clip('d', 30)] }), deleted: true, deletedAt: 3 },
+  ].map(e => [e.id, e]));
+  const state = { data: { entries } }, ctx = { state, removedClips: () => removedClips(state) };
+  assert.deepEqual(deletedEntries(state).map(e => e.id), ['x', 'n']);
+  assert.deepEqual(removedList(ctx).map(c => [c.entryId, c.item.sha256[0]]), [['l', 'b'], ['m', 'c'], ['l', 'a']]);
+  assert.equal(trashCount(ctx), 5);
+  assert.deepEqual(removedList({}), [], '没有 ctx.removedClips');
 });
 
 test('编辑器的反应表情和 spec 一致', () => {

@@ -1,6 +1,7 @@
 // 导入录音（#/import）和从备忘录迁移（#/import/notes）。
 // 两边都是「先看后写」：选文件、解析、配对都只在内存里，点最后那个按钮之前不写任何数据（录音也不存进本机）。
 // 自己管更新（返回 onChange）：同步等数据变化不会把选好的文件、贴好的笔记清掉。
+// 备忘录的条目 id 是固定的（n_<日期>_<k>）：以前永久删除过的（墓碑）算已存在、不再导入，完成页说有几条（导进来合并时墓碑也会赢）。
 import { h, icon, toast } from '../ui/dom.js';
 import { audioPlayer, stopAll } from '../ui/player.js';
 import { readMp4Meta } from '../core/mp4meta.js';
@@ -449,8 +450,9 @@ function notesView(main, params, ctx) {
         id = `n_${date}_${k}`;
       }
       const ex = id ? ctx.entry(id) : null;
+      const purged = !ex && !!id && !!(ctx.tombstone && ctx.tombstone(id));     // 以前永久删除过：ctx.entry 不给，照样算已存在
       const again = !!(ex && ex.deleted && ex.source && ex.source.kind === 'apple-notes');
-      return { e, date, id, again, exists: !!ex && !(again && reDeleted), existsDeleted: !!(ex && ex.deleted), slots: pairs.filter(p => p.entryKey === e.key) };
+      return { e, date, id, again, purged, exists: purged || (!!ex && !(again && reDeleted)), existsDeleted: !!(ex && ex.deleted), slots: pairs.filter(p => p.entryKey === e.key) };
     });
     return { entries, byKey: new Map(entries.map(x => [x.e.key, x])), clips: clipIndex(ctx.state) };
   }
@@ -490,7 +492,7 @@ function notesView(main, params, ctx) {
       unused.length ? section(t('imp.r.unusedH'), -unused.length, unused.map(f => h('div.im-r', null, mkPlayer(f),
         h('div.im-r-body', null, h('p.im-r-file', null, f.name), h('p.im-meta', null, metaLine(fmtBytes(f.size), fmtDuration(f.durationSec), f.createdAt ? instant(f.createdAt) : ''))))), t('imp.r.unusedHelp')) : null,
       noAudio.length ? folded(t('imp.r.noAudioH'), noAudio.length, noAudio.map(x => entryLine(x))) : null,
-      existing.length ? folded(t('imp.r.existsH'), existing.length, existing.map(x => entryLine(x, x.existsDeleted ? t('imp.r.existsDeleted') : t('imp.r.exists')))) : null,
+      existing.length ? folded(t('imp.r.existsH'), existing.length, existing.map(x => entryLine(x, x.purged ? t('imp.r.existsPurged') : x.existsDeleted ? t('imp.r.existsDeleted') : t('imp.r.exists')))) : null,
       h('p.im-foot', null, t('imp.r.foot')));
 
     const n = importable.length;
@@ -633,7 +635,8 @@ function notesView(main, params, ctx) {
         if (audio.length) withAudio++;
       }
     }, { undoLabel: fresh.length ? t('imp.r.undo', { n: fresh.length }) : null });
-    result = { n: fresh.length, withAudio, skipped: m.entries.filter(x => x.exists).length + (todo.length - fresh.length), bad: m.entries.filter(x => !x.exists && !x.date).length };
+    result = { n: fresh.length, withAudio, skipped: m.entries.filter(x => x.exists && !x.purged).length + (todo.length - fresh.length), purged: m.entries.filter(x => x.purged).length,
+      bad: m.entries.filter(x => !x.exists && !x.date).length };
     busy = false;
     go('done');
   }
@@ -646,6 +649,7 @@ function notesView(main, params, ctx) {
         h('p.im-big', null, t('imp.r.done', { n: r.n })),
         r.withAudio ? h('p.im-sub', null, t('imp.r.doneAudio', { n: r.withAudio })) : null,
         r.skipped ? h('p.im-sub', null, t('imp.r.doneSkipped', { n: r.skipped })) : null,
+        r.purged ? h('p.im-sub', null, t('imp.r.purged', { n: r.purged })) : null,
         r.bad ? h('p.im-sub.im-warn', null, t('imp.r.doneBad', { n: r.bad })) : null),
       h('p.group-h', null, t('set.backupH')),
       h('section.card', null, h('p.im-lead', null, t('imp.r.backupHint')), backupBox(ctx)));

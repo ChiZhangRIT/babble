@@ -434,6 +434,7 @@ mark { padding: 0 1px; border-radius: 3px; background: rgba(214, 120, 60, .22); 
 .e-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; padding: 10px 10px 10px 14px; border-radius: var(--radius);
   background: var(--amber-soft); color: var(--amber); font-size: 14px; }
 .e-gone .chat { opacity: .85; }
+.e-banner-acts { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }   /* 恢复、永久删除（开放以后） */
 
 /* 还没写原话：一个虚线框，点了去编辑 */
 .e-write { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 22px; padding: 18px 16px; border: 1.5px dashed var(--accent-line);
@@ -556,6 +557,7 @@ mark { padding: 0 1px; border-radius: 3px; background: rgba(214, 120, 60, .22); 
 .editor { padding-top: 2px; padding-bottom: 28px; }
 .editor > .f-label:first-child, .ed-dt .f-label { margin-top: 12px; }
 .ed-banner { margin-top: 10px; padding: 10px 14px; border-radius: var(--radius); background: var(--amber-soft); color: var(--amber); font-size: 14px; line-height: 1.5; }
+.ed-purged-acts { margin-top: 10px; }        /* 这条永久删除了：「另存为新的一条」「丢掉」 */
 .ed-dt { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 12px; }
 .ed-dt input { font-variant-numeric: tabular-nums; -webkit-appearance: none; appearance: none; text-align: left; }
 .ed-dt input::-webkit-date-and-time-value { text-align: left; }
@@ -623,6 +625,20 @@ textarea.ed-note { min-height: 56px; overflow-y: hidden; resize: none; }
 .del-prev.ph { color: var(--faint); }
 .del-at { margin-top: 2px; font-size: 12px; color: var(--faint); }
 .del-restore { flex: none; }
+.del-acts { display: flex; flex: none; flex-direction: column; align-items: stretch; gap: 12px; }   /* 恢复；开放以后下面多一个永久删除。12px：两个按钮各往外扩 6px 的点按区域正好在中间接上 */
+.del-left { margin-top: 2px; font-size: 12px; color: var(--amber); }      /* 几天后永久删除、另有几段移除的录音 */
+.del-clip { gap: 12px; }                                                  /* 移除的录音、没有条目在用的录音：左边小播放钮 */
+.del-clip > .player.compact { flex: none; }
+.del-name { font-size: 14.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.del-name small { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.del-from { margin-top: 1px; font-size: 12.5px; color: var(--accent-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.del-warn { margin-top: 2px; font-size: 12px; font-weight: 600; color: var(--amber); }
+.del-old { margin: 0 4px 12px; padding: 8px 12px; border-radius: 9px; background: var(--amber-soft); color: var(--amber); }   /* 还有设备在用旧版本 */
+.deleted > .del-all { margin-top: 18px; }
+.del-orphans { margin-top: 28px; }
+.del-orphans > .del-find { margin: 10px 4px 0; }
+.del-orphans > .group { margin-top: 12px; }
+.del-orphans > .del-all { margin-top: 12px; }
 .del-empty .ic { width: 40px; height: 40px; margin: 0 auto 12px; color: var(--faint); stroke-width: 1.5; }
 .del-empty p + p { max-width: 22em; margin: 8px auto 0; }
 
@@ -663,6 +679,8 @@ textarea.ed-note { min-height: 56px; overflow-y: hidden; resize: none; }
 .nt-kept { position: relative; display: inline-flex; align-items: center; gap: 4px; min-height: 34px; padding: 0 12px 0 9px; border-radius: 17px; background: var(--accent-soft); color: var(--accent-text); font-size: 13px; font-weight: 600; white-space: nowrap; }
 .nt-kept::after { content: ""; position: absolute; inset: -5px 0; }      /* 点的范围 44 高 */
 .nt-kept .ic { width: 15px; height: 15px; stroke-width: 2.4; }
+.nt-kept.off { background: var(--fill); color: var(--muted); font-weight: 500; }      /* 留下过、那条已永久删除：不是链接 */
+.nt-kept.off::after { content: none; }
 /* 折起来的几块：已删掉、前几晚、详细记录 */
 .nt-fold { margin-top: 18px; }
 .nt-fold > summary { justify-content: flex-start; align-items: center; min-height: 44px; margin: 0 4px 2px; cursor: pointer; list-style: none; }
@@ -1125,7 +1143,7 @@ textarea.im-paths { min-height: 92px; font: 13px/1.5 ui-monospace, SFMono-Regula
 .set-backup .row { margin-top: 10px; }
 .set-ready { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
 .set-ready .ic { width: 18px; height: 18px; color: var(--good); stroke-width: 2.4; }
-.set-warn { color: var(--amber); }
+.set-warn, .set-label small.set-warn { color: var(--amber); }
 .set-persist { display: flex; align-items: center; gap: 10px; flex: none; }
 .set-tips ul, .set-about ul { margin: 0; padding-left: 1.2em; font-size: 14px; line-height: 1.6; color: var(--ink-2); }
 .set-tips li + li, .set-about li + li { margin-top: 6px; }
@@ -1154,6 +1172,25 @@ textarea.im-paths { min-height: 92px; font: 13px/1.5 ui-monospace, SFMono-Regula
 .set-notes { margin-top: 12px; }
 .set-notes p + p { margin-top: 6px; }
 .set-stop { display: flex; justify-content: center; margin-top: 22px; }
+/* 已更新到新版的设备（两步上线）：报到过的、还没报到的 */
+.set-dev-list { margin: 10px 0 0; padding: 0; list-style: none; }
+.set-dev-list li { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; padding: 7px 0; font-size: 14px; }
+.set-dev-list li + li { border-top: 1px solid var(--line); }
+.set-dev-list small { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.set-dev-list.wait .set-dev-name { color: var(--amber); }
+.set-dev-name { display: inline-flex; align-items: center; gap: 8px; min-width: 0; color: var(--ink); overflow-wrap: anywhere; }
+.set-dev-name .pill { height: 20px; padding: 0 8px; font-size: 11.5px; }
+.set-dev-h { margin-top: 14px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.set-dev-ok { display: flex; align-items: center; gap: 6px; margin-top: 12px; color: var(--good); }
+.set-dev-ok .ic { width: 16px; height: 16px; stroke-width: 2.4; }
+.set-devices .f-help { margin-left: 0; }
+/* 清理云端历史（开放永久删除以后）、清理以后 Mac 上换文件夹的步骤 */
+.set-squash .card > p + p { margin-top: 6px; }
+.set-squash .f-help { margin-left: 0; }
+.set-mac { margin-top: 12px; box-shadow: 0 0 0 1.5px var(--amber-line), var(--shadow-card); }
+.set-mac > * + * { margin-top: 8px; }
+.set-cmds { margin: 10px 0 0; padding: 10px 12px; border-radius: 9px; background: var(--fill); color: var(--ink); font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre; overflow-x: auto; -webkit-user-select: text; user-select: text; }
 
 /* ---------- 录音诊断 ---------- */
 .diag { padding-bottom: 32px; }
@@ -1256,6 +1293,7 @@ textarea.im-paths { min-height: 92px; font: 13px/1.5 ui-monospace, SFMono-Regula
 .hist-pv-by { font-size: 13px; color: var(--muted); }
 .hist-pv-note { margin-top: 10px; padding: 8px 12px; border-radius: 9px; background: var(--fill); font-size: 13.5px; color: var(--ink-2); }
 .hist-pv-note.amber { background: var(--amber-soft); color: var(--amber); }
+.hist-purged { margin: 0 4px; padding: 10px 14px; border-radius: var(--radius); background: var(--fill); font-size: 13.5px; color: var(--muted); }   /* 这一版的录音已经永久删除：没有播放器 */
 .hist-pv-date { margin-top: 4px; font-size: 13px; color: var(--muted); }
 .hist-pv .chat { margin-top: 18px; }
 .hist-pv-empty { margin-top: 18px; }

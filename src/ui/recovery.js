@@ -1,5 +1,5 @@
 import { h, download } from './dom.js';
-import { readBackup } from '../core/backup.js';
+import { readBackup, restorePlan } from '../core/backup.js';
 import { t } from '../i18n.js';
 
 export function recoveryPanel(main, ctx) {
@@ -14,9 +14,10 @@ export function recoveryPanel(main, ctx) {
   async function repair(next, clips = [], incomplete = false, keepOnly = false) {
     const ok = await ctx.confirm({ title: t('recovery.confirm'), message: [t('recovery.confirmText'), keepOnly ? t('recovery.keepConfirm') : '', incomplete ? t('recovery.incomplete') : ''].filter(Boolean).join('\n\n'), confirmLabel: t('recovery.go') });
     if (!ok) return;
-    // 录音先落盘；后续恢复失败也不删已有录音或恢复分片。
-    for (const clip of clips) await ctx.audio.putClip(clip.blob, { mime: clip.mime });
+    // 录音先落盘；后续恢复失败也不删已有录音或恢复分片。永久删除了的不存（同 restoreBackup；之后的清理会删掉余下没了的）
+    for (const clip of restorePlan(ctx.state, { state: next, clips }).keep) await ctx.audio.putClip(clip.blob, { mime: clip.mime });
     await ctx.repairData(next);
+    if (ctx.setLocal) ctx.setLocal({ repairedAt: Date.now() });     // 这次打开里修过数据：「没有条目在用的录音」先不列（修复前的条目可能还没回来）
   }
   async function run(task) {
     lock(true); status.hidden = false; status.textContent = t('recovery.working');

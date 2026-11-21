@@ -4,17 +4,21 @@
 // 存好以后候选记下 entryId / sha256 / keptAt。「留下了没有」不另存状态：entryId 指的条目还在就算留下了（后来删掉了也算：留下又删 = 不要了）；
 // 「撤销」由调用方做（昨夜页的提示条：删掉那条、去掉候选的链接 → 回到待听）。再留同样这几段：「最近删除」里正好是这几段的那条 → 恢复它，不再建一条重复的。
 // 存条目和改候选之间 App 被杀：再点「留下」时这几段已经都在同一条里（clipIndex）→ 只补链接，不再建一条。
+// 永久删除了的录音（goneShas：候选记着的 sha256、或者拼出来的 WAV 正好是它）不能再留：再留一次会让它又有条目在用，等于把永久删除了的录音找回来、
+// 重新传上仓库。这时抛 code 'purged' 的错，什么都不存（录音库里也不再放一份），候选记下 sha256（昨夜页、清理照样认得出）。
 // 依赖都由调用方传进来（ctx.night、ctx.audio、ctx.put…），不碰 DOM，Node 里能测。import 时什么都不做。
 import { clipOf, recTimeFields } from './drafts.js';
-import { clipIndex, makeEntry } from './store.js';
+import { clipIndex, makeEntry, goneShas } from './store.js';
 import { localParts } from './dates.js';
 import { P, wavBlob } from './nightDetect.js';
+import { sha256Hex } from './sha256.js';
 
 const HEAD = 44;           // WAV 头的字节数
 const round1 = v => Math.round(v * 10) / 10;
 const byStart = (a, b) => (a.startAt || 0) - (b.startAt || 0) || String(a.id).localeCompare(String(b.id));
 const sessionOf = (byId, sid) => (byId instanceof Map ? byId.get(sid) : byId && byId[sid]) || null;
 const gone = (c) => Object.assign(new Error('gone'), { code: 'gone', candId: c.id });
+const purged = (c) => Object.assign(new Error('purged'), { code: 'purged', candId: c.id });
 
 /**
  * 一段候选 → 条目里的一项 audio：{ sha256, mime: 'audio/wav', bytes, durationSec, origName: '', addedAt, startedAt, name? }
@@ -41,12 +45,16 @@ export function entryFieldsFor(cands, sessionsById) {
  * deps = { night: ctx.night（getParts、patchCand）, audio: ctx.audio（putClip）, getState: () => ctx.state, put: ctx.put, newEntry: ctx.newEntry,
  *   restore?: (id) => 恢复了的条目 | null（恢复「最近删除」里的条目；不给就照样新建） }
  * undoLabel 交给 put（给了外壳弹 10 秒「撤销」；昨夜页不给，自己弹）。
- * 有一段的声音已经清掉了（7 天到期、或者分片一片都没有）→ 抛 code 'gone' 的错，什么都还没存；putClip 出错照样抛，条目不建
+ * 有一段的声音已经清掉了（7 天到期、或者分片一片都没有）→ 抛 code 'gone' 的错，什么都还没存；
+ * 有一段是永久删除了的录音 → 抛 code 'purged' 的错（candId 是哪一段），什么都没存；putClip 出错照样抛，条目不建
  */
 export async function keepClips(deps, cands, sessionsById, { undoLabel, now = Date.now() } = {}) {
   const { night, audio, getState, put, newEntry = makeEntry, restore = null } = deps;
   const list = [...cands].sort(byStart);
   if (!list.length) return null;
+  // 0. 记着的 sha256 已经永久删除了（留下、撤销，那条后来永久删除了）：不读声音，直接不做
+  const G0 = goneShas(getState()), had = list.find(c => c.sha256 && G0.has(c.sha256));
+  if (had) throw purged(had);
   // 1. 先把每段的声音都读出来、拼成 WAV：哪一段没了就整个不做
   const blobs = [];
   for (const c of list) {
@@ -55,12 +63,28 @@ export async function keepClips(deps, cands, sessionsById, { undoLabel, now = Da
     if (!blob || blob.size <= HEAD) throw gone(c);
     blobs.push(blob);
   }
+  // 拼出来的正好是永久删除了的录音（没记下 sha256 的、或者读的时候永久删除了）：存进录音库之前就停（不然录音库里又多一份）；
+  // 候选记下 sha256，昨夜页把它当成已经永久删除了，清理也删得掉它的片段
+  const G = goneShas(getState());
+  for (let i = 0; i < list.length; i++) {
+    const sha = await sha256Hex(blobs[i]);
+    if (!G.has(sha)) continue;
+    if (list[i].sha256 !== sha) { try { await night.patchCand(list[i].id, { sha256: sha }); } catch (e) { console.warn('night keep: patchCand', e); } }
+    throw purged(list[i]);
+  }
   // 2. 存进录音库（同样内容只存一份）
   const saved = [];
   for (const b of blobs) saved.push(await audio.putClip(b, { mime: 'audio/wav' }));
   // 3. 这几段都已经在同一条（没删的）里：上次存好条目、还没来得及改候选就被打断了 → 只补链接；
-  //    不然「最近删除」里有正好是这几段的一条（留下以后撤销了）→ 恢复它（新删的优先），不建重复的
+  //    不然「最近删除」里有正好是这几段的一条（留下以后撤销了）→ 恢复它（新删的优先），不建重复的。
+  //    存的时候（上面在等）同步来了这几段的永久删除：不建（和下面 put 在同一拍里查，中间插不进合并）
   const state = getState(), idx = clipIndex(state), ids = saved.map(x => idx.get(x.sha256) || []);
+  const G2 = goneShas(state), late = list.findIndex((c, i) => G2.has(saved[i].sha256));
+  if (late >= 0) {                                       // 存的时候永久删除正好合并进来：同样记下 sha256（昨夜页马上认得出、不能再放、清理也认得）
+    const c = list[late], sha = saved[late].sha256;
+    if (c.sha256 !== sha) { try { await night.patchCand(c.id, { sha256: sha }); } catch (e) { console.warn('night keep: patchCand', e); } }
+    throw purged(c);
+  }
   const hit = ids[0].find(id => ids.every(l => l.includes(id)));
   let entry = hit ? state.data.entries[hit] : null;
   if (!entry && restore) {

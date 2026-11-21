@@ -1,7 +1,11 @@
 // 公共文案：common.* 通用按钮和提示、nav.* 导航、player.* 播放器、sync.* / syncErr.* 同步。
 // 繁體（台灣）用台灣用語（設定、儲存庫、存取權杖、匯入…）；动态字段 {x} 三种语言一致（测试会查）。
-// 英文单复数：en(一个, 多个)
+// 英文单复数：en(一个, 多个)；两个数的（{n} 条梦话、{clips} 段录音）单独写函数。
+// 键名以 Purge 结尾的是开放永久删除（core/purge.js 的 PURGE_ENABLED）以后用的说法，没有 Purge 的是现在的说法。
 const en = (one, many) => (v) => (Number(v.n) === 1 ? one : many).replace('{n}', v.n);
+const pl = (n, one, many) => `${n ?? 0} ${Number(n) === 1 ? one : many}`;
+/** 两个数的说法里只说不是 0 的那几样（「1 条梦话、2 段录音」「2 段录音」） */
+const some = (parts, sep) => parts.filter(([n]) => Number(n) > 0).map(([, x]) => x).join(sep);
 
 export const STRINGS = {
   'zh-Hans': {
@@ -16,6 +20,9 @@ export const STRINGS = {
     'common.exportRaw': '导出数据（JSON）', 'common.notFound': '找不到这条梦话，可能已经删除了。', 'common.pickEntry': '选一条梦话看看',
     'common.recovered': '找回 {n} 段上次没保存完的录音，放在「待整理」里。', 'common.recoverFail': '有录音没能找回：{msg}',
     'common.dropHint': '松开以导入录音',
+    // 永久删除（开放以后才用得到）
+    'common.purge': '永久删除', 'common.purged': '已永久删除', 'common.purgedN': '已永久删除 {n} 项',
+    'common.purgedOffline': '已经永久删除。联网同步以后，同步仓库里的录音文件才会删掉；各台设备上的录音文件同步到以后才删，最早在 7 天以后。',
 
     'nav.label': '主导航', 'nav.list': '呓语', 'nav.rec': '录音', 'nav.settings': '设置', 'nav.import': '导入录音',
     'nav.importNotes': '从备忘录迁移', 'nav.deleted': '最近删除', 'nav.new': '记一条', 'nav.diag': '录音诊断',
@@ -25,6 +32,7 @@ export const STRINGS = {
     'player.mode': '音量均衡', 'player.orig': '原声', 'player.level': '均衡', 'player.processing': '处理中…',
     'player.levelHint': '每句话调到差不多的音量：小声的放大，大声的压低。只影响播放，不改录音。',
     'player.levelFail': '这段录音没法均衡，先放原声。',
+    'player.purged': '这段录音已经永久删除。',
 
     'sync.off': '未设置同步', 'sync.error': '同步出错', 'sync.offline': '离线 · 有修改待上传', 'sync.pending': '待同步', 'sync.syncing': '同步中…',
     'sync.ok': '已同步 · {time}', 'sync.ok0': '已同步', 'sync.last': '上次同步：{time}',
@@ -45,6 +53,7 @@ export const STRINGS = {
     'sync.tokenLink': '打开 GitHub：创建 Fine-grained 令牌', 'sync.tokenDocs': 'GitHub 官方图文说明',
     'sync.tokenExpiry': '令牌像密码一样保管，只粘贴到 App 里。到期或被撤销后，在 GitHub 创建新令牌，再到「设置 → 停止同步 → 设置同步」填入；已有的梦话和录音都还在。',
     'sync.historyNote': '录音一旦同步到仓库，即使在 App 里删掉，也还留在仓库的 git 历史里。',
+    'sync.historyNotePurge': '永久删除的原话和录音会从仓库里删掉，但仓库的提交历史里还留着以前的版本；要彻底清掉，用下面的「清理云端历史」。',
     'sync.repo': '仓库', 'sync.repoPh': '用户名/babble-data', 'sync.token': '访问令牌', 'sync.connect': '连接', 'sync.connecting': '连接中…',
     'sync.connected': '同步已开启。在其他设备上粘贴同步码就能用。', 'sync.now': '立即同步', 'sync.done': '已同步',
     'sync.classicToken': '这是经典令牌（能动你整个 GitHub 账号）。请新建 Fine-grained 令牌（github_pat_ 开头），只给这个仓库的 Contents 读写权限。',
@@ -52,6 +61,35 @@ export const STRINGS = {
     'sync.code': '同步码', 'sync.codePh': '粘贴同步码（babble-sync: 开头）', 'sync.badCode': '这不是牙牙呓语的同步码。',
     'sync.copyCode': '复制同步码', 'sync.codeCopied': '同步码已复制。在另一台设备的「设置 → 同步」里粘贴。同步码里有令牌，不要发给别人。',
     'sync.stop': '停止同步', 'sync.stopConfirm': '这台设备停止同步？本机的梦话和录音都会保留，云端也不受影响。',
+    'sync.stopPending': '还有 {n} 段录音没从仓库删掉；停止同步（或换到别的仓库）以后，它们会一直留在这个仓库里。',
+    'sync.audioDel': '{n} 段待从仓库删除',
+    'sync.oldDevices': '「{devices}」上的牙牙呓语还是旧版本：关掉那台设备上所有牙牙呓语窗口再打开，就会更新。',
+    // 已更新到新版的设备（分两步上线：每台设备都报到以后，下一版才开放永久删除）
+    'sync.devicesH': '已更新到新版的设备',
+    'sync.devicesLead': '每台设备打开新版以后会在这里报到。等你们俩用的每台设备都报到了，下一版才会开放「永久删除」。',
+    'sync.devicesLeadPurge': '每台设备打开新版以后会在这里报到。还是旧版本的设备，可能把已经永久删除的内容暂时传回仓库。',
+    'sync.deviceThis': '这台设备', 'sync.deviceSeen': '最近一次报到：{time}', 'sync.deviceSoon': '同步成功一次以后报到',
+    'sync.devicesWaitH': '还没报到的设备', 'sync.deviceEdited': '改过梦话 · {time}', 'sync.deviceBuild': '版本 {v}', 'sync.deviceOld': '最近同步时还是旧版本',
+    'sync.devicesAll': '最近改过梦话的设备都报到了。',
+    'sync.devicesFoot': '按设备名认：两台设备名字一样（比如都叫 iPhone）时分不清，可以在各自的「设置 → 这台设备」里起个名字。没更新的设备，关掉它上面所有牙牙呓语的窗口再打开就会更新。',
+    // 清理云端历史（开放永久删除以后才显示）
+    'sync.squashH': '清理云端历史', 'sync.squashLead': '仓库的提交历史里还留着以前每一版的原话和删掉的录音。清理以后只留现在的内容。',
+    'sync.squashBtn': '清理云端历史…', 'sync.squashWait': '先等同步完成（录音都传上去、该删的都删掉）再清理。',
+    'sync.squashCount': '仓库现在有 {n} 个提交。', 'sync.lastBackup': '这台设备上次导出备份：{time}', 'sync.noBackup': '这台设备还没导出过备份。',
+    'sync.backupFirst': '先导出备份', 'sync.squashConfirmT': '清理云端历史？',
+    'sync.squashConfirm': '仓库 {repo} 的提交历史会换成一个新的提交，只留现在的内容。以前改过的原话、永久删除过的原话和录音，从此不在历史里。',
+    'sync.squashTrash': (v) => `「最近删除」里还有 ${some([[v.n, `${v.n} 条梦话`], [v.clips, `${v.clips} 段录音`]], '、')}，算现在的内容，会留下。想一起清掉，先去「最近删除」永久删除。`,
+    'sync.squashOrphans': '还有 {n} 段没有梦话在用的录音在仓库里，也会留下。',
+    'sync.squashOld': '「{devices}」上的牙牙呓语还是旧版本。先在那台设备上关掉所有窗口再打开，更新以后再清理。',
+    'sync.squashNoBackup': '这台设备 24 小时内没有导出过备份。云端历史是最后一道保险，建议先在「设置 → 备份」导出一份。',
+    'sync.squashExtra': '仓库里还有别的分支或标签（{names}），它们的历史不会清理。',
+    'sync.squashPoints': '· 「从云端历史找更早的版本」以后只找得到清理之后的；每台设备自己记的修改记录不受影响\n· 其他设备不用做什么，下次同步时会自己检查一遍录音\n· Mac 上的 babble-data 文件夹要换成新的（步骤见清理后的说明），不要 git pull，千万不要从旧文件夹 git push --force\n· GitHub 还可能把旧的提交缓存一段时间；导出过的备份 zip 里也还有，要自己删掉\n\n这一步不能撤销。',
+    'sync.squashGo': '清理', 'sync.squashing': '正在清理…', 'sync.squashDone': '云端历史已经清理，现在只有 1 个提交。',
+    'sync.squashAlready': '云端历史只有 1 个提交，不用清理。', 'sync.squashMissing': '仓库里少了 {n} 段条目在用的录音，有它的设备同步时会传上来。',
+    'sync.macH': 'Mac 上的 babble-data 文件夹',
+    'sync.macText': '清理以后，Mac 上的那个文件夹还留着旧的历史，git pull 也会失败。在终端里按下面的步骤换成新的；前两行有输出的话，先把那些改动另存一份。',
+    'sync.macAfter': '确认 babble-data-new 里的东西都在以后，把旧的 babble-data 文件夹拖到废纸篓，再把 babble-data-new 改名成 babble-data。不要在旧文件夹里 git pull，千万不要从旧文件夹 git push --force（会把旧的历史推回 GitHub）。',
+    'sync.macCopy': '复制命令', 'sync.macDone': '知道了',
 
     'syncErr.net': '连不上 GitHub，请检查网络。', 'syncErr.auth': '令牌无效或已过期（Fine-grained 令牌有有效期），请重新设置同步。',
     'syncErr.perm': '令牌没有这个仓库的读写权限（Contents: Read and write）。', 'syncErr.public': '这个仓库是公开的。梦话和录音很私人，请换成私有（Private）仓库。',
@@ -59,6 +97,9 @@ export const STRINGS = {
     'syncErr.mergeFail': '几台设备同时修改，合并失败，稍后会再试。', 'syncErr.http': 'GitHub 返回错误 {status}，稍后会再试。',
     'syncErr.unknown': '同步出错了。', 'syncErr.audioUp': '有录音上传失败，稍后会再试。', 'syncErr.audioDown': '有录音下载失败，稍后会再试。',
     'syncErr.shaMismatch': '下载的录音和记录对不上（校验失败），已丢弃，稍后重新下载。',
+    'syncErr.audioDel': '有录音没能从仓库删掉，稍后会再试。',
+    'syncErr.protected': '仓库的 {branch} 分支开了保护（不许强制推送），没法清理。在 GitHub 仓库的 Settings → Branches / Rules 里关掉后再试。',
+    'syncErr.squashRace': '清理时别的设备正在同步，这次没有完成。稍后再试。', 'syncErr.squashPending': '还有录音没传完或没删完，先等同步完成再清理。',
   },
 
   'zh-Hant-TW': {
@@ -73,6 +114,8 @@ export const STRINGS = {
     'common.exportRaw': '匯出資料（JSON）', 'common.notFound': '找不到這則夢話，可能已經刪除了。', 'common.pickEntry': '選一則夢話看看',
     'common.recovered': '找回 {n} 段上次沒儲存完的錄音，放在「待整理」裡。', 'common.recoverFail': '有錄音沒能找回：{msg}',
     'common.dropHint': '放開以匯入錄音',
+    'common.purge': '永久刪除', 'common.purged': '已永久刪除', 'common.purgedN': '已永久刪除 {n} 項',
+    'common.purgedOffline': '已經永久刪除。連上網路同步之後，同步儲存庫裡的錄音檔才會刪除；各臺裝置上的錄音檔同步到之後才刪除，最早在 7 天以後。',
 
     'nav.label': '主要導覽', 'nav.list': '囈語', 'nav.rec': '錄音', 'nav.settings': '設定', 'nav.import': '匯入錄音',
     'nav.importNotes': '從備忘錄遷移', 'nav.deleted': '最近刪除', 'nav.new': '記一則', 'nav.diag': '錄音診斷',
@@ -82,6 +125,7 @@ export const STRINGS = {
     'player.mode': '音量均衡', 'player.orig': '原聲', 'player.level': '均衡', 'player.processing': '處理中…',
     'player.levelHint': '每句話調到差不多的音量：小聲的放大、大聲的壓低。只影響播放，不會更動錄音。',
     'player.levelFail': '這段錄音無法均衡，先播放原聲。',
+    'player.purged': '這段錄音已經永久刪除。',
 
     'sync.off': '未設定同步', 'sync.error': '同步出錯', 'sync.offline': '離線 · 有修改待上傳', 'sync.pending': '待同步', 'sync.syncing': '同步中…',
     'sync.ok': '已同步 · {time}', 'sync.ok0': '已同步', 'sync.last': '上次同步：{time}',
@@ -102,6 +146,7 @@ export const STRINGS = {
     'sync.tokenLink': '開啟 GitHub：建立 Fine-grained 存取權杖', 'sync.tokenDocs': 'GitHub 官方圖文說明',
     'sync.tokenExpiry': '請將存取權杖視為密碼保管，只貼到 App 裡。到期或遭撤銷後，在 GitHub 建立新權杖，再到「設定 → 停止同步 → 設定同步」輸入；已有的夢話和錄音都還在。',
     'sync.historyNote': '錄音一旦同步到儲存庫，即使在 App 裡刪除，也還留在儲存庫的 git 歷史裡。',
+    'sync.historyNotePurge': '永久刪除的原話和錄音會從儲存庫裡刪除，但儲存庫的提交歷史裡還留著以前的版本；要徹底清掉，請用下面的「清理雲端歷史」。',
     'sync.repo': '儲存庫', 'sync.repoPh': '使用者名稱/babble-data', 'sync.token': '存取權杖', 'sync.connect': '連線', 'sync.connecting': '連線中…',
     'sync.connected': '同步已開啟。在其他裝置上貼上同步碼就能用。', 'sync.now': '立即同步', 'sync.done': '已同步',
     'sync.classicToken': '這是傳統個人存取權杖（可存取整個 GitHub 帳號）。請建立 Fine-grained 存取權杖（github_pat_ 開頭），只授權此儲存庫的 Contents 讀寫權限。',
@@ -109,6 +154,33 @@ export const STRINGS = {
     'sync.code': '同步碼', 'sync.codePh': '貼上同步碼（babble-sync: 開頭）', 'sync.badCode': '這不是牙牙囈語的同步碼。',
     'sync.copyCode': '複製同步碼', 'sync.codeCopied': '同步碼已複製。在另一臺裝置的「設定 → 同步」裡貼上。同步碼裡有存取權杖，不要傳給別人。',
     'sync.stop': '停止同步', 'sync.stopConfirm': '這臺裝置停止同步？本機的夢話和錄音都會保留，雲端也不受影響。',
+    'sync.stopPending': '還有 {n} 段錄音沒從儲存庫刪除；停止同步（或換到別的儲存庫）之後，它們會一直留在這個儲存庫裡。',
+    'sync.audioDel': '{n} 段待從儲存庫刪除',
+    'sync.oldDevices': '「{devices}」上的牙牙囈語還是舊版本：關掉那臺裝置上所有牙牙囈語視窗再打開，就會更新。',
+    'sync.devicesH': '已更新到新版的裝置',
+    'sync.devicesLead': '每臺裝置打開新版之後會在這裡報到。等你們倆用的每臺裝置都報到了，下一版才會開放「永久刪除」。',
+    'sync.devicesLeadPurge': '每臺裝置打開新版之後會在這裡報到。還是舊版本的裝置，可能把已經永久刪除的內容暫時傳回儲存庫。',
+    'sync.deviceThis': '這臺裝置', 'sync.deviceSeen': '最近一次報到：{time}', 'sync.deviceSoon': '同步成功一次之後報到',
+    'sync.devicesWaitH': '還沒報到的裝置', 'sync.deviceEdited': '改過夢話 · {time}', 'sync.deviceBuild': '版本 {v}', 'sync.deviceOld': '最近同步時還是舊版本',
+    'sync.devicesAll': '最近改過夢話的裝置都報到了。',
+    'sync.devicesFoot': '按裝置名稱辨認：兩臺裝置名稱一樣（例如都叫 iPhone）時分不清，可以在各自的「設定 → 這臺裝置」裡取個名字。沒更新的裝置，關掉它上面所有牙牙囈語的視窗再打開就會更新。',
+    'sync.squashH': '清理雲端歷史', 'sync.squashLead': '儲存庫的提交歷史裡還留著以前每一版的原話和刪掉的錄音。清理之後只留下現在的內容。',
+    'sync.squashBtn': '清理雲端歷史…', 'sync.squashWait': '請先等同步完成（錄音都上傳、該刪的都刪掉）再清理。',
+    'sync.squashCount': '儲存庫現在有 {n} 個提交。', 'sync.lastBackup': '這臺裝置上次匯出備份：{time}', 'sync.noBackup': '這臺裝置還沒匯出過備份。',
+    'sync.backupFirst': '先匯出備份', 'sync.squashConfirmT': '清理雲端歷史？',
+    'sync.squashConfirm': '儲存庫 {repo} 的提交歷史會換成一個新的提交，只留下現在的內容。以前改過的原話、永久刪除過的原話和錄音，從此不在歷史裡。',
+    'sync.squashTrash': (v) => `「最近刪除」裡還有 ${some([[v.n, `${v.n} 則夢話`], [v.clips, `${v.clips} 段錄音`]], '、')}，算現在的內容，會留下。想一起清掉，請先到「最近刪除」永久刪除。`,
+    'sync.squashOrphans': '還有 {n} 段沒有夢話在用的錄音在儲存庫裡，也會留下。',
+    'sync.squashOld': '「{devices}」上的牙牙囈語還是舊版本。請先在那臺裝置上關掉所有視窗再打開，更新之後再清理。',
+    'sync.squashNoBackup': '這臺裝置 24 小時內沒有匯出過備份。雲端歷史是最後一道保險，建議先在「設定 → 備份」匯出一份。',
+    'sync.squashExtra': '儲存庫裡還有別的分支或標籤（{names}），它們的歷史不會清理。',
+    'sync.squashPoints': '· 「從雲端歷史找更早的版本」以後只找得到清理之後的；每臺裝置自己記的修改紀錄不受影響\n· 其他裝置不用做什麼，下次同步時會自己檢查一遍錄音\n· Mac 上的 babble-data 資料夾要換成新的（步驟見清理後的說明），不要 git pull，千萬不要從舊資料夾 git push --force\n· GitHub 可能還會把舊的提交快取一段時間；匯出過的備份 zip 裡也還有，要自己刪掉\n\n這一步無法復原。',
+    'sync.squashGo': '清理', 'sync.squashing': '正在清理…', 'sync.squashDone': '雲端歷史已經清理，現在只有 1 個提交。',
+    'sync.squashAlready': '雲端歷史只有 1 個提交，不用清理。', 'sync.squashMissing': '儲存庫裡少了 {n} 段夢話在用的錄音，有它的裝置同步時會上傳。',
+    'sync.macH': 'Mac 上的 babble-data 資料夾',
+    'sync.macText': '清理之後，Mac 上的那個資料夾還留著舊的歷史，git pull 也會失敗。在終端機裡照下面的步驟換成新的；前兩行有輸出的話，先把那些改動另存一份。',
+    'sync.macAfter': '確認 babble-data-new 裡的東西都在之後，把舊的 babble-data 資料夾拖到垃圾桶，再把 babble-data-new 改名成 babble-data。不要在舊資料夾裡 git pull，千萬不要從舊資料夾 git push --force（會把舊的歷史推回 GitHub）。',
+    'sync.macCopy': '複製指令', 'sync.macDone': '知道了',
 
     'syncErr.net': '連不上 GitHub，請檢查網路。', 'syncErr.auth': '存取權杖無效或已過期（Fine-grained 權杖有有效期），請重新設定同步。',
     'syncErr.perm': '存取權杖沒有這個儲存庫的讀寫權限（Contents: Read and write）。', 'syncErr.public': '這個儲存庫是公開的。夢話和錄音很私人，請改用私人（Private）儲存庫。',
@@ -116,6 +188,9 @@ export const STRINGS = {
     'syncErr.mergeFail': '幾臺裝置同時修改，合併失敗，稍後會再試。', 'syncErr.http': 'GitHub 回傳錯誤 {status}，稍後會再試。',
     'syncErr.unknown': '同步出錯了。', 'syncErr.audioUp': '有錄音上傳失敗，稍後會再試。', 'syncErr.audioDown': '有錄音下載失敗，稍後會再試。',
     'syncErr.shaMismatch': '下載的錄音和紀錄對不上（驗證失敗），已捨棄，稍後重新下載。',
+    'syncErr.audioDel': '有錄音沒能從儲存庫刪除，稍後會再試。',
+    'syncErr.protected': '儲存庫的 {branch} 分支開了保護（不允許強制推送），無法清理。請在 GitHub 儲存庫的 Settings → Branches / Rules 裡關掉後再試。',
+    'syncErr.squashRace': '清理時別的裝置正在同步，這次沒有完成。請稍後再試。', 'syncErr.squashPending': '還有錄音沒傳完或沒刪完，請先等同步完成再清理。',
   },
 
   en: {
@@ -131,6 +206,8 @@ export const STRINGS = {
     'common.recovered': en('Recovered {n} unfinished recording. It is waiting in To tidy.', 'Recovered {n} unfinished recordings. They are waiting in To tidy.'),
     'common.recoverFail': "A recording couldn't be recovered: {msg}",
     'common.dropHint': 'Drop to import recordings',
+    'common.purge': 'Delete permanently', 'common.purged': 'Permanently deleted', 'common.purgedN': en('{n} item permanently deleted', '{n} items permanently deleted'),
+    'common.purgedOffline': 'Permanently deleted. The recording files in the sync repository are removed after the next sync; the copies on your devices are removed once each device has synced, 7 days from now at the earliest.',
 
     'nav.label': 'Main', 'nav.list': 'Murmurs', 'nav.rec': 'Record', 'nav.settings': 'Settings', 'nav.import': 'Import audio',
     'nav.importNotes': 'Move from Notes', 'nav.deleted': 'Recently deleted', 'nav.new': 'New entry', 'nav.diag': 'Recording diagnostics',
@@ -140,6 +217,7 @@ export const STRINGS = {
     'player.mode': 'Volume leveling', 'player.orig': 'Original', 'player.level': 'Leveled', 'player.processing': 'Processing…',
     'player.levelHint': 'Brings every sentence to about the same volume: whispers up, loud parts down. Playback only; the recording is unchanged.',
     'player.levelFail': "Couldn't level this recording; playing the original.",
+    'player.purged': 'This recording was permanently deleted.',
 
     'sync.off': 'Sync off', 'sync.error': 'Sync error', 'sync.offline': 'Offline · changes pending', 'sync.pending': 'Pending', 'sync.syncing': 'Syncing…',
     'sync.ok': 'Synced · {time}', 'sync.ok0': 'Synced', 'sync.last': 'Last sync: {time}',
@@ -160,6 +238,7 @@ export const STRINGS = {
     'sync.tokenLink': 'Open GitHub: create a fine-grained token', 'sync.tokenDocs': 'GitHub official instructions',
     'sync.tokenExpiry': 'Treat the token like a password and paste it only into the app. If it expires or is revoked, create a new one on GitHub, then choose Settings → Stop sync → Set up sync and enter it. Your entries and recordings stay where they are.',
     'sync.historyNote': 'Once a recording has synced to the repository, it stays in the git history even if you delete it in the app.',
+    'sync.historyNotePurge': 'Permanently deleted text and recordings are removed from the repository, but older versions stay in its commit history. To remove those too, use "Clean up cloud history" below.',
     'sync.repo': 'Repository', 'sync.repoPh': 'user/babble-data', 'sync.token': 'Access token', 'sync.connect': 'Connect', 'sync.connecting': 'Connecting…',
     'sync.connected': 'Sync is on. Paste the sync code on your other devices.', 'sync.now': 'Sync now', 'sync.done': 'Synced',
     'sync.classicToken': 'This is a classic token (it can access your whole GitHub account). Please create a fine-grained token (starts with github_pat_) with Contents read/write on this repository only.',
@@ -167,6 +246,34 @@ export const STRINGS = {
     'sync.code': 'Sync code', 'sync.codePh': 'Paste a sync code (starts with babble-sync:)', 'sync.badCode': 'This is not a Babble sync code.',
     'sync.copyCode': 'Copy sync code', 'sync.codeCopied': 'Sync code copied. Paste it under Settings → Sync on another device. It contains your token, so keep it private.',
     'sync.stop': 'Stop sync', 'sync.stopConfirm': 'Stop syncing on this device? Entries and recordings on this device stay, and the repository is not touched.',
+    'sync.stopPending': en("{n} recording hasn't been deleted from the repository yet. If you stop syncing (or switch repositories), it stays there.", "{n} recordings haven't been deleted from the repository yet. If you stop syncing (or switch repositories), they stay there."),
+    'sync.audioDel': en('{n} recording to delete from the repository', '{n} recordings to delete from the repository'),
+    'sync.oldDevices': 'Babble on "{devices}" is an older version. Close every Babble window on that device and open it again to update.',
+    'sync.devicesH': 'Devices on the new version',
+    'sync.devicesLead': 'Each device checks in here once it opens the new version. Permanent deletion opens in a later version, after every device you both use has checked in.',
+    'sync.devicesLeadPurge': 'Each device checks in here once it opens the new version. A device still on an older version may briefly put permanently deleted items back in the repository.',
+    'sync.deviceThis': 'This device', 'sync.deviceSeen': 'Last checked in {time}', 'sync.deviceSoon': 'Checks in after the next successful sync',
+    'sync.devicesWaitH': 'Not checked in yet', 'sync.deviceEdited': 'Edited an entry · {time}', 'sync.deviceBuild': 'version {v}', 'sync.deviceOld': 'Still syncing with an older version',
+    'sync.devicesAll': 'Every device that edited entries lately has checked in.',
+    'sync.devicesFoot': 'Devices are matched by name: two devices with the same name (both "iPhone", say) can\'t be told apart, so give each one its own name in Settings → This device. To update a device, close every Babble window on it and open it again.',
+    'sync.squashH': 'Clean up cloud history', 'sync.squashLead': "The repository's commit history still holds every earlier version of your text and deleted recordings. Cleaning up keeps only what's there now.",
+    'sync.squashBtn': 'Clean up cloud history…', 'sync.squashWait': 'Wait until sync finishes (all recordings uploaded and deletions done).',
+    'sync.squashCount': en('The repository has {n} commit.', 'The repository has {n} commits.'), 'sync.lastBackup': 'Last backup from this device: {time}', 'sync.noBackup': 'No backup exported from this device yet.',
+    'sync.backupFirst': 'Export a backup first', 'sync.squashConfirmT': 'Clean up cloud history?',
+    'sync.squashConfirm': "The commit history of {repo} will be replaced by a single new commit holding only what's there now. Earlier versions of your text, and text and recordings you deleted permanently, will no longer be in the history.",
+    'sync.squashTrash': (v) => { const one = Number(v.n) + Number(v.clips) === 1; return `Recently deleted still holds ${some([[v.n, pl(v.n, 'entry', 'entries')], [v.clips, pl(v.clips, 'recording', 'recordings')]], ' and ')}. ${one ? 'It counts as current and will stay. To remove it too, delete it' : 'They count as current and will stay. To remove them too, delete them'} permanently in Recently deleted first.`; },
+    'sync.squashOrphans': en('{n} recording no entry uses is still in the repository and will stay too.', '{n} recordings no entry uses are still in the repository and will stay too.'),
+    'sync.squashOld': 'Babble on "{devices}" is an older version. Close all its windows on that device and reopen it to update before cleaning up.',
+    'sync.squashNoBackup': "This device hasn't exported a backup in the last 24 hours. Cloud history is the last safety net, so export one in Settings → Backup first.",
+    'sync.squashExtra': 'Other branches or tags ({names}) keep their history.',
+    'sync.squashPoints': '· "Find older versions in cloud history" will only find versions after the cleanup; each device\'s own edit history is not affected\n· Other devices need nothing; they re-check their recordings at the next sync\n· Replace the babble-data folder on your Mac (steps shown after the cleanup). Don\'t git pull, and never git push --force from the old folder\n· GitHub may cache old commits for a while; exported backup zips still contain them, so delete those yourself\n\nThis can\'t be undone.',
+    'sync.squashGo': 'Clean up', 'sync.squashing': 'Cleaning up…', 'sync.squashDone': 'Cloud history cleaned up; 1 commit left.',
+    'sync.squashAlready': 'Cloud history already has a single commit.',
+    'sync.squashMissing': en('{n} recording in use is missing from the repository; the device that has it uploads it at its next sync.', '{n} recordings in use are missing from the repository; the device that has them uploads them at its next sync.'),
+    'sync.macH': 'The babble-data folder on your Mac',
+    'sync.macText': "Your Mac's folder still has the old history, and git pull will fail. Replace it with these steps in Terminal. If the first two commands print anything, save those changes somewhere first.",
+    'sync.macAfter': "Once babble-data-new looks right, drag the old babble-data folder to the Trash and rename babble-data-new to babble-data. Don't git pull in the old folder, and never git push --force from it (that puts the old history back on GitHub).",
+    'sync.macCopy': 'Copy commands', 'sync.macDone': 'Got it',
 
     'syncErr.net': "Can't reach GitHub. Check your connection.", 'syncErr.auth': 'The token is invalid or has expired (fine-grained tokens expire). Please set up sync again.',
     'syncErr.perm': "The token can't read/write this repository (Contents: Read and write).", 'syncErr.public': 'This repository is public. Sleep talk and recordings are private, so please use a private repository.',
@@ -174,6 +281,9 @@ export const STRINGS = {
     'syncErr.mergeFail': 'Several devices changed things at once and merging failed; will retry.', 'syncErr.http': 'GitHub returned error {status}; will retry.',
     'syncErr.unknown': 'Sync failed.', 'syncErr.audioUp': 'Some recordings failed to upload; will retry.', 'syncErr.audioDown': 'Some recordings failed to download; will retry.',
     'syncErr.shaMismatch': "A downloaded recording didn't match its checksum and was discarded; will download again.",
+    'syncErr.audioDel': "Some recordings couldn't be deleted from the repository; will retry.",
+    'syncErr.protected': "Branch {branch} is protected against force pushes. Turn that off in the repository's Settings → Branches / Rules and try again.",
+    'syncErr.squashRace': "Another device was syncing, so the cleanup didn't finish. Try again shortly.", 'syncErr.squashPending': 'Some recordings are still uploading or being deleted; wait for sync to finish.',
   },
 };
 

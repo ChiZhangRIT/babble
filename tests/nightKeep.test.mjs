@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { keepClips, itemFor, entryFieldsFor } from '../src/core/nightKeep.js';
 import { memoryNightStore } from '../src/core/nightStore.js';
 import { memoryStore } from '../src/core/audioStore.js';
-import { blankState, makeEntry, normalizeEntry } from '../src/core/store.js';
+import { blankState, makeEntry, normalizeEntry, goneShas } from '../src/core/store.js';
+import { wavBlob } from '../src/core/nightDetect.js';
 import { recTimeFields } from '../src/core/drafts.js';
 import { sha256Hex } from '../src/core/sha256.js';
 
@@ -207,6 +208,60 @@ test('没有要留的 → null，什么都不碰', async () => {
   const { night, puts, putClips, deps } = setup();
   assert.equal(await keepClips(deps, [], SESSIONS), null);
   assert.deepEqual([puts.length, putClips.length, night.calls.length], [0, 0, 0]);
+});
+
+/** 把条目 id 换成永久删除以后的墓碑（只有 gone 记号，没有内容） */
+const purgeIt = (s, id, shas, at = 9900) => {
+  s.data.entries[id] = normalizeEntry({ id, updatedAt: at, purged: true, purgedAt: at, purgedFrom: at - 1, deleted: true,
+    gone: shas.map(sha => ({ sha256: sha, mime: 'audio/wav', purgedAt: at, from: at - 1 })) }, id);
+};
+
+test('永久删除了的录音不能再留（不然它又有条目在用，等于找回来、重新上传）：记着的 sha256 没了 → 抛 purged，什么都不读、不存', async () => {
+  const { night, audio, s, puts, putClips, deps } = setup();
+  const { c: c1 } = await seedCand(night, 'c_1', { startAt: T0, samples: 2 * SR, seed: 1 });
+  const { c: c2 } = await seedCand(night, 'c_2', { startAt: T0 + 60e3, samples: 2 * SR, seed: 2 });
+  const e1 = await keepClips(deps, [c1], SESSIONS, { now: 9000 });
+  const S = e1.audio[0].sha256;
+  // 留下、撤销（候选去掉链接，sha256 留着），那条后来永久删除了；本机的录音也清掉了
+  await night.patchCand('c_1', { entryId: null, keptAt: null });
+  purgeIt(s, e1.id, [S]);
+  audio.clips.delete(S);
+  assert.ok(goneShas(s).has(S));
+  const n = { puts: puts.length, putClips: putClips.length, gets: night.calls.filter(x => x === 'getParts').length };
+  const c = await night.getCand('c_1');
+  await assert.rejects(keepClips(deps, [c2, c], SESSIONS, { now: 9500 }), (err) => err.code === 'purged' && err.candId === 'c_1');
+  assert.deepEqual([puts.length, putClips.length, night.calls.filter(x => x === 'getParts').length], [n.puts, n.putClips, n.gets]);
+  assert.ok(!audio.clips.has(S), '录音库里没再放一份');
+  assert.ok(goneShas(s).has(S), '还是没了');
+  assert.equal((await night.getCand('c_2')).entryId, undefined, '一起勾的另一段也没留');
+});
+
+test('永久删除了的录音不能再留：没记下 sha256、拼出来正好是它 → 抛 purged，录音库里不放，候选记下 sha256；存的时候同步来了永久删除 → 不建条目', async () => {
+  const { night, audio, s, puts, putClips, deps } = setup();
+  const { c: c1 } = await seedCand(night, 'c_1', { startAt: T0, samples: 2 * SR, seed: 1 });
+  const S = await sha256Hex(wavBlob([pcm(2 * SR, 1).buffer], 2 * SR, SR));
+  purgeIt(s, 't_old', [S]);                               // 以前留下过（候选没记上 sha256），那条后来永久删除了
+  await assert.rejects(keepClips(deps, [c1], SESSIONS), (err) => err.code === 'purged' && err.candId === 'c_1');
+  assert.deepEqual([putClips.length, audio.clips.size, puts.length], [0, 0, 0]);
+  assert.equal((await night.getCand('c_1')).sha256, S, '记下 sha256：昨夜页、清理认得出它');
+
+  // 读声音、存录音库的时候（中间在等）合并进来一条永久删除：查和建条目在同一拍里，不建
+  const { c: c2 } = await seedCand(night, 'c_2', { startAt: T0 + 60e3, samples: 2 * SR, seed: 2 });
+  const real = audio.putClip;
+  audio.putClip = async (blob, opts) => { const r = await real(blob, opts); purgeIt(s, 't_late', [r.sha256]); return r; };
+  await assert.rejects(keepClips(deps, [c2], SESSIONS), (err) => err.code === 'purged' && err.candId === 'c_2');
+  assert.equal(puts.length, 0);
+  assert.equal(entriesOf(s).filter(e => !e.purged).length, 0);
+  assert.equal((await night.getCand('c_2')).entryId, undefined);
+  assert.ok((await night.getCand('c_2')).sha256, '这时也记下 sha256：昨夜页马上认得出、不能再放');
+
+  // 同一段录音还有别的条目在用（不算没了）：照样能留（只补链接）
+  audio.putClip = real;
+  const { c: c3 } = await seedCand(night, 'c_3', { startAt: T0 + 120e3, samples: 2 * SR, seed: 3 });
+  const e3 = await keepClips(deps, [c3], SESSIONS, { now: 9000 });
+  purgeIt(s, 't_dup', [e3.audio[0].sha256]);
+  assert.equal(goneShas(s).has(e3.audio[0].sha256), false);
+  assert.equal((await keepClips(deps, [await night.getCand('c_3')], SESSIONS, { now: 9100 })).id, e3.id);
 });
 
 test('itemFor：§4.5 的字段；时长按 samples，WAV 短了按 WAV；合成时的名字按那一晚的时区', () => {

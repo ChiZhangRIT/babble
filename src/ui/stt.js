@@ -86,8 +86,10 @@ async function runClip(ctx, id, clip) {
     return;                           // 出错显示在部件里；取消就回到按钮
   } finally { mark(ctx, null); unlock(lock); refreshCache(p.model); }
   if (!r.text) { ctx.toast(t('stt.nothing'), { ms: 7000 }); return; }
-  const cur = ctx.entry(id);
+  // 识别期间这条删了、永久删除了，或者这段录音被移除 / 永久删除了：结果不写（不然拿掉的录音转出的字留在草稿里）
+  const cur = ctx.entry(id), gone = ctx.goneShas ? ctx.goneShas() : null;
   if (!cur || cur.deleted) { ctx.toast(t('stt.gone'), { ms: 7000 }); return; }
+  if (!cur.audio.some(a => a.sha256 === clip.sha256) || (gone && gone.has(clip.sha256))) { ctx.toast(t('stt.clipGone'), { ms: 7000 }); return; }
   const draft = stt.mergeDraft(cur.draft, { sha256: clip.sha256, text: r.text, source: stt.sourceOf(r.model, ctx.device), at: Date.now() }, cur.audio.map(a => a.sha256));
   const ed = edits.get(id);            // 正在改这条的草稿：新结果也接到正在改的文字后面，保存时不会把它盖掉
   if (ed) ed.text = ed.text.replace(/\s+$/, '') + (ed.text.trim() ? '\n\n' : '') + r.text;

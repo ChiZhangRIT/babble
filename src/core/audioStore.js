@@ -1,8 +1,11 @@
 // 本机录音库（IndexedDB babble-audio，第 1 版）：
-//   clips    sha256 → { sha256, blob, mime, bytes, addedAt, uploaded }   录音本体（Blob 直接存，不转 base64；
-//            Safari 无痕浏览等不让存 Blob 的环境改存 data: ArrayBuffer，读出来时包回 Blob）
+//   clips    sha256 → { sha256, blob, mime, bytes, addedAt, touchedAt, uploaded }   录音本体（Blob 直接存，不转 base64；
+//            Safari 无痕浏览等不让存 Blob 的环境改存 data: ArrayBuffer，读出来时包回 Blob）。
+//            touchedAt：最近一次存（同样内容再存一次也算；旧记录没有，看 addedAt）——清理永久删除的录音时不碰刚存过的（导入、留下还没做完）
 //   rec      [recId, seq] → Blob                                         录音中的分片（每秒一片，App 被杀也能找回）
 //   recMeta  recId → { recId, startedAt, mime, tz, attachTo?, done?, sha256? }  这段录音的信息（done：已经存成 clip）
+// 删录音：deleteClip 只删还没上传的一段（录音页取消、「放弃这段录音」）；deleteClips 删永久删除了的（core/purge.js 清理本机用，
+//   上传过的也删）：同一个事务里连同这些 sha 的 recMeta 和分片一起删（免得启动时又拼回来），删之前同步地再问一次「还该删吗」。
 // 模块导出的函数用浏览器的 indexedDB（import 时不碰它，Node 测试能 import）；
 // memoryStore() 是同样接口的内存版：测试、录音诊断用，不落盘。
 import { sha256Hex } from './sha256.js';
@@ -23,12 +26,13 @@ export function extForMime(mime) {
 export const baseMime = (mime) => String(mime || '').toLowerCase().split(';')[0].trim();
 
 const EXT_MIME = { m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', webm: 'audio/webm', ogg: 'audio/ogg', opus: 'audio/ogg', wav: 'audio/wav', mp3: 'audio/mpeg', caf: 'audio/x-caf' };
+/** 扩展名 → mime（仓库里的 audio/<sha>.<ext>、选来的文件）；不认识的按 m4a */
+export const mimeForExt = (ext) => EXT_MIME[String(ext || '').toLowerCase()] || 'audio/mp4';
 /** 选来的文件 → mime：浏览器给了就用（去参数），没给（iOS 有时是空的）按扩展名，最后按 m4a */
 export function mimeForFile(file) {
   const t = baseMime(file && file.type);
   if (t && t !== 'application/octet-stream') return t;
-  const ext = String((file && file.name) || '').toLowerCase().split('.').pop();
-  return EXT_MIME[ext] || 'audio/mp4';
+  return mimeForExt(String((file && file.name) || '').split('.').pop());
 }
 
 const stripBlob = ({ blob, data, ...r }) => r;
@@ -42,6 +46,10 @@ function fromRecord(r) {
 const asBlob = (v) => (v instanceof Blob ? v : new Blob([v]));
 
 // ---------- IndexedDB 版 ----------
+/** 同样内容再存一次：上次碰过（touchedAt，旧记录看 addedAt）超过 5 分钟才重新记（不为了改个时间把整条录音重写一遍；一小时的保护最多短 5 分钟） */
+const RETOUCH_MS = 5 * 60e3;
+const retouch = (old, now) => now - (Number(old.touchedAt) || Number(old.addedAt) || 0) >= RETOUCH_MS;
+
 /** @param {() => IDBFactory|undefined} [getIDB] 测试可以注入假的 indexedDB */
 export function idbStore(getIDB = () => globalThis.indexedDB) {
   let opening = null;
@@ -111,7 +119,8 @@ export function idbStore(getIDB = () => globalThis.indexedDB) {
   const chunkRange = (recId) => IDBKR().bound([recId, 0], [recId, Infinity]);
 
   const api = {
-    /** 存一段录音（同样内容只存一份）→ { sha256, mime, bytes }。uploaded: true = 已知云端有（同步下载来的） */
+    /** 存一段录音（同样内容只存一份；已经有了也记下 touchedAt——5 分钟内碰过的不再重写整条，要改 uploaded 时才写）→ { sha256, mime, bytes }。
+     *  uploaded: true = 已知云端有（同步下载来的） */
     async putClip(blob, { mime, uploaded = false } = {}) {
       const sha256 = await sha256Hex(blob);
       const type = baseMime(mime || blob.type) || 'audio/mp4';
@@ -119,15 +128,15 @@ export function idbStore(getIDB = () => globalThis.indexedDB) {
         // 存成带正确类型的 Blob（不复制内容）；不收 Blob 的环境存 ArrayBuffer（要在事务外先读出来）
         const body = asBuffer ? { data: await blob.arrayBuffer() } : { blob: blob.type === type ? blob : new Blob([blob], { type }) };
         return run('clips', 'readwrite', (tx) => {
-          const st = tx.objectStore('clips');
+          const st = tx.objectStore('clips'), now = Date.now();
           let res = { sha256, mime: type, bytes: blob.size };
           const g = st.get(sha256);
           g.onsuccess = () => {
             const old = g.result;
             if (old) {
               res = { sha256, mime: old.mime || type, bytes: old.bytes ?? blob.size };
-              if (uploaded && !old.uploaded) st.put({ ...old, uploaded: true });
-            } else st.put({ sha256, ...body, mime: type, bytes: blob.size, addedAt: Date.now(), uploaded: !!uploaded });
+              if (retouch(old, now) || (uploaded && !old.uploaded)) st.put({ ...old, touchedAt: now, ...(uploaded ? { uploaded: true } : {}) });
+            } else st.put({ sha256, ...body, mime: type, bytes: blob.size, addedAt: now, touchedAt: now, uploaded: !!uploaded });
           };
           return () => res;
         });
@@ -136,7 +145,7 @@ export function idbStore(getIDB = () => globalThis.indexedDB) {
     /** → { sha256, blob, mime, bytes, addedAt, uploaded } | null */
     getClip: (sha) => run('clips', 'readonly', (tx) => { const r = tx.objectStore('clips').get(sha); return () => fromRecord(r.result); }),
     hasClip: (sha) => run('clips', 'readonly', (tx) => { const r = tx.objectStore('clips').count(sha); return () => r.result > 0; }),
-    /** → 所有录音的信息（不含 blob）：[{ sha256, mime, bytes, addedAt, uploaded }] */
+    /** → 所有录音的信息（不含 blob）：[{ sha256, mime, bytes, addedAt, touchedAt, uploaded }] */
     listClips: () => run('clips', 'readonly', (tx) => { const r = tx.objectStore('clips').getAll(); return () => (r.result || []).map(stripBlob); }),
     markUploaded: (sha, uploaded = true) => run('clips', 'readwrite', (tx) => {
       const st = tx.objectStore('clips'), g = st.get(sha);
@@ -150,6 +159,30 @@ export function idbStore(getIDB = () => globalThis.indexedDB) {
       let ok = false;
       g.onsuccess = () => { if (g.result && !g.result.uploaded) { st.delete(sha); ok = true; } };
       return () => ok;
+    }),
+    /**
+     * 删掉永久删除了的录音（上传过的也删），连同这些 sha 的 recMeta 和分片 → 真删掉的 sha 数组。一个事务：
+     * 事务开头同步地问 stillGone(sha)（同一个标签页里这中间插不进 mutate），读到记录、发删除请求之前再问一次；
+     * minAge（毫秒，或 sha → 毫秒）以内存过的（touchedAt，旧记录看 addedAt）不删。正在录的 recMeta 还没有 sha256，碰不到
+     */
+    deleteClips: (shas, { stillGone = () => true, minAge = 0 } = {}) => run(['clips', 'rec', 'recMeta'], 'readwrite', (tx) => {
+      const st = tx.objectStore('clips'), age = typeof minAge === 'function' ? minAge : () => minAge, done = new Set();
+      const keep = [...new Set(shas || [])].filter(s => stillGone(s));
+      for (const sha of keep) {
+        const g = st.get(sha);
+        g.onsuccess = () => {
+          const r = g.result;
+          if (!r || Date.now() - (Number(r.touchedAt) || Number(r.addedAt) || 0) < (Number(age(sha)) || 0) || !stillGone(sha)) return;
+          st.delete(sha); done.add(sha);
+        };
+      }
+      if (keep.length) {                             // 同一个事务里的请求按顺序完成：这时上面每段删不删都定了
+        const meta = tx.objectStore('recMeta'), all = meta.getAll();
+        all.onsuccess = () => {
+          for (const m of all.result || []) if (m && m.sha256 && done.has(m.sha256)) { tx.objectStore('rec').delete(chunkRange(m.recId)); meta.delete(m.recId); }
+        };
+      }
+      return () => [...done];
     }),
 
     putChunk: (recId, seq, blob) => storing(async (asBuffer) => {
@@ -183,9 +216,9 @@ export function memoryStore() {
     async putClip(blob, { mime, uploaded = false } = {}) {
       const sha256 = await sha256Hex(blob);
       const type = baseMime(mime || blob.type) || 'audio/mp4';
-      const old = clips.get(sha256);
-      if (old) { if (uploaded) old.uploaded = true; return { sha256, mime: old.mime, bytes: old.bytes }; }
-      clips.set(sha256, { sha256, blob, mime: type, bytes: blob.size, addedAt: Date.now(), uploaded: !!uploaded });
+      const old = clips.get(sha256), now = Date.now();
+      if (old) { if (retouch(old, now) || (uploaded && !old.uploaded)) old.touchedAt = now; if (uploaded) old.uploaded = true; return { sha256, mime: old.mime, bytes: old.bytes }; }
+      clips.set(sha256, { sha256, blob, mime: type, bytes: blob.size, addedAt: now, touchedAt: now, uploaded: !!uploaded });
       return { sha256, mime: type, bytes: blob.size };
     },
     async getClip(sha) { await tick(); const r = clips.get(sha); return r ? { ...r } : null; },
@@ -194,6 +227,17 @@ export function memoryStore() {
     async markUploaded(sha, uploaded = true) { await tick(); const r = clips.get(sha); if (r) r.uploaded = !!uploaded; },
     pendingUploads: async () => (await api.listClips()).filter(r => !r.uploaded).sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0)),
     async deleteClip(sha) { await tick(); const r = clips.get(sha); if (!r || r.uploaded) return false; clips.delete(sha); return true; },
+    async deleteClips(shas, { stillGone = () => true, minAge = 0 } = {}) {
+      await tick();                                  // 之后到删完都是同步的（和 IndexedDB 版一样：中间插不进别的修改）
+      const age = typeof minAge === 'function' ? minAge : () => minAge, now = Date.now(), done = new Set();
+      for (const sha of [...new Set(shas || [])].filter(s => stillGone(s))) {
+        const r = clips.get(sha);
+        if (!r || now - (Number(r.touchedAt) || Number(r.addedAt) || 0) < (Number(age(sha)) || 0)) continue;
+        clips.delete(sha); done.add(sha);
+      }
+      for (const [id, m] of [...recMeta]) if (m.sha256 && done.has(m.sha256)) { for (const [k, c] of [...rec]) if (c.recId === id) rec.delete(k); recMeta.delete(id); }
+      return [...done];
+    },
     async putChunk(recId, seq, blob) { await tick(); rec.set(recId + '\u0000' + seq, { recId, seq, blob }); },
     async getChunks(recId) { await tick(); return [...rec.values()].filter(c => c.recId === recId).sort((a, b) => a.seq - b.seq).map(c => c.blob); },
     async clearChunks(recId) { await tick(); for (const [k, c] of [...rec]) if (c.recId === recId) rec.delete(k); },
@@ -232,6 +276,7 @@ export const listClips = () => db.listClips();
 export const markUploaded = (sha, uploaded = true) => db.markUploaded(sha, uploaded);
 export const pendingUploads = () => db.pendingUploads();
 export const deleteClip = (sha) => db.deleteClip(sha);
+export const deleteClips = (shas, opts) => db.deleteClips(shas, opts);
 export const putChunk = (recId, seq, blob) => db.putChunk(recId, seq, blob);
 export const getChunks = (recId) => db.getChunks(recId);
 export const clearChunks = (recId) => db.clearChunks(recId);

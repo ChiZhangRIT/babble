@@ -4,7 +4,7 @@ import {
   createJournal, memoryBackend, changedFields, lineDiff, compactDiff, buildVersions, contentKey, createCloudHistory,
   versionBy, deletionBy, platformDevice, HISTORY_DB, HISTORY_CAP,
 } from '../src/core/history.js';
-import { blankState, makeEntry, stamp, deletedRecord, restoredRecord, normalizeState, mergeStates, canon } from '../src/core/store.js';
+import { blankState, makeEntry, stamp, deletedRecord, restoredRecord, purgedRecord, normalizeState, mergeStates, canon, restoreAudio } from '../src/core/store.js';
 import * as state from '../src/core/state.js';
 import { readStoredState } from '../src/core/persistence.js';
 import { createSync, SYNC_FILE, toB64, SyncError } from '../src/core/sync.js';
@@ -195,6 +195,31 @@ test('state 交出旧版本：修改 / 删除 / 恢复 / 撤销 / 恢复旧版�
   state.applyRemote(structuredClone(state.getState()), { device: 'iPad' });
   assert.equal(got.length, 8);
   state.setJournal(null);
+});
+
+test('撤销「恢复这个版本」：从「移除的录音」放回来的那段回到「移除的录音」——存盘时和放回去的那份合并、别的设备同步过放回去的那份，都不会再回来', async () => {
+  const { st } = setup({ journal: null });
+  const X = 'a'.repeat(64), Y = 'b'.repeat(64), clip = (s, t) => ({ sha256: s, mime: 'audio/mp4', bytes: 10, durationSec: 1, origName: '', addedAt: t });
+  const t0 = Date.now() - 100000, sleep = ms => new Promise(r => setTimeout(r, ms));
+  state.mutate(s => { s.data.entries.e1 = makeEntry({ id: 'e1', date: '2026-11-01', text: '编的 v1', audio: [clip(X, t0), clip(Y, t0)] }, t0); });
+  const v1 = structuredClone(state.getState().data.entries.e1);
+  await sleep(5);
+  state.mutate(s => { const e = s.data.entries.e1; s.data.entries.e1 = { ...e, text: '编的 v2', audio: e.audio.filter(a => a.sha256 !== X) }; });   // 编辑页「移除」
+  await sleep(5);
+  state.mutate(s => { const e = s.data.entries.e1, r = restoreAudio(e, v1.audio, { now: Date.now() }); s.data.entries.e1 = { ...e, text: v1.text, audio: r.audio, removedAudio: r.removedAudio }; }, { undoLabel: '恢复了旧版本' });
+  const back = structuredClone(state.getState()), at = back.data.entries.e1.audio.find(a => a.sha256 === X).restoredAt;
+  assert.ok(at > 0);
+  await sleep(5);
+  assert.equal(state.undo(), '恢复了旧版本');
+  const check = (e, what) => {
+    assert.deepEqual([e.text, e.audio.map(a => a.sha256)], ['编的 v2', [Y]], what);
+    const r = (e.removedAudio || []).find(a => a.sha256 === X);
+    assert.ok(r && r.removedAt > at && r.restoredAt === undefined, what);
+  };
+  check(state.getState().data.entries.e1, '撤销以后（存盘时和磁盘上放回去的那份合并过）');
+  check(mergeStates(back, state.getState()).data.entries.e1, '和别的设备上放回去的那份合并');
+  state.load({ storage: st });
+  check(state.getState().data.entries.e1, '重新读盘');
 });
 
 test('记录本坏了也不影响保存：同步抛错、异步失败，数据照样改好、存好、通知', async () => {
@@ -411,4 +436,82 @@ test('版本里的 JSON 能原样还原（记录本存的是 JSON，canon 不受
   assert.equal(contentKey(back), contentKey(e));
   assert.ok(toB64('“一”'));
   assert.equal(SYNC_FILE, 'babble.json');
+});
+
+// ---------- 永久删除 ----------
+test('记录本 forget：这几条的旧版本全删掉，排在已经排队的写入后面（同一拍里先记后忘也忘得掉）；entryIds 等写完再数；墓碑不记', async () => {
+  const be = memoryBackend();
+  const logs = [];
+  const j = createJournal(be, { log: e => logs.push(e) });
+  const v = (id, text) => ({ id, date: '2026-01-02', text, updatedAt: 1 });
+  j.record([{ entryId: 'e1', version: v('e1', '“一”') }, { entryId: 'e2', version: v('e2', '“二”') }]);
+  j.record([{ entryId: 'e1', version: v('e1', '“一改”') }, { entryId: 'e3', version: { id: 'e3', purged: true, updatedAt: 2 } }]);
+  j.forget(['e1', 'e1', '', null]);
+  assert.deepEqual((await j.entryIds()).sort(), ['e2']);
+  assert.equal((await j.list('e1')).length, 0);
+  assert.equal((await j.list('e3')).length, 0, '墓碑没有内容：不记');
+  const real = be.forget;
+  be.forget = async () => { throw new Error('disk'); };
+  await j.forget(['e2']);
+  be.forget = real;
+  assert.deepEqual(logs.map(e => e.message), ['disk'], '出错只打日志');
+  assert.equal((await j.list('e2')).length, 1);
+  j.record([{ entryId: 'e4', version: v('e4', '“四”') }]);
+  assert.deepEqual((await j.entryIds()).sort(), ['e2', 'e4']);
+});
+
+test('state 接上记录本：永久删除（cause purge）什么都不记、以前的忘掉；同步来的墓碑也一样；作废回来的那份不记墓碑那一版', async () => {
+  const be = memoryBackend();
+  const j = createJournal(be, { log: quiet });
+  setup({ who: 'me', device: 'Mac', journal: j.record });
+  state.setJournal(j.record, j.forget);
+  const e = makeEntry({ id: 'e_p', text: '“原话”' });
+  state.mutate(s => { s.data.entries[e.id] = e; });
+  state.mutate(s => { s.data.entries[e.id].text = '“改过”'; });
+  state.mutate(s => { s.data.entries[e.id] = deletedRecord(s.data.entries[e.id]); });
+  await j.idle();
+  assert.equal((await j.list('e_p')).length, 2);
+  const cur = state.getState().data.entries[e.id];
+  state.mutate(s => { s.data.entries[e.id] = purgedRecord(cur, cur.updatedAt, Date.now()); }, { cause: 'purge' });
+  await j.idle();
+  assert.deepEqual(await j.list('e_p'), [], '旧版本都忘了');
+  // 别的设备永久删除的：同步过来
+  const o = makeEntry({ id: 'e_q', text: '“另一条”' });
+  state.mutate(s => { s.data.entries[o.id] = o; });
+  state.mutate(s => { s.data.entries[o.id] = deletedRecord(s.data.entries[o.id]); });
+  const d = state.getState().data.entries[o.id];
+  const remote = structuredClone(state.getState());
+  remote.data.entries[o.id] = purgedRecord(d, d.updatedAt, d.updatedAt + 5);
+  state.applyRemote(mergeStates(state.getState(), remote), { device: 'iPad' });
+  await j.idle();
+  assert.deepEqual(await j.list('e_q'), []);
+  // 作废回来（别的设备改过更新的一份）：墓碑那一版不进记录本
+  const back = structuredClone(state.getState());
+  back.data.entries[o.id] = { ...restoredRecord(d, d.updatedAt + 2), text: '“恢复了”' };
+  state.applyRemote(mergeStates(state.getState(), back), { device: 'iPhone' });
+  await j.idle();
+  assert.equal(state.getState().data.entries[o.id].text, '“恢复了”');
+  assert.deepEqual(await j.list('e_q'), []);
+  state.setJournal(null);
+});
+
+test('云端历史：forget 去掉缓存里的这一条；reset（清理过云端历史）清空缓存，开着的 session 下次从第一页重来；墓碑那一版跳过', async () => {
+  const mk = (text, at) => makeEntry({ id: 'e1', date: '2026-01-02', text }, at);
+  const t = { id: 'e1', purged: true, deleted: true, updatedAt: 2500, purgedAt: 2500, purgedFrom: 2000, gone: [] };
+  const gh = fakeRepo([fileWith('iPad', { e1: mk('“一”', 1000) }), fileWith('Mac', { e1: t }), fileWith('Mac', { e1: mk('“作废以后”', 3000) })]);
+  const cfg = { repo: 'me/data', token: 't' };
+  const sync = createSync({ getState: () => blankState(), applyRemote() {}, getConfig: () => cfg, saveConfig() {}, editVersion: () => 0, device: 'Mac', fetch: gh.fetch });
+  const cloud = createCloudHistory({ commits: (o) => sync.commits(o), fileAt: (sha) => sync.fileAt(sha) }, { perPage: 30 });
+  const s = cloud.session('e1');
+  const r = await s.run();
+  assert.deepEqual(r.found.map(f => f.version.text), ['“作废以后”', '“一”'], '墓碑那一版没有内容：跳过');
+  assert.ok([...cloud.files.values()].every(f => f.entries.has('e1')));
+  cloud.forget('e1');
+  assert.ok([...cloud.files.values()].every(f => !f.entries.has('e1')));
+  gh.log.length = 0;
+  cloud.reset();
+  assert.equal(cloud.files.size, 0);
+  const again = await s.run();
+  assert.equal(again.found.length, 2, '从第一页重来');
+  assert.ok(gh.log.some(l => l.includes('page=1')));
 });

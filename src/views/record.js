@@ -21,6 +21,10 @@
 //   还有条目（含已删除的）在用的不删。
 //   等撤销的这 10 秒拿着那段的 Web Lock（babble-rec:<recId>，和录音机录着时一样）：别的标签页这时启动，不会把它当成没收尾的找回去。
 //   ✕、「放弃这段录音」都收起键盘：iPhone 的键盘会盖住底部的提示条（「撤销」就看不见了）。
+// 只拿掉一段时：上传过的照常记进那条的「移除的录音」（state.js 记的，「最近删除」里能放回来）；还没上传的不记（mutate 的 track: false：
+//   撤销时间过了录音本身就删，不留一段放不出来的）；撤销时间里才传上去的（丢掉时正在传），到时间补记进去。
+// 要写进的那条在别的设备上永久删除了（ctx.entry 不给、ctx.tombstone 有）：框里预填的旧原话不再存（不然永久删除的字又回来了），
+//   只把这页新写的（接在旧原话后面的那部分）连同录音存成新的一条待整理，提示一句；之后像刚打开这页一样。
 // 刚存进条目的录音先别上传（ctx.sync.pause('rec-fresh')，同时只拿一个）：离开这页、切到后台 / 锁屏、最后一次存好 2 分钟后、
 //   取消 / 丢掉的撤销时间过了（之后没再存过新的、也没回到「已保存」）——哪个先到就放开。「立即同步」照样能传。
 // 自己管更新（返回 onChange）：同步、别的页面改数据都不会重画这一页，不打断录音和打字。
@@ -31,11 +35,11 @@ import { h, icon, download } from '../ui/dom.js';
 import { stopAll } from '../ui/player.js';
 import { createRecorder, REC_LOCK } from '../core/recorder.js';
 import { extForMime } from '../core/audioStore.js';
-import { deletedRecord, clipIndex, stamp } from '../core/store.js';
+import { deletedRecord, stamp } from '../core/store.js';
 import { localParts, today, fmtTime, fmtTimer, fmtDuration, fmtEntryDate } from '../core/dates.js';
 import { previewLines } from '../core/dialogue.js';
 import { clipName } from '../core/clips.js';
-import { REC_DRAFT, writeDraft, dropDraft, clipOf, recTimeFields } from '../core/drafts.js';
+import { REC_DRAFT, writeDraft, dropDraft, clipOf, recTimeFields, insertedText, stashPurgedText } from '../core/drafts.js';
 import { writeTools, insertLine, startTemplate, keepFocus, revealCaret } from '../ui/writer.js';
 import { t } from '../i18n.js';
 import * as bedside from './bedside.js';
@@ -102,6 +106,8 @@ export function render(main, params, ctx, deps = {}) {
   const hidden = () => document.visibilityState === 'hidden';
   /** 这一段还在那条里（条目没删、录音没被拿掉）：取消 / 丢掉以后能不能回到它的「已保存」 */
   const stillThere = (r) => { const e = r && r.id ? ctx.entry(r.id) : null; return !!(e && !e.deleted && (e.audio || []).some(a => a.sha256 === r.sha256)); };
+  /** 永久删除了的条目（墓碑；ctx.entry 不给）→ 它，不是 → null */
+  const tombOf = (x) => (x && ctx.tombstone ? ctx.tombstone(x) : null);
   /** 正在同步（可能正在传刚存的录音）：查不了当成在同步（「放弃这段录音」就只软删除、不删录音） */
   const syncBusy = () => { try { const s = ctx.sync.status ? ctx.sync.status() : null; return !!(s && (s.running || s.uploading)); } catch (e) { return true; } };
 
@@ -155,8 +161,25 @@ export function render(main, params, ctx, deps = {}) {
   const persistSoon = () => { clearTimeout(persistTimer); persistTimer = setTimeout(persistNow, 400); };
   Promise.all([ctx.recovered, finishing]).catch(() => {}).then(() => { ready = true; if (!gone) persistNow(); });
 
+  /**
+   * 要写进的那条永久删除了：只留这页新写的——在预填的旧原话里插进去的字（前后、中间，见 insertedText），之后像刚打开这页一样
+   * （没有要接的条目，草稿里也不再有旧原话），录好、写的字新建一条待整理。
+   * 旧原话本身改过（认不出哪些是新写的）：框里的字整段放进那条的编辑页草稿，提示条上能去那里选另存为新的一条或丢掉（下次打开 App 也会回去）；
+   * 放不进去（存不下）就留在框里，照常存成新的一条——宁可多存，不丢
+   */
+  function offPurged() {
+    if (!target || !tombOf(target)) return;
+    const txt = cleanText(), b = base ?? '', id = target;
+    const extra = insertedText(b, txt);
+    const kept = extra === null && !!txt.trim() && stashPurgedText(store(), id, txt);
+    target = null; base = null;
+    ta.value = extra !== null ? extra || tpl.text : kept || !txt.trim() ? tpl.text : txt;
+    if (kept) ctx.toast(t('rec.targetPurgedKept'), { ms: 10000, action: { label: t('rec.openEdit'), run: () => ctx.navigate('/edit/' + encodeURIComponent(id)) } });
+    else ctx.toast(t('rec.targetPurged'), { ms: 6000 });
+  }
   /** 写的字存进条目（没改就不动）；还没有条目、写了字 → 新建一条待整理。返回条目 id */
   function commitText(opts) {
+    offPurged();
     if (!dirty()) return target;
     const txt = cleanText(), e = target && ctx.entry(target);
     let id = null;
@@ -229,6 +252,7 @@ export function render(main, params, ctx, deps = {}) {
    */
   function onSaved(res, mode = 'show') {
     const clip = clipOf(res);
+    offPurged();                                    // 要接的那条永久删除了：只带新写的字，新建一条
     const txt = cleanText(), textChanged = dirty();
     const quiet = mode !== 'show';
     let ok = true, id = null;
@@ -305,18 +329,21 @@ export function render(main, params, ctx, deps = {}) {
   }
   /**
    * 删掉一段录音：还有条目（含已删除的）在用的不删；已经上传的不删（deleteClip 自己也不删）——
-   * 整条丢掉的这时候发现传上去了（丢掉时正在传）：换回平常的删除（带着录音，进「最近删除」），仓库里的录音有条目指着。恢复记录照样清掉
+   * 这时候发现传上去了（丢掉时正在传）：整条丢掉的换回平常的删除（带着录音，进「最近删除」），只拿掉一段的补记进「移除的录音」——
+   * 仓库里的录音有条目指着、能放回来。恢复记录照样清掉
    */
   async function purge(p) {
     try {
       if (p.sha && ctx.audio.deleteClip) {
         const c = await ctx.audio.getClip(p.sha);
-        if (c && c.uploaded) { if (p.kind === 'drop' && p.whole) unhide(p); }
-        else if (c && !clipIndex(ctx.state, { includeDeleted: true }).has(p.sha)) await ctx.audio.deleteClip(p.sha);
+        if (c && c.uploaded) { if (p.kind === 'drop') { if (p.whole) unhide(p); else keepRemoved(p); } }
+        else if (c && !claimed(p.sha)) await ctx.audio.deleteClip(p.sha);
       }
     } catch (e) { console.warn('rec deleteClip', e); }
     if (p.arm) await Promise.resolve(ctx.audio.clearRec(p.arm)).catch(() => {});
   }
+  /** 还有条目（含已删除的）在用这段：录音里有，或者在「移除的录音」里 */
+  const claimed = (sha) => Object.values(ctx.state.data.entries).some(e => [...(e.audio || []), ...(e.removedAudio || [])].some(a => a.sha256 === sha));
   /** 整条丢掉的（discarded、audio 清空）换回平常的删除：带着原来的录音，「最近删除」里看得见、能恢复 */
   function unhide(p) {
     ctx.mutate(st => {
@@ -324,6 +351,17 @@ export function render(main, params, ctx, deps = {}) {
       if (!cur || !cur.deleted || !cur.discarded) return;
       const { discarded, ...r } = cur;
       st.data.entries[cur.id] = stamp({ ...r, audio: p.prev.audio }, cur);
+    });
+  }
+  /** 只拿掉一段的那段撤销时间里传上去了：补记进那条的「移除的录音」（丢掉时没记：那时还打算删录音本身） */
+  function keepRemoved(p) {
+    const it = p.prev.audio.find(a => a.sha256 === p.clip);
+    if (!it) return;
+    ctx.mutate(st => {
+      const cur = st.data.entries[p.prev.id];
+      if (!cur || cur.purged || [...(cur.audio || []), ...(cur.removedAudio || [])].some(a => a.sha256 === p.clip)) return;
+      const next = stamp(cur, cur), { restoredAt, ...item } = it;
+      st.data.entries[cur.id] = { ...next, removedAudio: [...(cur.removedAudio || []), { ...item, removedAt: next.updatedAt }] };
     });
   }
 
@@ -383,9 +421,9 @@ export function render(main, params, ctx, deps = {}) {
       const del = deletedRecord(e);
       ctx.mutate(st => { st.data.entries[e.id] = up ? del : { ...del, audio: [], discarded: true }; });
       msg = up ? t('rec.droppedDeleted') : t('rec.dropped', { dur: dur(s) });
-      target = attachId; base = attBase();          // 下一段新建一条（或接到 attach 那条），和刚打开这页一样
+      target = tombOf(attachId) ? null : attachId; base = attBase();   // 下一段新建一条（或接到 attach 那条），和刚打开这页一样
     } else {
-      ctx.update(e.id, { audio: e.audio.filter(a => a.sha256 !== sha) });
+      ctx.update(e.id, { audio: e.audio.filter(a => a.sha256 !== sha) }, up ? undefined : { track: false });   // 还没上传的不进「移除的录音」
       msg = words ? t('rec.droppedText') : t('rec.dropped', { dur: dur(s) });
     }
     saved = back;
@@ -670,8 +708,10 @@ export function render(main, params, ctx, deps = {}) {
   draw();
 
   return {
-    // 数据变了不重画（录音、打字不能被打断）。要写进的那条在别的设备上改了原话、这里又没动过：换成新的；「已保存」那屏跟着条目变
+    // 数据变了不重画（录音、打字不能被打断）。要写进的那条在别的设备上改了原话、这里又没动过：换成新的；
+    // 那条永久删除了、这里又没写新的：框里的旧原话换回预填的（见 offPurged）；「已保存」那屏跟着条目变
     onChange: () => {
+      if (target && tombOf(target) && !dirty()) offPurged();
       const e = target && ctx.entry(target);
       if (e && !e.deleted && base !== null && !dirty() && (e.text || '') !== base) { base = e.text || ''; ta.value = base || tpl.text; }
       if (phase === 'saved') draw();

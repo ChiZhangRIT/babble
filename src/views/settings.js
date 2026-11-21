@@ -1,13 +1,24 @@
 // 设置（#/settings）和同步（#/settings/sync）。
 // 设置页自己管更新（返回 onChange）：正在输入时（比如在填名字、令牌）数据变了不重画，等离开输入框再画，免得吞掉输入。
 // 也导出 backupBox（导出备份的按钮和「分享 / 下载」）：从备忘录迁移完成页也用它。
+// 「最近删除」后面的数 = 删除的梦话 + 移除的录音。存储：这台设备上已经永久删除、等同步确认才删的录音有几段。
+// 从备份恢复：开着同步先同步一次（别的设备刚永久删除的也算上），永久删除了的录音不存回来（确认框、完成后都说几段）。
+// 同步页「已更新到新版的设备」：每台用上这一版的设备在同步的数据里报到（data.devices，app.js 写），这里列出报到过的、
+//   最近改过梦话（修改记录的签名）或还在用旧版本推送、却还没报到的设备名——两步上线：都报到了，下一版才开放永久删除。
+// 开放永久删除以后（core/purge.js 的 PURGE_ENABLED，deps.purgeEnabled 测试用）才有：存储里「其中 n 段没有条目在用」「删除修复存档」，
+//   同步页的「清理云端历史」（先确认：说清楚留下什么、旧版本的设备、备份、别的分支；成功后给 Mac 上换文件夹的步骤）、旧版本设备的提醒。
+//   停止同步、换到别的仓库时还有没从仓库删掉的录音：确认框里说一声（不受开关影响）。
 import { h, icon, copyText, download } from '../ui/dom.js';
 import { LANGS, LANG_LABELS, t } from '../i18n.js';
 import { SyncError, syncCode, parseSyncCode } from '../core/sync.js';
-import { buildBackup, readBackup, restoreBackup, backupFileName } from '../core/backup.js';
+import { buildBackup, readBackup, restoreBackup, restorePlan, backupFileName } from '../core/backup.js';
+import { ARCHIVE_PREFIX } from '../core/persistence.js';
+import { PURGE_ENABLED } from '../core/purge.js';
 import { isTime, localParts, fmtTime, fmtDate, fmtInstant, daysAgo } from '../core/dates.js';
 import { fmtBytes, uniq } from '../core/util.js';
-import { deviceSec } from './device.js';
+import { deviceSec, byLabel } from './device.js';
+import { trashCount, deletedEntries, removedList, oldDevices, foundInRepo } from './deleted.js';
+import { fmtAgo } from './history.js';
 import { sttSettings } from '../ui/stt.js';
 /** replaceChildren，但跳过 null / false（DOM 会把 null 写成文字「null」） */
 const fill = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter(k => k != null && k !== false));
@@ -22,8 +33,16 @@ const expMs = (d) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d || ''); retu
 /** 浏览器的存储接口偶尔一直不回（比如有的 WebView 里 persisted()）：最多等 ms，超时当作不知道 */
 export const within = (p, ms = 3000, fallback = null) => Promise.race([Promise.resolve(p).catch(() => fallback), new Promise(r => setTimeout(() => r(fallback), ms))]);
 
-export function render(main, params, ctx) {
-  return params.sub === 'sync' ? syncPage(main, params, ctx) : mainPage(main, params, ctx);
+export function render(main, params, ctx, deps = {}) {
+  const purgeOn = deps.purgeEnabled ?? PURGE_ENABLED;
+  return params.sub === 'sync' ? syncPage(main, params, ctx, purgeOn) : mainPage(main, params, ctx, purgeOn);
+}
+
+/** 这台设备上的修复存档（数据修复时留下的原件：persistence.js 写的 babble.recovery.*）的键 */
+function archiveKeys() {
+  const out = [];
+  try { const st = globalThis.localStorage; for (let i = 0; i < st.length; i++) { const k = st.key(i); if (k && k.startsWith(ARCHIVE_PREFIX)) out.push(k); } } catch (e) { /* 读不到就当没有 */ }
+  return out;
 }
 
 // ---------- 小部件 ----------
@@ -68,7 +87,7 @@ function quietRedraw(main, draw) {
 // ======================================================================
 // 设置
 // ======================================================================
-function mainPage(main, params, ctx) {
+function mainPage(main, params, ctx, purgeOn) {
   const lang = ctx.lang();
   const page = h('div.page.set');
   main.append(h('header.page-head', null, h('h1.lt', null, t('nav.settings'))), page);
@@ -78,7 +97,7 @@ function mainPage(main, params, ctx) {
   function draw() {
     const S = ctx.state.settings, L = ctx.local;
     const st = ctx.sync.status();
-    const deletedN = Object.values(ctx.state.data.entries).filter(e => e.deleted).length;
+    const deletedN = trashCount(ctx);
     const pend = [st.pendingUp ? t('sync.audioUp', { n: st.pendingUp }) : null, st.pendingDown ? t('sync.audioDown', { n: st.pendingDown }) : null].filter(Boolean).join(' · ');
     fill(page,
       // 语言放最上面，标题三种语言都写：不管现在是哪种语言都找得到
@@ -164,7 +183,7 @@ function mainPage(main, params, ctx) {
   // ---------- 备份 ----------
   function backupSec(L) {
     const fileIn = h('input', { type: 'file', accept: '.zip,.json,application/zip,application/json', hidden: true,
-      onchange: (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreFrom(ctx, f); } });
+      onchange: (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreFrom(ctx, f, purgeOn); } });
     const ago = L.lastBackupAt ? daysAgo(L.lastBackupAt) : null;
     const last = L.lastBackupAt ? (ago === 0 ? t('set.backupToday') : t('set.backupAgo', { n: ago })) : t('set.backupNever');
     const stale = !L.lastBackupAt || ago >= 30;
@@ -186,20 +205,36 @@ function mainPage(main, params, ctx) {
       storageInfo = null; loadStorage();
     } }, t('set.persistAsk')) : null;
     if (!storageInfo) loadStorage();
+    const I = storageInfo || {}, archives = purgeOn ? archiveKeys() : [];
     return sec('storage', t('set.storageH'), [
       h('div.group-row.set-row', null, h('span.set-label', null, t('set.used')), usage),
-      h('div.group-row.set-row', null, h('span.set-label', null, t('set.clips')), clips),
+      h('div.group-row.set-row', null, h('span.set-label', null, t('set.clips'),
+        I.pending ? h('small.set-warn', null, t('set.clipsPending', { n: I.pending })) : null), clips),
+      I.unused ? linkRow('#/deleted', null, t('set.clipsUnused', { n: I.unused })) : null,
       h('div.group-row.set-row', null, h('span.set-label', null, t('set.persisted'), h('small', null, t('set.persistHelp'))), h('span.set-persist', null, pers, ask)),
+      archives.length ? h('div.group-row.set-row', null, h('span.set-label', null, t('set.archives', { n: archives.length })),
+        h('button.btn.small.danger', { type: 'button', onclick: () => dropArchives() }, t('set.archivesDel'))) : null,
     ], t('set.storageFoot'));
+  }
+  /** 删除修复存档（确认以后）：数据修复时留下的原件，里面可能还有已经删除、永久删除的原话 */
+  async function dropArchives() {
+    if (!(await ctx.confirm({ title: t('set.archivesDel'), message: t('set.archivesConfirm'), confirmLabel: t('set.archivesDel'), danger: true }))) return;
+    try { for (const k of archiveKeys()) globalThis.localStorage.removeItem(k); } catch (e) { console.warn('archives', e); }
+    ctx.setLocal({ archiveLeft: null });
+    ctx.toast(t('set.archivesDone'));
+    draw();
   }
   let loading = false;
   async function loadStorage() {
     if (loading) return;
     loading = true;
-    const [est, isP, list] = await Promise.all([within(ctx.audio.estimate()), within(ctx.audio.persisted()), within(ctx.audio.listClips(), 8000, [])]);
+    const [est, isP, list, orphans] = await Promise.all([within(ctx.audio.estimate()), within(ctx.audio.persisted()), within(ctx.audio.listClips(), 8000, []),
+      purgeOn && ctx.localOrphans ? within(ctx.localOrphans(), 8000, []) : []]);
     loading = false;
-    const bytes = list.reduce((n, c) => n + (c.bytes || 0), 0);
+    const bytes = list.reduce((n, c) => n + (c.bytes || 0), 0), gone = ctx.goneShas ? ctx.goneShas() : new Set();
     storageInfo = {
+      pending: list.filter(c => gone.has(c.sha256)).length,       // 永久删除了、还在这台设备上（等同步确认、或者一小时内碰过）
+      unused: (orphans || []).length,
       usage: est && est.usage != null ? (est.quota ? t('set.usedOf', { used: fmtBytes(est.usage), free: fmtBytes(Math.max(0, est.quota - est.usage)) }) : fmtBytes(est.usage)) : t('set.unknown'),
       clips: t('set.clipsN', { n: list.length, size: fmtBytes(bytes) || '0 B' }),
       persisted: isP == null ? t('set.unknown') : isP ? t('set.persistYes') : t('set.persistNot'), isPersisted: !!isP,
@@ -226,25 +261,37 @@ function mainPage(main, params, ctx) {
   return { onChange: () => redraw.soon(), cleanup: () => redraw.off() };
 }
 
-/** 从备份恢复：先读、核对 sha256，告诉用户里面有什么，确认后再合并（较新的为准，不删本机的） */
-async function restoreFrom(ctx, file) {
+/** 从备份恢复：先读、核对 sha256，告诉用户里面有什么，确认后再合并（较新的为准，不删本机的）。
+ *  开着同步先同步一次（尽力，最多等 10 秒；开关关着也同步：别的设备可能已经是开放永久删除的版本）：别的设备刚永久删除的也算上，
+ *  那些录音不存回来。同步慢的话提示条说一声「正在同步」，不让人干等 */
+async function restoreFrom(ctx, file, purgeOn = false) {
   let r;
   try { r = await readBackup(file); }
   catch (e) { ctx.toast(e && e.code === 'badBackup' ? t('set.badBackup') : t('set.restoreFail', { msg: (e && e.message) || String(e) }), { ms: 8000 }); return; }
-  const n = Object.values(r.state.data.entries || {}).filter(e => !e.deleted).length;
+  if (ctx.sync.status().on) {
+    let note = null;
+    const slow = setTimeout(() => { note = ctx.toast(t('set.restoreSyncing'), { ms: 12000 }); }, 400);
+    try { await within(ctx.sync.now(), 10000, null); }
+    finally { clearTimeout(slow); if (note && note.close) note.close(); }
+  }
+  const n = Object.values(r.state.data.entries || {}).filter(e => !e.deleted && !e.purged).length;
+  const skip = restorePlan(ctx.state, r).skipped.length;
   const lines = [t('set.restoreCounts', { n, m: r.clips.length })];
   if (r.exportedAt) lines.push(t('set.restoreFrom', { time: fmtInstant(r.exportedAt, ctx.lang(), { year: true }) }));
   if (r.bad.length) lines.push(t('set.restoreBad', { n: r.bad.length }));
   if (r.missing.length) lines.push(t('set.restoreMissing', { n: r.missing.length }));
-  lines.push(t('set.restoreMerge'));
+  if (skip) lines.push(t('set.restoreSkipped', { n: skip }));
+  lines.push(t(purgeOn ? 'set.restoreMergePurge' : 'set.restoreMerge'));
   const ok = await ctx.confirm({ title: t('set.restoreQ'), message: lines.join('\n'), confirmLabel: t('set.restoreGo') });
   if (!ok) return;
   try {
     const before = new Map(Object.entries(ctx.state.data.entries).map(([id, e]) => [id, JSON.stringify(e)]));
-    const res = await restoreBackup(r, { audioStore: ctx.audio, mergeIn: ctx.mergeIn });
+    const res = await restoreBackup(r, { audioStore: ctx.audio, mergeIn: ctx.mergeIn, getState: () => ctx.state });
+    ctx.setLocal({ repairedAt: Date.now() });     // 这次打开里从备份恢复过：「没有条目在用的录音」先不列（同修复数据）
     // 提示里只数看得见的条目（删除标记也会合并进来，但不算「恢复了几条」）
-    const n = Object.entries(ctx.state.data.entries).filter(([id, e]) => !e.deleted && before.get(id) !== JSON.stringify(e)).length;
-    ctx.toast(res.changed || res.clips ? t('set.restored', { n, m: res.clips }) : t('set.restoreNothing'), { ms: 7000 });
+    const n2 = Object.entries(ctx.state.data.entries).filter(([id, e]) => !e.deleted && before.get(id) !== JSON.stringify(e)).length;
+    const msg = res.changed || res.clips ? t('set.restored', { n: n2, m: res.clips }) : t('set.restoreNothing');
+    ctx.toast([msg, res.skipped ? t('set.restoreSkipped', { n: res.skipped }) : null].filter(Boolean).join('\n'), { ms: 7000 });
   } catch (e) { ctx.toast(t('set.restoreFail', { msg: (e && e.message) || String(e) }), { ms: 8000 }); }
 }
 
@@ -297,7 +344,11 @@ export function backupBox(ctx, { onSaved = null } = {}) {
 // ======================================================================
 // 同步
 // ======================================================================
-function syncPage(main, params, ctx) {
+/** 清理云端历史以后，在 Mac 的终端里换 babble-data 文件夹：先看有没有自己的改动、没推上去的提交，再在旁边克隆一份新的（不删、不覆盖旧的） */
+export const macCommands = (repo) => ['cd ~/Documents/Repositories/babble-data', 'git status --short', 'git log --oneline @{u}..HEAD', 'cd ..',
+  `git clone https://github.com/${repo}.git babble-data-new`].join('\n');
+
+function syncPage(main, params, ctx, purgeOn) {
   const lang = ctx.lang();
   const page = h('div.page.set.set-syncpage');
   main.append(h('header.navbar', null,
@@ -305,6 +356,7 @@ function syncPage(main, params, ctx) {
     h('span.nb-title', null, t('set.sync')), h('span')), page);
   const form = { repo: '', token: '', code: '', exp: '' };
   let busy = false, error = null, renew = false, newToken = '', newExp = '';
+  let squashing = false, squashErr = null, hist = null;              // 清理云端历史：正在清理、出的错、仓库有几个提交 / 别的分支（historyInfo，尽力）
   const expInput = (value, onchange) => h('input.set-exp', { type: 'date', value, 'aria-label': t('set.tokenExpLabel'), onchange: (e) => onchange(e.target.value) });
 
   function draw() {
@@ -318,8 +370,9 @@ function syncPage(main, params, ctx) {
     const s = syncState(st, lang);
     const exp = st.tokenExpires || cfg.tokenExp || null;
     const left = exp ? Math.floor((exp - Date.now()) / DAY) : null;
-    const pend = [st.pendingUp ? t('sync.audioUp', { n: st.pendingUp }) : null, st.pendingDown ? t('sync.audioDown', { n: st.pendingDown }) : null].filter(Boolean);
-    const nn = ctx.state.settings.speakers.nn.name || 'NN';
+    const pend = [st.pendingUp ? t('sync.audioUp', { n: st.pendingUp }) : null, st.pendingDown ? t('sync.audioDown', { n: st.pendingDown }) : null,
+      st.pendingPurge ? t('sync.audioDel', { n: st.pendingPurge }) : null].filter(Boolean);
+    const nn = ctx.state.settings.speakers.nn.name || 'NN', old = purgeOn ? oldDevices(ctx) : '';
     return [
       h('section.card.set-sync', null,
         h('p.set-repo', null, h('b', null, st.repo || cfg.repo || '')),
@@ -328,6 +381,7 @@ function syncPage(main, params, ctx) {
         st.err ? h('p.err.small', { role: 'alert' }, t('syncErr.' + st.err.code, st.err.vars || {})) : null,
         pend.length ? h('p.small', null, pend.join(' · '), st.uploading || st.downloading ? h('span.muted', null, ' · ', t('sync.syncing')) : null) : null,
         st.lastError ? h('p.small.set-warn', null, t('syncErr.' + st.lastError.code, st.lastError.vars || {})) : null,
+        old ? h('p.small.set-warn', null, t('sync.oldDevices', { devices: old })) : null,
         exp ? h('p.small' + (left != null && left <= 14 ? '.set-warn' : '.muted'), null, t('set.tokenExp', { date: fmtDate(localParts(exp).date, lang) }),
           left != null && left <= 14 ? h('span', null, lang === 'en' ? ' ' : '', left < 0 ? t('set.tokenExpired') : t('set.tokenSoon', { n: Math.max(0, left) })) : null) : null,
         // 没填过到期日：在这里补上（改的是同一个设置对象，正在跑的同步不受影响）
@@ -337,13 +391,93 @@ function syncPage(main, params, ctx) {
           h('button.btn.primary', { type: 'button', disabled: busy || st.running, onclick: syncNow }, busy || st.running ? t('sync.syncing') : t('sync.now')),
           h('button.btn', { type: 'button', onclick: copyCode }, t('sync.copyCode')),
           h('button.btn.ghost', { type: 'button', onclick: () => { renew = !renew; error = null; draw(); } }, t('set.renew')))),
+      macSec(st),
       renew ? renewForm(cfg) : null,
       h('div.group-foot.set-notes', null,
         h('p', null, t('sync.partner', { nn })),
-        h('p', null, t('sync.historyNote')),
+        h('p', null, t(purgeOn ? 'sync.historyNotePurge' : 'sync.historyNote')),
         h('p', null, t('sync.tokenExpiry'))),
+      devicesSec(),
+      purgeOn ? squashSec(st) : null,
       h('div.set-stop', null, h('button.btn.danger', { type: 'button', onclick: stopSync }, t('sync.stop'))),
     ];
+  }
+
+  // ---------- 已更新到新版的设备（两步上线：都报到了，下一版才开放永久删除） ----------
+  // ctx.sync.devices()：报到过的（data.devices，app.js 每轮同步成功后写）和还没报到的（最近改过梦话、或还在用旧版本推送的设备名）。
+  // 这台设备一定是新版：还没报到（第一轮同步还没成功）也列上，只是没有报到时间
+  function devicesSec() {
+    const rep = (ctx.sync.devices && ctx.sync.devices()) || { updated: [], waiting: [] }, sp = ctx.state.settings.speakers;
+    const updated = rep.updated.some(d => d.me) ? rep.updated : [{ name: ctx.device, who: ctx.local.who || null, seenAt: null, build: null, me: true }, ...rep.updated];
+    const name = (d) => byLabel({ who: d.who || null, device: d.name }, sp) || d.name;
+    const seen = (d) => [d.seenAt ? t('sync.deviceSeen', { time: fmtAgo(d.seenAt, lang) }) : d.me ? t('sync.deviceSoon') : null,
+      d.build ? t('sync.deviceBuild', { v: String(d.build).replace(/^babble-/, '') }) : null].filter(Boolean).join(' · ');
+    return h('section.set-sec.set-devices', null, h('h2.group-h', null, t('sync.devicesH')),
+      h('div.card', null,
+        h('p.small.muted', null, t(purgeOn ? 'sync.devicesLeadPurge' : 'sync.devicesLead')),
+        h('ul.set-dev-list', null, updated.map(d => h('li', null,
+          h('span.set-dev-name', null, name(d), d.me ? [h('span.sr-only', null, ' · '), h('span.pill', null, t('sync.deviceThis'))] : null), seen(d) ? h('small', null, seen(d)) : null))),
+        rep.waiting.length ? [h('p.set-dev-h', null, t('sync.devicesWaitH')), h('ul.set-dev-list.wait', null, rep.waiting.map(x => h('li', null,
+          h('span.set-dev-name', null, name(x)), h('small', null, x.old ? t('sync.deviceOld') : t('sync.deviceEdited', { time: fmtAgo(x.at, lang) })))))]
+          : h('p.small.set-dev-ok', null, icon('check'), t('sync.devicesAll')),
+        h('p.f-help', null, t('sync.devicesFoot'))));
+  }
+
+  // ---------- 清理云端历史（开放永久删除以后） ----------
+  function squashSec(st) {
+    const wait = busy || squashing || st.running || st.offline || !!st.err || !!st.pendingUp || !!st.pendingPurge;
+    const last = Number(ctx.local.lastBackupAt) || 0, stale = !last || Date.now() - last > DAY;
+    return h('section.set-sec.set-squash', null, h('h2.group-h', null, t('sync.squashH')),
+      h('div.card', null,
+        h('p.small', null, t('sync.squashLead')),
+        hist && hist.commits ? h('p.small.muted', null, t('sync.squashCount', { n: hist.commits })) : null,
+        h('p.small' + (stale ? '.set-warn' : '.muted'), null, last ? t('sync.lastBackup', { time: fmtInstant(last, lang) }) : t('sync.noBackup'),
+          stale ? [' ', h('a', { href: '#/settings?focus=backup' }, t('sync.backupFirst'))] : null),
+        squashErr ? h('p.err.small', { role: 'alert' }, squashErr) : null,
+        h('div.row.set-btns', null, h('button.btn.danger', { type: 'button', disabled: wait, onclick: squash }, squashing ? t('sync.squashing') : t('sync.squashBtn'))),
+        wait && !squashing ? h('p.f-help', null, t('sync.squashWait')) : null));
+  }
+  /** 清理云端历史：先确认（说清楚留下什么：最近删除里的、没有条目在用的、别的分支；旧版本的设备；24 小时内没备份），再交给 ctx.sync.squash */
+  async function squash() {
+    if (squashing) return;
+    squashErr = null;
+    hist = (await within(ctx.sync.historyInfo ? ctx.sync.historyInfo() : null, 8000, null)) || hist || {};
+    const st = ctx.sync.status(), n = deletedEntries(ctx.state).length, clips = removedList(ctx).length, orphans = foundInRepo(ctx), old = oldDevices(ctx);
+    const others = (hist.others || []).filter(Boolean), last = Number(ctx.local.lastBackupAt) || 0;
+    const parts = [t('sync.squashConfirm', { repo: st.repo || '' }),
+      n || clips ? t('sync.squashTrash', { n, clips }) : null,
+      orphans ? t('sync.squashOrphans', { n: orphans }) : null,
+      old ? t('sync.squashOld', { devices: old }) : null,
+      Date.now() - last > DAY ? t('sync.squashNoBackup') : null,
+      others.length ? t('sync.squashExtra', { names: others.join(lang === 'en' ? ', ' : '、') }) : null,
+      t('sync.squashPoints')];
+    if (!(await ctx.confirm({ title: t('sync.squashConfirmT'), message: parts.filter(Boolean).join('\n\n'), confirmLabel: t('sync.squashGo'), danger: true }))) { draw(); return; }
+    squashing = true; draw();
+    let r;
+    try { r = await ctx.sync.squash(); } catch (e) { r = { ok: false, error: { code: (e && e.code) || 'unknown', vars: (e && e.vars) || {} } }; }
+    squashing = false;
+    if (r && r.ok) {
+      const missing = (r.missing || []).length;
+      hist = null;
+      ctx.toast([t(r.already ? 'sync.squashAlready' : 'sync.squashDone'), missing ? t('sync.squashMissing', { n: missing }) : null].filter(Boolean).join('\n'), { ms: 8000 });
+    } else if (r && !r.skipped) {
+      const e = r.error || { code: 'unknown' };
+      squashErr = t('syncErr.' + (e.code || 'unknown'), e.vars || {});
+    }
+    draw();
+  }
+  /** 清理以后：Mac 上的 babble-data 文件夹怎么换成新的（「知道了」才收起） */
+  function macSec(st) {
+    if (!ctx.local.squashNote) return null;
+    const cmds = macCommands(st.repo || (ctx.local.sync && ctx.local.sync.repo) || '');
+    return h('section.card.set-mac', null,
+      h('p.set-mac-h', null, h('b', null, t('sync.macH'))),
+      h('p.small', null, t('sync.macText')),
+      h('pre.set-cmds', null, cmds),
+      h('p.small', null, t('sync.macAfter')),
+      h('div.row.set-btns', null,
+        h('button.btn', { type: 'button', onclick: async () => ctx.toast((await copyText(cmds)) ? t('common.copied') : t('common.copyFail')) }, t('sync.macCopy')),
+        h('button.btn.ghost', { type: 'button', onclick: () => { ctx.setLocal({ squashNote: null }); draw(); } }, t('sync.macDone'))));
   }
   function renewForm(cfg) {
     const tokIn = h('input', { type: 'password', placeholder: 'github_pat_…', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', value: newToken, oninput: (e) => { newToken = e.target.value; } });
@@ -409,8 +543,11 @@ function syncPage(main, params, ctx) {
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return fail(t('sync.badRepo'));
     if (!token) return fail(t('sync.noToken'));
     if (/^(ghp|gho|ghu|ghs)_/.test(token)) return fail(t('sync.classicToken'));     // 经典令牌能动整个账号，不收
+    const wasOn = !!ctx.local.sync, prev = ctx.local.sync, left = wasOn ? ctx.sync.status().pendingPurge || 0 : 0;
+    // 换到别的仓库，原来的仓库里还有没删掉的录音：先说一声（以后不会再去那个仓库删）
+    if (left && prev && String(prev.repo || '').toLowerCase() !== repo.toLowerCase()
+      && !(await ctx.confirm({ message: t('sync.stopPending', { n: left }), confirmLabel: t('sync.connect') }))) return;
     busy = true; error = null; draw();
-    const wasOn = !!ctx.local.sync, prev = ctx.local.sync;
     try {
       const full = await ctx.sync.checkRepo(repo, token);
       const r = await ctx.sync.connect({ repo: full, token, tokenExp: expMs(exp) });
@@ -439,13 +576,17 @@ function syncPage(main, params, ctx) {
     ctx.toast(await copyText(syncCode(c.repo, c.token)) ? t('sync.codeCopied') : t('common.copyFail'), { ms: 8000 });
   }
   async function stopSync() {
-    if (!(await ctx.confirm({ message: t('sync.stopConfirm'), confirmLabel: t('sync.stop'), danger: true }))) return;
+    const left = ctx.sync.status().pendingPurge || 0;             // 还有没从仓库删掉的录音：停了以后就一直留在那个仓库里
+    const message = [t('sync.stopConfirm'), left ? t('sync.stopPending', { n: left }) : null].filter(Boolean).join('\n');
+    if (!(await ctx.confirm({ message, confirmLabel: t('sync.stop'), danger: true }))) return;
     ctx.sync.stop();
     draw();
   }
 
   const redraw = quietRedraw(main, draw);
   draw();
+  // 清理云端历史的那张卡写上仓库有几个提交（尽力，打开时读一次）
+  if (purgeOn && ctx.sync.status().on && ctx.sync.historyInfo) Promise.resolve(ctx.sync.historyInfo()).then(i => { if (i && !hist) { hist = i; redraw.soon(); } }, () => {});
   ctx.on('sync', () => { if (!busy) redraw.soon(); });
   return { onChange: () => { if (!busy) redraw.soon(); }, cleanup: () => redraw.off() };
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyRecovery, readDraft, writeDraft, dropDraft, clipOf, recTimeFields, REC_DRAFT, NEW_DRAFT, EDIT_PREFIX } from '../src/core/drafts.js';
+import { applyRecovery, readDraft, writeDraft, dropDraft, clipOf, recTimeFields, insertedText, stashPurgedText, REC_DRAFT, NEW_DRAFT, EDIT_PREFIX } from '../src/core/drafts.js';
 import { blankState, makeEntry, normalizeEntry } from '../src/core/store.js';
 import { startTemplate, insertLine, REACTIONS } from '../src/ui/writer.js';
 import { addedAudio, REACTIONS as EDITOR_REACTIONS, EDIT_PREFIX as EDITOR_PREFIX } from '../src/views/editor.js';
@@ -149,4 +149,76 @@ test('编辑页：别的地方只是给这条加了录音 → 只列进来，不
   assert.equal(addedAudio(a, { ...a, audio: [{ sha256: sha('a'), name: '改了名' }, { sha256: sha('b') }] }), null);
   assert.equal(addedAudio(a, a), null);
   assert.equal(addedAudio(null, a), null);
+});
+
+// ---------- 要写进的那条已经永久删除了 ----------
+const tombE = (id, gone = []) => normalizeEntry({ id, purged: true, deleted: true, updatedAt: 5000, purgedAt: 5000, purgedFrom: 4000,
+  gone: gone.map(s => ({ sha256: s, mime: 'audio/mp4', purgedAt: 5000, from: 4000 })) }, id);
+
+test('录音页要写进的那条已经永久删除：预填的旧原话不要，只有后来写的字和找回的录音存成新的一条（purgedText）', () => {
+  const base = `${NN} “那条的原话”`;
+  const s = withEntries(tombE('t1', [sha('a')]));
+  const r = applyRecovery(s, [clip('b', { attachTo: 't1' })], { rec: { text: `${base}\n${ME} “后来写的”`, target: 't1', base, rec: 'r_b', at: T0 } });
+  const fresh = only(s, e => !e.purged);
+  assert.equal(fresh.length, 1);
+  assert.equal(fresh[0].text, `${ME} “后来写的”`);
+  assert.deepEqual(fresh[0].audio.map(a => a.sha256), [sha('b')]);
+  assert.ok(s.data.entries.t1.purged && s.data.entries.t1.text === '', '墓碑不动');
+  assert.deepEqual([r.purgedText, r.dropRec, r.clips, r.texts], [true, true, 1, 1]);
+  assert.ok(!JSON.stringify(s).includes('那条的原话'));
+});
+
+test('那条永久删除了、没写新字（或者旧原话改过）：只把找回的录音存成一条，旧原话不存；改过的整段交回去（stash，放进那条的编辑页草稿）；没录音也没新字：什么都不建', () => {
+  const base = `${NN} “那条的原话”`;
+  for (const [text, stash] of [[base, null], [`${NN} “改过的原话”`, { id: 't1', text: `${NN} “改过的原话”` }]]) {
+    const s = withEntries(tombE('t1'));
+    const r = applyRecovery(s, [clip('b', { attachTo: 't1' })], { rec: { text, target: 't1', base, rec: 'r_b', at: T0 } });
+    const fresh = only(s, e => !e.purged);
+    assert.deepEqual([fresh.length, fresh[0].text, fresh[0].audio.length, r.purgedText, r.texts, r.stash], [1, '', 1, true, 0, stash]);
+  }
+  // 插在旧原话前面、一行中间的字照样算新写的
+  for (const [text, want] of [[`${ME} “先写的”\n${base}`, `${ME} “先写的”`], [`${NN} “那条的原话（笑）”`, '（笑）']]) {
+    const s = withEntries(tombE('t1'));
+    const r = applyRecovery(s, [], { rec: { text, target: 't1', base, rec: null, at: T0 } });
+    assert.deepEqual([only(s, e => !e.purged).map(e => e.text), r.stash], [[want], null]);
+  }
+  const s = withEntries(tombE('t1'));
+  const r = applyRecovery(s, [], { rec: { text: base, target: 't1', base: null, rec: null, at: T0 } });
+  assert.deepEqual([only(s, e => !e.purged).length, r.purgedText, r.dropRec], [0, true, true]);
+});
+
+test('insertedText：在旧原话前后、两行之间、一行中间插进去的字 → 插进去的那部分；旧原话改过、删过、插的字粘着旧的一行换行 → null', () => {
+  const B = `${NN}“第一句”\n${NN}“第二句”`;
+  for (const [s, want] of [
+    [B, ''], [B + `\n${NN}“新”`, `${NN}“新”`], [`${NN}“新”\n` + B, `${NN}“新”`],
+    [`${NN}“第一句”\n${ME} 她又笑了\n${NN}“第二句”`, `${ME} 她又笑了`], [`${NN}“第一句（笑）”\n${NN}“第二句”`, '（笑）'],
+    [`${NN}“第一句！”\n${NN}“新”\n${NN}“第二句”`, null], [`${NN}“第一局”\n${NN}“第二句”\n${NN}“新”`, null], [`${NN}“第二句”`, null],
+  ]) assert.equal(insertedText(B, s), want, s);
+  assert.equal(insertedText(`${NN}“旧”`, `${NN}“新”\n${NN}“旧”`), `${NN}“新”`, '插的字开头和旧原话一样：挑在一行开头');
+  assert.equal(insertedText('', `${NN}“新”`), `${NN}“新”`);
+  assert.equal(insertedText('😀', '😁😀'), '😁', '不从 emoji 中间切开');
+});
+
+test('stashPurgedText：放进那条的编辑页草稿（babble.edit.<id>）；已经有草稿就接在后面；没字不写', () => {
+  const st = fakeStorage();
+  assert.equal(stashPurgedText(st, 't1', '  '), false);
+  assert.equal(st.getItem(EDIT_PREFIX + 't1'), null);
+  assert.equal(stashPurgedText(st, 't1', `${NN} “改过的原话”`, 5), true);
+  assert.deepEqual(readDraft(st, EDIT_PREFIX + 't1'), { w: { text: `${NN} “改过的原话”` }, at: 5 });
+  writeDraft(st, EDIT_PREFIX + 't2', { w: { text: '编辑页里写的', note: '背景' }, added: [], at: 1 });
+  stashPurgedText(st, 't2', '录音页写的', 9);
+  assert.deepEqual(readDraft(st, EDIT_PREFIX + 't2'), { w: { text: '编辑页里写的\n\n录音页写的', note: '背景' }, added: [], at: 9 });
+});
+
+test('找回的录音已经永久删除过（有记号、没条目在用）：不另建一条（删掉以后残留的分片）；在「移除的录音」里的：不另建，要接回的那条照样接回', () => {
+  const s = withEntries(tombE('t1', [sha('a')]), E('e2', { removedAudio: [{ sha256: sha('c'), mime: 'audio/mp4', removedAt: 9 }, { sha256: sha('7'), mime: 'audio/mp4', removedAt: 9 }] }));
+  const r = applyRecovery(s, [clip('a', { attachTo: 'e2' }), clip('c'), clip('d'), clip('7', { attachTo: 'e2' })], {});
+  assert.deepEqual(only(s, e => !e.purged && e.id !== 'e2').map(e => e.audio[0].sha256), [sha('d')]);
+  assert.deepEqual(normalizeEntry(s.data.entries.e2).audio.map(a => a.sha256), [sha('7')], '录音页放弃以后写回的恢复记录：回到那条（整理时从「移除的录音」拿回来）');
+  assert.deepEqual(normalizeEntry(s.data.entries.e2).removedAudio.map(a => a.sha256), [sha('c')]);
+  assert.equal(r.clips, 2);
+  // 「记一条」草稿里的录音：已经永久删除的不带上
+  const s2 = withEntries(tombE('t1', [sha('a')]));
+  applyRecovery(s2, [clip('f')], { fresh: { w: { date: '2026-11-04', text: 'x', audio: [{ sha256: sha('a'), mime: 'audio/mp4' }, { sha256: sha('e'), mime: 'audio/mp4' }] }, added: [], removed: [], at: T0, rec: 'r_f' } });
+  assert.deepEqual(only(s2, e => !e.purged)[0].audio.map(a => a.sha256), [sha('e'), sha('f')]);
 });

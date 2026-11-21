@@ -1,10 +1,14 @@
 // 修改记录（#/e/<id>/history）：这条梦话的各个版本，新的在前——什么时候、谁、用哪台设备改的，改了什么（原话按行比较）。
 // 点一版看它当时的样子（气泡、录音），「恢复这个版本」= 用旧内容做一次新的修改（能撤销，旧的这版也照样留在记录里）。
+// 恢复时录音不会变少：现在的录音都留着，再放回那一版有、现在没有的——在「移除的录音」里的直接放回，哪里都没有的要本机或云端找得到；
+//   永久删除了的不放回（说一声），看一版时也只写「已经永久删除」、不给播放器。
+// 永久删除了的条目（墓碑）只说一句，不列版本（这台设备记的旧版本也已经忘掉了）。
 // 版本来自：现在的数据 + 这台设备记下的旧版本（IndexedDB babble-history，不同步）+ 按需从云端 git 历史里找的更早版本。
 // 自己管更新（返回 onChange）：数据变了重读本机记录再画，云端找到的留着。
 import { h, icon } from '../ui/dom.js';
 import { audioPlayer } from '../ui/player.js';
 import { buildVersions, changedFields, lineDiff, compactDiff, versionBy } from '../core/history.js';
+import { restoreAudio, killedIn } from '../core/store.js';
 import { fmtEntryDate, fmtInstant, fmtTime, localParts, daysAgo, today } from '../core/dates.js';
 import { chatView } from './entry.js';
 import { entryLabel } from './record.js';
@@ -18,7 +22,6 @@ const fill = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter(k
 /** 恢复旧版本时换回来的字段（收藏、待整理状态不跟着变；录音另外处理；旧数据里存着的 title 不动——界面上没有标题） */
 const RESTORE = ['date', 'time', 'recordedAt', 'tz', 'timeSource', 'text', 'note', 'draft'];
 const DIFF_ROWS = 8;
-const shaList = (list) => (list || []).map(a => a.sha256 + (a.name ? '|' + a.name : '')).join(',');   // 连录音的名字一起比
 
 /** 这一版是什么时候存的：备忘录导入的条目故意用很早的修改时间，那就用创建时间 */
 export const madeAt = (e) => (e && e.updatedAt > 1e12 ? e.updatedAt : (e && e.createdAt) || 0);
@@ -69,9 +72,10 @@ export function render(main, params, ctx) {
     if (main.isConnected) draw();
   }
 
+  const purged = () => !!(ctx.tombstone && ctx.tombstone(id));
   function draw() {
     const e = ctx.entry(id);
-    if (!e) { fill(page, h('p.empty', null, t('common.notFound'))); return; }
+    if (!e) { fill(page, h('p.empty', null, t(purged() ? 'entry.purgedNote' : 'common.notFound'))); return; }
     const versions = buildVersions(e, local || [], cloudFound);
     fill(page,
       h('p.hist-sub', null, entryLabel(e, sp(), lang)),
@@ -134,7 +138,7 @@ export function render(main, params, ctx) {
 
   // ---------- 看一版 ----------
   function preview(it) {
-    const v = it.v;
+    const v = it.v, cur = ctx.entry(id), gone = ctx.goneShas ? ctx.goneShas() : new Set();
     const players = [];
     const time = fmtInstant(madeAt(v), lang, { year: true }) || fmtAgo(it.cloud && Date.parse(it.cloud.at), lang);
     const restoreBtn = it.current ? null : h('button.btn.primary', { type: 'button', onclick: () => restore(it, restoreBtn) }, icon('history'), t('hist.restore'));
@@ -144,9 +148,13 @@ export function render(main, params, ctx) {
       v.deleted ? h('p.hist-pv-note.amber', null, t('hist.versionDeleted')) : null,
       h('p.hist-pv-date', null, fmtEntryDate(v, lang, { sep: daySep(lang) })),
       v.audio.length ? h('div.e-audio', null, v.audio.map((c, i) => {
+        const cap = h('p.e-clip-cap', null, clipLabel(c, i, (n) => t('clip.fallback', { n })));
+        // 永久删除了的：只写一句，不给播放器（也不去云端找）
+        const kept = cur && [...(cur.audio || []), ...(cur.removedAudio || [])].some(a => a.sha256 === c.sha256);
+        if (gone.has(c.sha256) || (cur && !kept && killedIn(cur, c))) return h('div.e-clip', null, cap, h('p.hist-purged', null, t('player.purged')));
         const p = audioPlayer({ getBlob: () => ctx.clipBlob(c.sha256, c.mime), durationSec: c.durationSec, key: c.sha256 });
         players.push(p);
-        return h('div.e-clip', null, h('p.e-clip-cap', null, clipLabel(c, i, (n) => t('clip.fallback', { n }))), p);
+        return h('div.e-clip', null, cap, p);
       })) : null,
       v.text.trim() ? chatView(v.text, sp(), { hasAudio: players.length > 0, onCue: (k) => { const p = players[Math.min(k, players.length - 1)]; if (p) p.scrollIntoView({ block: 'center' }); } })
         : h('p.muted.hist-pv-empty', null, t('hist.noText')),
@@ -155,30 +163,38 @@ export function render(main, params, ctx) {
       onClose: () => { for (const p of players) p.destroy(); previewApi = null; } });
   }
 
-  /** 恢复：旧内容做一次新的修改。录音不一样时换回那一版的录音（本机或云端找得到的；找不到的说一声） */
+  /**
+   * 恢复：旧内容做一次新的修改。录音见 store.js 的 restoreAudio（现在的都留着，补上那一版有的）：哪里都没有的先看本机、云端找不找得到；
+   * 补哪些在修改里按最新的条目再算一遍（找录音的时候可能同步进来了新的）；两边都有的录音名字换回那一版的。提示里说放回了几段、几段找不到、几段永久删除了
+   */
   async function restore(it, btn) {
     const cur = ctx.entry(id);
     if (!cur) return;
-    const v = it.v;
+    const v = it.v, gone = () => (ctx.goneShas ? ctx.goneShas() : new Set());
     btn.disabled = true;
     btn.replaceChildren(t('hist.restoring'));
-    let audio = cur.audio, missing = 0;
-    if (shaList(v.audio) !== shaList(cur.audio)) {
-      audio = [];
-      for (const c of v.audio) {
-        const ok = cur.audio.some(a => a.sha256 === c.sha256) || !!(await ctx.clipBlob(c.sha256, c.mime).catch(() => null));
-        if (ok) audio.push(c); else missing++;
-      }
+    const found = new Set();
+    for (const c of v.audio || []) {
+      const has = [...(cur.audio || []), ...(cur.removedAudio || [])].some(a => a.sha256 === c.sha256);
+      if (has || gone().has(c.sha256) || killedIn(cur, c)) continue;
+      if (await ctx.clipBlob(c.sha256, c.mime).catch(() => null)) found.add(c.sha256);
     }
+    const fresh = ctx.entry(id);
+    if (!fresh) { if (previewApi) previewApi.close(); draw(); return; }      // 找录音的时候这条没了（永久删除了）
+    const now = Date.now(), plan = restoreAudio(fresh, v.audio, { gone: gone(), have: found, now });
+    const names = new Map((v.audio || []).map(c => [c.sha256, c.name || null]));     // 那一版也有的录音：名字换回那一版的（改名也恢复）
+    const named = (a, name) => { const { name: x, ...rest } = a; return name ? { ...rest, name } : rest; };
     const at = madeAt(v);
     const when = at > 1e12 ? fmtInstant(at, lang, { year: localParts(at).date.slice(0, 4) !== today().slice(0, 4) }) : fmtEntryDate(v, lang);
-    const label = t('hist.restored', { time: when }) + (missing ? '\n' + t('hist.clipMissing', { n: missing }) : '');
+    const label = [t('hist.restored', { time: when }), plan.back ? t('hist.clipsBack', { n: plan.back }) : null,
+      plan.missing ? t('hist.clipMissing', { n: plan.missing }) : null, plan.purged ? t('hist.clipPurged', { n: plan.purged }) : null].filter(Boolean).join('\n');
     leaving = true;
     if (previewApi) previewApi.close();
     ctx.mutate(s => {
       const e = s.data.entries[id];
-      if (!e) return;
-      const next = { ...e, audio: structuredClone(audio) };
+      if (!e || e.purged) return;
+      const { audio, removedAudio } = restoreAudio(e, v.audio, { gone: gone(), have: found, now });
+      const next = { ...e, audio: audio.map(a => (names.has(a.sha256) ? named(a, names.get(a.sha256)) : a)), removedAudio };
       for (const k of RESTORE) next[k] = v[k] === undefined ? null : structuredClone(v[k]);
       delete next.deleted; delete next.deletedAt; delete next.deletedBy;
       s.data.entries[id] = next;
@@ -223,9 +239,9 @@ export function render(main, params, ctx) {
   }
 
   draw();
-  loadLocal();
+  if (!purged()) loadLocal();
   return {
-    onChange: () => { if (leaving) return; draw(); loadLocal(); },
+    onChange: () => { if (leaving) return; draw(); if (!purged()) loadLocal(); },
     cleanup: () => { session.stop(); if (previewApi) previewApi.close(); },
   };
 }

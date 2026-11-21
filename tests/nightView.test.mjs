@@ -8,7 +8,7 @@ import { nightReport, nightCard, reportLines, textSummary, addDays } from '../sr
 import { memoryNightStore } from '../src/core/nightStore.js';
 import { memoryStore } from '../src/core/audioStore.js';
 import * as state from '../src/core/state.js';
-import { makeEntry, normalizeEntry, stamp } from '../src/core/store.js';
+import { makeEntry, normalizeEntry, stamp, deletedRecord, purgedRecord, goneShas } from '../src/core/store.js';
 import { fmtDate, today } from '../src/core/dates.js';
 import { setLang, t } from '../src/i18n.js';
 import { Element, all, find, fakeStorage, installDom } from './helpers/dom.mjs';
@@ -53,7 +53,7 @@ async function seedNight(night) {
 }
 
 /** 假 ctx（照着 app.js：put / undo 走真的 state，带 undoLabel 的修改外壳会弹「撤销」，数据变了调页面的 onChange） */
-async function setup({ seed = seedNight, local = {}, id = null, answer = true, noNight = false, lang = 'zh-Hans', undoHoldMs = 10 } = {}) {
+async function setup({ seed = seedNight, local = {}, id = null, answer = true, noNight = false, lang = 'zh-Hans', undoHoldMs = 10, purgeEnabled = false } = {}) {
   const copied = [], shared = [];
   const dom = installDom({ navigator: { clipboard: { writeText: async (s) => { copied.push(s); } }, canShare: () => true, share: async (d) => { shared.push(d); } } });
   setLang(lang);
@@ -66,7 +66,9 @@ async function setup({ seed = seedNight, local = {}, id = null, answer = true, n
   const ctx = env.ctx = {
     t, lang: () => lang, layout: () => 'phone',
     get state() { return state.getState(); }, get local() { return state.getLocal(); }, setLocal: (p) => state.setLocal(p),
-    entry: (eid) => state.getState().data.entries[eid] || null, newEntry: (f) => makeEntry(f),
+    entry: (eid) => { const e = state.getState().data.entries[eid]; return e && !e.purged ? e : null; }, newEntry: (f) => makeEntry(f),   // 墓碑：ctx.entry 不给
+    tombstone: (eid) => { const e = state.getState().data.entries[eid]; return e && e.purged ? e : null; },
+    goneShas: () => goneShas(state.getState()),
     put(e, opts) { state.mutate(s => { s.data.entries[e.id] = normalizeEntry(stamp(e, s.data.entries[e.id]), e.id); }, opts); return ctx.entry(e.id); },
     mutate: (fn, opts) => state.mutate(fn, opts), undo: () => state.undo(), on: (ev, fn) => ons.push([ev, fn]),
     audio, night: noNight ? undefined : night, nightRecovered: Promise.resolve(),
@@ -80,7 +82,7 @@ async function setup({ seed = seedNight, local = {}, id = null, answer = true, n
   });
   env.main = new Element('main');
   const player = (o) => { const el = document.createElement('div'); el.setAttribute('class', 'player'); el.opts = o; el.destroy = () => { el.destroyed = true; }; players.push(el); return el; };
-  env.handle = render(env.main, { name: 'night', id, query: {} }, ctx, { player, undoHoldMs });
+  env.handle = render(env.main, { name: 'night', id, query: {} }, ctx, { player, undoHoldMs, purgeEnabled });
   await settle();
   Object.assign(env, {
     text: () => env.main.textContent,
@@ -570,5 +572,81 @@ test('读屏、键盘：删、恢复、留下、其余都删、条目变了重�
     await fk('bar').fire('click'); await settle();
     assert.equal(at(), fk('bar'));
     assert.equal(at().textContent, t('night.toList'));
+  } finally { env.done(); }
+});
+
+test('留下的那条后来永久删除了（别的设备）：还算留下过——不回到待听、写「留下过，那条已永久删除」、没有链接；撤销留下时候选的 sha256 留着（以后永久删除时认得出这段）', async () => {
+  const env = await setup({ local: { sync: { repo: 'me/dreams' } }, purgeEnabled: true });
+  try {
+    await env.check('c_1');
+    await env.click('留下选中的 1 段');
+    assert.equal(env.confirms[0].message, t('night.syncNotePurge'), '开放以后换成永久删除的说法');
+    const [e] = env.entries();
+    state.mutate(s => { s.data.entries[e.id] = deletedRecord(s.data.entries[e.id]); });
+    state.mutate(s => { const x = s.data.entries[e.id]; s.data.entries[e.id] = purgedRecord(x, x.updatedAt); }, { cause: 'purge' }); await settle();
+    const kept = byCls(env.main, 'nt-kept');
+    assert.deepEqual([kept.tag, kept.attrs.href, kept.textContent], ['span', undefined, t('night.keptPurged')]);
+    assert.ok(cls(kept, 'off'));
+    assert.equal(env.row('c_1'), undefined, '不能再勾、再留');
+    const banner = nightBanner(env.ctx); await settle();
+    assert.equal(byCls(banner, 'inbox-n').textContent, '3', '「昨夜」卡片不把它算成待听');
+
+    // 留下、撤销：entryId、keptAt 去掉，sha256 留着
+    await env.check('c_4');
+    await env.click('留下选中的 1 段');
+    const sha = (await env.cand('c_4')).sha256;
+    assert.ok(sha);
+    env.toasts.at(-1).action.run(); await settle();
+    const c4 = await env.cand('c_4');
+    assert.deepEqual([c4.entryId, c4.keptAt, c4.sha256], [null, null, sha]);
+    assert.ok(env.row('c_4'), '回到待听');
+  } finally { env.done(); }
+});
+
+test('留下、撤销，那条后来永久删除了（片段还没清掉：等云端确认）：写「这段的录音已经永久删除了」，放不了、留不了、不算待听、不在「已删掉」里；正在留的时候同步来了永久删除 → 不留、说一声', async () => {
+  const env = await setup();
+  const purge = (eid) => state.mutate(s => { const x = s.data.entries[eid]; s.data.entries[eid] = purgedRecord(x, x.updatedAt); }, { cause: 'purge' });
+  const keepUndo = async (cid) => {
+    await env.check(cid);
+    await env.click('留下选中的 1 段');
+    const eid = (await env.cand(cid)).entryId;
+    env.toasts.at(-1).action.run(); await settle();
+    return eid;
+  };
+  try {
+    const e4 = await keepUndo('c_4');
+    const sha = (await env.cand('c_4')).sha256;
+    assert.ok(state.getState().data.entries[e4].deleted, '撤销：那条进了「最近删除」');
+    assert.ok(env.row('c_4'), '撤销后回到待听');
+    purge(e4); await settle();
+    assert.ok(goneShas(state.getState()).has(sha));
+    assert.equal(env.row('c_4'), undefined, '没有播放器、不能勾');
+    const row = allCls(env.main, 'nt-clip').find(r => r.textContent.includes(t('night.purgedClip')));
+    assert.ok(row && cls(row, 'gone'));
+    assert.equal(find(row, el => el.tag === 'input'), undefined);
+    assert.ok(find(row, el => cls(el, 'nt-x')), '还能从列表里删掉');
+    assert.equal(env.players.filter(p => p.opts.key === 'cand:c_4' && !p.destroyed).length, 0);
+    const banner = nightBanner(env.ctx); await settle();
+    assert.equal(byCls(banner, 'inbox-n').textContent, '3', '「昨夜」卡片不把它算成待听');
+    assert.equal((await env.cand('c_4')).gone, undefined, '片段由清理删（等云端确认），这页不标 gone');
+    // ✕ 删掉它：不出现在「已删掉 n 段」里（恢复不了）
+    await find(row, el => cls(el, 'nt-x')).fire('click'); await settle();
+    assert.equal((await env.cand('c_4')).state, 'deleted');
+    assert.equal(byCls(env.main, 'nt-dels'), undefined);
+
+    // c_3：留下、撤销；再勾上点「留下」，读声音的时候同步来了那条的永久删除 → 不建条目、不恢复那条，说一声
+    const e3 = await keepUndo('c_3');
+    const sha3 = (await env.cand('c_3')).sha256;
+    await env.check('c_3');
+    const go = btn(env.main, '留下选中的 1 段').fire('click');
+    purge(e3);
+    await go; await settle();
+    assert.match(env.toasts.at(-1).msg, /那段的录音已经永久删除了，留不了/);
+    assert.deepEqual(env.entries(), [], '没有新建、也没从最近删除恢复');
+    assert.ok(goneShas(state.getState()).has(sha3), '那段录音还是没了的');
+    const c3 = await env.cand('c_3');
+    assert.deepEqual([c3.entryId, c3.sha256, c3.gone], [null, sha3, undefined]);
+    assert.equal(env.row('c_3'), undefined);
+    assert.ok(env.text().includes(t('night.purgedClip')));
   } finally { env.done(); }
 });

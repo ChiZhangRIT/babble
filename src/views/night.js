@@ -4,9 +4,13 @@
 //         没片段时老实说为什么（整夜都在听 / 几点就停了 / 你几点结束的 / 有一段时间没在听）。文字都来自 core/nightReport.js 的 reportLines（和复制摘要同一套说法）
 //   片段：按前后间隔分组（episodes），每段一个完整播放器（声音是 babble-night 里的 PCM 分片，点 ▶ 时才拼成 WAV）。
 //         勾上要留的 → 底部「留下选中的 n 段」（一段 = 一条，几段 = 合成一条，见 core/nightKeep.js）；✕ 删一段（提示条里能撤销，「已删掉」里 24 小时内能恢复）；
-//         没勾的时候底部是「其余都删」/「昨夜没有梦话」/「这一晚整理完了」。留下的显示「已留下 · 去看看」（那条后来删了 →「留下过，那条已删除」，不再算待听）；
+//         没勾的时候底部是「其余都删」/「昨夜没有梦话」/「这一晚整理完了」。留下的显示「已留下 · 去看看」（那条后来删了 →「留下过，那条已删除」，
+//         永久删除了 →「留下过，那条已永久删除」、没有链接；都不再算待听）；
 //         留下后提示条里的「撤销」= 删掉那条（进「最近删除」）、去掉候选的链接 → 回到待听（离开了这页也照样，提示条是外壳的）。
-//   第一次留下、开着同步：先说清楚「同步过的录音一直留在仓库历史里」（babble.local.bedKeepNoted）。
+//         撤销时候选的 sha256 留着：那条以后永久删除了，清理时照样认得出这段的声音（core/purge.js 删掉片段）。
+//         记着的 sha256 永久删除了（goneShas）、又没留下的 →「这段的录音已经永久删除了」：放不了、留不了、不算待听、不在「已删掉」里
+//         （清理等云端确认才删片段，这之前也是这样；留下了它又永久删除 = 把那段录音找回来，keepClips 也不让）。
+//   第一次留下、开着同步：先说清楚「同步过的录音一直留在仓库历史里」（babble.local.bedKeepNoted；开放永久删除以后换成 night.syncNotePurge 的说法）。
 //   这一晚没有待听的了（打开时就没有、或者刚整理完）→ 每次床头模式记下 reviewedAt，「昨夜」卡片不再提醒（还开着的那晚不记）。
 //   下面：前几晚还有没整理的、前几晚（每一晚的链接）、详细记录（复制摘要；导出记录文件：分享面板，不行就下载）。
 // 每次留下暂停同步 10.5 秒（ctx.sync.pause('night-undo')，离开这页也等着）：提示条上点「撤销」时录音还没传上去。
@@ -19,6 +23,7 @@ import { nightReport, nightCard, reportLines, textSummary, exportLog, fmtClock, 
 import { keepClips } from '../core/nightKeep.js';
 import { P, wavBlob } from '../core/nightDetect.js';
 import { deletedRecord, restoredRecord } from '../core/store.js';
+import { PURGE_ENABLED } from '../core/purge.js';
 import { fmtDate, fmtDuration, today } from '../core/dates.js';
 import { t } from '../i18n.js';
 
@@ -27,11 +32,13 @@ const fill = (el, ...kids) => el.replaceChildren(...kids.flat(Infinity).filter(k
 const enc = encodeURIComponent;
 const isDate = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
 const errMsg = e => (e && e.message) || String(e);
-const selectable = c => !c.kept && !c.gone;                  // 能勾、能留的：还没留下、声音还在
+const selectable = c => !c.kept && !c.gone && !c.purged;    // 能勾、能留的：还没留下、声音还在、不是永久删除了的录音
 const UNDO_HOLD_MS = 10500;                                  // 留下以后暂停同步多久：外壳的「撤销」提示条 10 秒，多等半秒
 
-/** 「留下了没有」不另存：候选记下的条目还在就算（后来删了也算：留下又删 = 不要了；「撤销」会去掉候选的链接 → 回到待听） */
-export const keptBy = (ctx) => (c) => !!(c.entryId && ctx.entry(c.entryId));
+/** 「留下了没有」不另存：候选记下的条目还在就算（后来删了、永久删除了也算：留下又删 = 不要了；「撤销」会去掉候选的链接 → 回到待听） */
+export const keptBy = (ctx) => (c) => !!(c.entryId && (ctx.entry(c.entryId) || (ctx.tombstone && ctx.tombstone(c.entryId))));
+/** 这段的录音永久删除了没有：记着的 sha256（留下过的才有）在 goneShas 里（别的条目还在用的不算）；没有 ctx.goneShas（测试）→ 都没有 */
+export const purgedBy = (ctx) => (c) => !!(c && c.sha256 && ctx.goneShas && ctx.goneShas().has(c.sha256));
 
 // 最近一次读到的 babble-night（{ store, sessions, cands }）：列表、日历重新打开时「昨夜」卡片先照它画（不闪、列表不跳），读到新的再改。
 // 昨夜页每次重读都更新它（整理完回到列表就是新的）；床头页打开时清掉（那一晚还在写）。
@@ -67,7 +74,7 @@ export function nightBanner(ctx) {
   if (!ctx.night) return el;
   let data = lastNight && lastNight.store === ctx.night ? lastNight : null;
   const paint = () => {
-    const c = data && nightCard({ sessions: data.sessions, cands: data.cands, now: Date.now(), isKept: keptBy(ctx), t, lang: ctx.lang() });
+    const c = data && nightCard({ sessions: data.sessions, cands: data.cands, now: Date.now(), isKept: keptBy(ctx), isPurged: purgedBy(ctx), t, lang: ctx.lang() });
     el.hidden = !c;
     fill(el, c && h('button.inbox.nt-card', { type: 'button', onclick: () => ctx.navigate('/night/' + c.nightOf) },
       h('span.inbox-n', { 'aria-hidden': 'true' }, c.kind === 'clips' ? String(c.n) : '·'),
@@ -88,11 +95,11 @@ export function nightBanner(ctx) {
 }
 
 // ---------- 页面 ----------
-/** @param {{ player?: typeof audioPlayer, undoHoldMs?: number }} [deps]  测试可以换掉播放器、缩短留下后暂停同步的时间 */
-export function render(main, params, ctx, { player = audioPlayer, undoHoldMs = UNDO_HOLD_MS } = {}) {
+/** @param {{ player?: typeof audioPlayer, undoHoldMs?: number, purgeEnabled?: boolean }} [deps]  测试可以换掉播放器、缩短留下后暂停同步的时间、换掉 PURGE_ENABLED */
+export function render(main, params, ctx, { player = audioPlayer, undoHoldMs = UNDO_HOLD_MS, purgeEnabled = PURGE_ENABLED } = {}) {
   const lang = ctx.lang(), night = ctx.night || null;
   const want = params.id || null;                                   // null → 最新一晚
-  const isKept = keptBy(ctx);
+  const isKept = keptBy(ctx), isPurged = purgedBy(ctx);
   const sel = new Set();                                            // 勾上的片段 id（重画、条目变了都留着）
   const open = { deleted: false, older: false, details: false };    // 折起来的几块开着没有（重画后照旧）
   let sessions = [], cands = [], loaded = false, failed = null, gone = false, busy = false, seq = 0, drawn = false, gen = nightGen;
@@ -172,7 +179,7 @@ export function render(main, params, ctx, { player = audioPlayer, undoHoldMs = U
     }
     const keys = [...new Set(sessions.map(s => s.nightOf).filter(Boolean))].sort().reverse(), now = Date.now();
     key = want || keys[0] || null;
-    r = isDate(key) ? nightReport({ sessions, cands, nightOf: key, now, isKept }) : null;
+    r = isDate(key) ? nightReport({ sessions, cands, nightOf: key, now, isKept, isPurged }) : null;
     if (!sessions.length) {
       return [navbar(t('night.setNights')), h('div.page', null, h('div.empty.nt-never', null, icon('clock'), h('p', null, t('night.never')),
         h('button.btn.primary', { type: 'button', onclick: () => ctx.navigate('/rec?bed=1') }, icon('mic'), t('night.goBed'))))];
@@ -200,7 +207,7 @@ export function render(main, params, ctx, { player = audioPlayer, undoHoldMs = U
     });
 
     const dels = r.deleted.filter(c => now - (c.deletedAt || 0) <= P.DELETED_KEEP_MS);        // 24 小时后清掉声音：之前都能恢复
-    const others = keys.filter(k => k < key).map(k => ({ k, rep: nightReport({ sessions, cands, nightOf: k, now, isKept }) }))
+    const others = keys.filter(k => k < key).map(k => ({ k, rep: nightReport({ sessions, cands, nightOf: k, now, isKept, isPurged }) }))
       .filter(x => x.rep && !x.rep.live && x.rep.pending > 0);
     const sep = lang === 'en' ? ', ' : '、';
     exportBtn = h('button.btn.small', { type: 'button', disabled: !(events && eventsKey === key), onclick: exportIt }, t('night.export'));
@@ -224,16 +231,22 @@ export function render(main, params, ctx, { player = audioPlayer, undoHoldMs = U
     ];
   }
 
-  /** 一段：☐、时刻 · 时长（一直有声音 / 没录完）、完整播放器、✕。留下了的 → 「✓ 已留下 · 去看看」（那条后来删了：「留下过，那条已删除」）；声音清掉了的 → 只能删 */
+  /**
+   * 一段：☐、时刻 · 时长（一直有声音 / 没录完）、完整播放器、✕。留下了的 → 「✓ 已留下 · 去看看」（那条后来删了：「留下过，那条已删除」；
+   * 永久删除了：「留下过，那条已永久删除」，没有链接）；声音清掉了的、录音永久删除了的 → 只能删
+   */
   function clipRow(c) {
     const meta = h('p.nt-meta', null, h('span', null, metaText(c)),
       c.cut === 'noise' ? h('span.tag.neutral', null, t('night.noiseTag')) : c.cut === 'crash' ? h('span.tag.amber', null, t('night.crashTag')) : null);
+    if (c.kept && !ctx.entry(c.entryId)) {
+      return h('div.nt-clip.kept', null, fk('kept:' + c.id, h('span.nt-kept.off', { tabindex: '-1' }, icon('check'), t('night.keptPurged'))), meta);
+    }
     if (c.kept) {
       const e = ctx.entry(c.entryId), label = e && e.deleted ? t('night.keptDel') : t('night.keptTag');
       return h('div.nt-clip.kept', null, fk('kept:' + c.id, h('a.nt-kept', { href: '#/e/' + enc(c.entryId) }, icon('check'), label + ' · ' + t('night.open'))), meta);
     }
     const x = fk('x:' + c.id, h('button.icon-btn.nt-x', { type: 'button', 'aria-label': t('night.del') + ' ' + clockOf(c), title: t('night.del'), onclick: () => del(c) }, icon('x')));
-    if (c.gone) return h('div.nt-clip.gone', null, h('div.nt-clip-main', null, meta, h('p.nt-gone', null, t(c.parts === 0 ? 'night.notSaved' : 'night.gone'))), x);
+    if (c.purged || c.gone) return h('div.nt-clip.gone', null, h('div.nt-clip-main', null, meta, h('p.nt-gone', null, t(c.purged ? 'night.purgedClip' : c.parts === 0 ? 'night.notSaved' : 'night.gone'))), x);
     const box = fk('pick:' + c.id, h('input', { type: 'checkbox', checked: sel.has(c.id), 'aria-label': t('night.pick') + ' ' + clockOf(c), onchange: () => pick(c.id, box.checked) }));
     const p = player({ getBlob: async () => wavBlob((await night.getParts(c.id)).map(part => part.b), c.samples, c.sr || P.SR), durationSec: c.durationSec, key: 'cand:' + c.id });
     players.push(p);
@@ -246,7 +259,7 @@ export function render(main, params, ctx, { player = audioPlayer, undoHoldMs = U
   function olderList(keys) {
     const ks = keys.filter(k => k !== key), now = Date.now();
     return ks.length ? fold('older', t('night.older'), h('div.group.nt-older', null, ks.map(k => {
-      const rep = nightReport({ sessions, cands, nightOf: k, now, isKept });
+      const rep = nightReport({ sessions, cands, nightOf: k, now, isKept, isPurged });
       return h('a.group-row', { href: '#/night/' + k }, h('span', null, t('night.otherItem', { label: nightLabel(k, lang), n: rep ? rep.clips.length : 0 })));
     }))) : null;
   }
@@ -326,7 +339,7 @@ export function render(main, params, ctx, { player = audioPlayer, undoHoldMs = U
     if (busy || !list.length) return;
     const local = ctx.local || {};
     if (local.sync && !local.bedKeepNoted) {
-      if (!(await ctx.confirm({ message: t('night.syncNote'), confirmLabel: t('night.syncOk'), cancelLabel: t('night.syncNo') }))) return;
+      if (!(await ctx.confirm({ message: t(purgeEnabled ? 'night.syncNotePurge' : 'night.syncNote'), confirmLabel: t('night.syncOk'), cancelLabel: t('night.syncNo') }))) return;
       ctx.setLocal({ bedKeepNoted: true });
     }
     busy = true; focusTo = ['bar', 'kept:' + list[0].id]; paintBar();
@@ -343,6 +356,7 @@ export function render(main, params, ctx, { player = audioPlayer, undoHoldMs = U
       for (const c of list) sel.delete(c.id);
     } catch (e) {
       if (e && e.code === 'gone') await goneClip(list.find(c => c.id === e.candId));
+      else if (e && e.code === 'purged') purgedClip(list.find(c => c.id === e.candId));
       else { console.warn('night keep', e); ctx.toast(t('night.keepFail', { msg: errMsg(e) })); }
     }
     busy = false;
@@ -359,7 +373,8 @@ export function render(main, params, ctx, { player = audioPlayer, undoHoldMs = U
     try { await unkeepNow(id, ids); } finally { if (hold) hold(); }
   }
   async function unkeepNow(id, ids) {
-    try { await Promise.all(ids.map(cid => night.patchCand(cid, { entryId: null, sha256: null, keptAt: null }))); }
+    // sha256 留着：那条（已经删了，进了「最近删除」）以后永久删除时，清理照样找得到这段的声音
+    try { await Promise.all(ids.map(cid => night.patchCand(cid, { entryId: null, keptAt: null }))); }
     catch (err) { console.warn('night unkeep', err); }
     // 先改候选、读回来，再删条目：删条目时这页原地重画、开着的「昨夜」卡片重读（nightGen 变了），看到的都是改好的
     lastNight = null; nightGen++;
@@ -374,6 +389,11 @@ export function render(main, params, ctx, { player = audioPlayer, undoHoldMs = U
     sel.delete(c.id);
     await night.patchCand(c.id, { gone: true }).catch(e => console.warn('night gone', e));
     ctx.toast(t('night.goneAt', { time: clockOf(c) }));
+  }
+  /** 勾着的一段是永久删除了的录音（刚同步来的永久删除）：不再勾着，说是哪一段（keepClips 已经记下它的 sha256；声音由清理删，这里不标 gone） */
+  function purgedClip(c) {
+    if (c) sel.delete(c.id);
+    ctx.toast(c ? t('night.purgedAt', { time: clockOf(c) }) : t('night.purgedClip'));
   }
 
   // ---------- 详细记录 ----------

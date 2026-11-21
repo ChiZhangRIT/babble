@@ -1,8 +1,9 @@
 // 备份 zip：babble.json（全部数据 + 录音文件对照表）、audio/ 下的录音（按日期和录音的名字 / 第一句起名）、梦话.md（人能直接读的版本）。
 // 恢复 = 逐条合并（不覆盖、不删除），恢复前先确认（页面负责）。每段录音按 sha256 校验，对不上的不恢复。
+// 永久删除：墓碑留在 babble.json 里（恢复旧备份时它照样赢过备份里的旧内容）；永久删除了的录音不放进备份，恢复时也不存回本机。
 import { createZip, readZip } from './zip.js';
 import { sha256Hex } from './sha256.js';
-import { normalizeState, live, byNewest } from './store.js';
+import { normalizeState, mergeStates, live, byNewest, goneShas } from './store.js';
 import { extForMime } from './audioStore.js';
 import { fmtEntryDate, fmtDuration, fmtDate, today } from './dates.js';
 import { firstNNLine } from './dialogue.js';
@@ -56,19 +57,21 @@ const validDate = v => { const d = v ? new Date(v) : null; return d && !Number.i
  */
 export async function buildBackup(state, audioStore, { lang = 'zh-Hans', getBlob = null, now = new Date(), info = null } = {}) {
   const s = normalizeState(state);
-  const speakers = s.settings.speakers;
-  // 每段录音只放一份，用最早引用它的条目起名；没删除的条目优先（已删除条目的录音本机有就带上，没有不去下载）
-  const all = Object.values(s.data.entries).sort(oldestFirst);
+  const speakers = s.settings.speakers, gone = goneShas(s);
+  // 每段录音只放一份，用最早引用它的条目起名；没删除的条目优先。已删除条目的录音、移除的录音（「最近删除」里的）本机有就带上，没有不去下载。
+  // 永久删除了的（墓碑、gone 记号）不带
+  const all = Object.values(s.data.entries).filter(e => !e.purged).sort(oldestFirst);
   const owners = new Map();
-  for (const e of [...all.filter(e => !e.deleted), ...all.filter(e => e.deleted)]) {
-    for (const a of e.audio) if (!owners.has(a.sha256)) owners.set(a.sha256, { e, a });
-  }
+  const own = (e, a, extra) => { if (!owners.has(a.sha256) && !gone.has(a.sha256)) owners.set(a.sha256, { e, a, extra }); };
+  for (const e of all) if (!e.deleted) for (const a of e.audio) own(e, a, false);
+  for (const e of all) if (e.deleted) for (const a of e.audio) own(e, a, true);
+  for (const e of all) for (const a of e.removedAudio || []) own(e, a, true);
   const files = {}, zipFiles = [], missing = [], names = new Set();
-  for (const [sha, { e, a }] of owners) {
+  for (const [sha, { e, a, extra }] of owners) {
     const rec = await Promise.resolve(audioStore && audioStore.getClip(sha)).catch(() => null);
     let blob = (rec && rec.blob) || null;
-    if (!blob && getBlob && !e.deleted) blob = await Promise.resolve(getBlob(sha)).catch(() => null);
-    if (!blob) { if (!e.deleted) missing.push(sha); continue; }
+    if (!blob && getBlob && !extra) blob = await Promise.resolve(getBlob(sha)).catch(() => null);
+    if (!blob) { if (!extra) missing.push(sha); continue; }
     let path = 'audio/' + clipFileName(e, a, speakers);
     if (names.has(path)) path = `audio/${e.date} (${sha}).${extForMime(a.mime)}`;   // sha 前 8 位撞了（几乎不可能）
     names.add(path);
@@ -179,7 +182,7 @@ export async function readBackup(blob) {
   const d = parseJSON(new TextDecoder().decode(jsonFile.data));
   const state = normalizeState(d.state);
   const mimes = new Map();
-  for (const e of Object.values(state.data.entries)) for (const a of e.audio) if (!mimes.has(a.sha256)) mimes.set(a.sha256, a.mime);
+  for (const e of Object.values(state.data.entries)) for (const a of [...e.audio, ...(e.removedAudio || [])]) if (!mimes.has(a.sha256)) mimes.set(a.sha256, a.mime);
   const byName = new Map(files.map(f => [nfc(f.name), f]));
   const clips = [], bad = [], missing = [];
   for (const [key, path] of Object.entries(isObj(d.files) ? d.files : {})) {
@@ -195,18 +198,34 @@ export async function readBackup(blob) {
 }
 
 /**
- * 恢复：先存录音（条目合并进来时录音已经在本机），再逐条合并（ctx.mergeIn，较新的为准，不删本机的条目）
- * @param {{state, clips}} backup  readBackup 的结果
- * @param {{audioStore: object, mergeIn: (state) => {changed: number}}} deps
- * @returns {Promise<{changed: number, clips: number}>}  clips = 新存进本机的录音段数
+ * 恢复备份、修复数据前挑录音：按合并以后的样子算（本机 + 备份；本机已知的、同步来的永久删除照样算）
+ * @param {object|null} current  本机现在的数据  @param {{state, clips}} backup  readBackup 的结果（或 { state, clips: [] }）
+ * @returns {{ keep: object[], skipped: object[] }}  keep：没永久删除的都存（合并后没有条目在用的也存：比如旧版本移除时没留记录、
+ *          较新的那份里已经没有了——备份可能是它唯一的一份；存进来成了这台设备上没有条目在用的录音，不上传，开放永久删除以后能找到、删掉）；
+ *          skipped：永久删除了的
  */
-export async function restoreBackup(backup, { audioStore, mergeIn }) {
+export function restorePlan(current, backup) {
+  const next = mergeStates(normalizeState(current), normalizeState(backup && backup.state)), gone = goneShas(next);
+  const clips = (backup && backup.clips) || [];
+  return { keep: clips.filter(c => !gone.has(c.sha256)), skipped: clips.filter(c => gone.has(c.sha256)) };
+}
+
+/**
+ * 恢复：先存录音（条目合并进来时录音已经在本机），再逐条合并（ctx.mergeIn，较新的为准，不删本机的条目）。
+ * 录音按 restorePlan 挑：永久删除了的不存回来；墓碑在合并时照样赢过备份里的旧内容
+ * @param {{state, clips}} backup  readBackup 的结果
+ * @param {{audioStore: object, mergeIn: (state) => {changed: number}, getState?: () => object}} deps
+ *        getState：本机现在的数据（开着同步时页面先同步一次再调，别的设备刚永久删除的也算上）
+ * @returns {Promise<{changed: number, clips: number, skipped: number}>}  clips = 新存进本机的录音段数；skipped = 永久删除了、没恢复的段数
+ */
+export async function restoreBackup(backup, { audioStore, mergeIn, getState = null }) {
+  const plan = restorePlan(getState ? getState() : null, backup);
   let n = 0;
-  for (const c of (backup && backup.clips) || []) {
+  for (const c of plan.keep) {
     if (await audioStore.hasClip(c.sha256)) continue;
     await audioStore.putClip(c.blob, { mime: c.mime });
     n++;
   }
   const r = mergeIn(backup.state) || {};
-  return { changed: r.changed || 0, clips: n };
+  return { changed: r.changed || 0, clips: n, skipped: plan.skipped.length };
 }

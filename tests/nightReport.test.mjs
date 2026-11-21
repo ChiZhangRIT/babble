@@ -221,6 +221,23 @@ test('nightReport：isKept 决定已留下；声音已经清掉的片段（7 天
   assert.equal(nightReport({ sessions: one(), cands: cs, nightOf: '2026-11-17', now: NOW }).pending, 2, '不给 isKept：都没留下');
 });
 
+test('nightReport：isPurged（录音永久删除了，片段还没清掉）→ purged，不算待听、不在「已删掉」里；留下了的照样算留下；卡片也不提醒', () => {
+  const S = 'a'.repeat(64), O = 'b'.repeat(64);
+  const cs = [cd('c_1', 'n_1', N18('01:00'), 10, { sha256: S }),                       // 留下、撤销，那条后来永久删除了
+    cd('c_2', 'n_1', N18('02:00'), 10, { entryId: 't_k', sha256: S }),                    // 留下的那条永久删除了（墓碑）
+    cd('c_3', 'n_1', N18('03:00'), 10, { sha256: O }),                                    // 别的录音：照样待听
+    cd('c_4', 'n_1', N18('04:00'), 10, { sha256: S, state: 'deleted', deletedAt: NOW - MIN })];
+  const isPurged = c => c.sha256 === S, isKept = c => c.entryId === 't_k';
+  const r = nightReport({ sessions: one(), cands: cs, nightOf: '2026-11-17', now: NOW, isKept, isPurged });
+  assert.deepEqual(r.clips.map(c => [c.id, c.kept, c.purged]), [['c_1', false, true], ['c_2', true, false], ['c_3', false, false]]);
+  assert.equal(r.pending, 1);
+  assert.deepEqual(r.deleted.map(c => c.id), [], '永久删除了的恢复不了：不放进「已删掉」');
+  assert.equal(nightReport({ sessions: one(), cands: cs, nightOf: '2026-11-17', now: NOW, isKept }).pending, 2, '不给 isPurged：照旧');
+  const rest = cs.filter(c => c.id !== 'c_3'), day = { now: NOW, today: '2026-11-18', isKept };
+  assert.equal(nightCard({ sessions: one(), cands: rest, ...day }).n, 1, '不给 isPurged：c_1 还算待听');
+  assert.equal(nightCard({ sessions: one(), cands: rest, ...day, isPurged }), null, '只剩永久删除了的：卡片不提醒');
+});
+
 test('nightCard：最新一晚（不算还开着的）有待听 → clips；昨夜 / 11月17日夜里；3 天后不显示；没片段的没看过才显示；都整理了不显示', () => zh(() => {
   const ss = [sA(), sB()], cs = cands(), opts = { now: NOW, today: '2026-11-18', t, lang: 'zh-Hans' };
   let c = nightCard({ sessions: ss, cands: cs, ...opts });

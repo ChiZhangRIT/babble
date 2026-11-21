@@ -91,16 +91,17 @@ export function icon(name, { cls = '', label = null, size = null } = {}) {
 }
 
 // ---------- 提示条 ----------
-let toastTimer = null;
+let toastTimer = null, toastGen = 0;
 /**
  * toast('已删除', { ms: 10000, action: { label: '撤销', run: fn } })
- * 兼容旧写法 { action: '撤销', onAction: fn }。返回 { close }
+ * 兼容旧写法 { action: '撤销', onAction: fn }。返回 { close }：只关自己这条——之后又弹了别的（只有一个 #toast），close 什么都不做
  * 提示条不挡按钮：显示期间跟着页面变化（换页、录音页换状态、转屏）重新找位置，见 placeToast
  */
 export function toast(msg, { ms = 4000, action = null, onAction = null } = {}) {
   let el = $('#toast');
   if (!el) { el = h('div', { id: 'toast', role: 'status', 'aria-live': 'polite' }); document.body.appendChild(el); }
   const act = typeof action === 'string' ? { label: action, run: onAction } : action;
+  const gen = ++toastGen;
   const close = () => {
     el.classList.remove('on'); el.setAttribute('inert', '');
     unwatch();
@@ -114,7 +115,7 @@ export function toast(msg, { ms = 4000, action = null, onAction = null } = {}) {
   watch(el);
   clearTimeout(toastTimer);
   toastTimer = setTimeout(close, ms);
-  return { close: () => { clearTimeout(toastTimer); close(); } };
+  return { close: () => { if (gen !== toastGen) return; clearTimeout(toastTimer); close(); } };
 }
 
 // 提示条要让开的按钮：手机底栏、底部按钮条（整理好了、确认导入）、顶栏、录音页的按钮（只记文字 / 返回、停止、✕ 取消、保存后的几个按钮）。

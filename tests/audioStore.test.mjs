@@ -1,9 +1,9 @@
-// 本机录音库测试：扩展名 / mime、内存版的去重和分片、deleteClip（内存版和假的 IndexedDB）、没有 IndexedDB 时的报错、sha256（合成数据）
+// 本机录音库测试：扩展名 / mime、内存版的去重和分片、touchedAt、deleteClip / deleteClips（内存版和假的 IndexedDB）、没有 IndexedDB 时的报错、sha256（合成数据）
 // IndexedDB 版的读写在 WebKit 里实测过（Blob 直接存；不收 Blob 的无痕环境退回 ArrayBuffer）；Node 里没有 indexedDB。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { extForMime, baseMime, mimeForFile, memoryStore, idbStore, DB_NAME } from '../src/core/audioStore.js';
+import { extForMime, baseMime, mimeForFile, mimeForExt, memoryStore, idbStore, DB_NAME } from '../src/core/audioStore.js';
 import * as audio from '../src/core/audioStore.js';
 import { sha256Hex, sha256Js } from '../src/core/sha256.js';
 
@@ -22,6 +22,10 @@ test('选来的文件 → mime：浏览器给的优先，空的按扩展名', ()
   assert.equal(mimeForFile({ name: 'a.webm', type: 'application/octet-stream' }), 'audio/webm');
   assert.equal(mimeForFile({ name: 'a.mp3', type: '' }), 'audio/mpeg');
   assert.equal(mimeForFile({ name: '没有扩展名', type: '' }), 'audio/mp4');
+  for (const [ext, m] of [['m4a', 'audio/mp4'], ['WEBM', 'audio/webm'], ['ogg', 'audio/ogg'], ['wav', 'audio/wav'], ['mp3', 'audio/mpeg'], ['xyz', 'audio/mp4'], ['', 'audio/mp4'], [null, 'audio/mp4']]) {
+    assert.equal(mimeForExt(ext), m, String(ext));
+    if (ext && m !== 'audio/mp4') assert.equal(extForMime(m), ext.toLowerCase(), '仓库里的扩展名 → mime → 同一个扩展名');
+  }
 });
 
 test('内存版：同样内容只存一份；uploaded 标记；待上传按加入顺序', async () => {
@@ -66,9 +70,10 @@ test('deleteClip：没上传的删掉（true）；已经上传的、没有的不
   await assert.rejects(audio.deleteClip('x'), /no-indexeddb/);   // 模块级的照样只在用的时候才碰 IndexedDB
 });
 
-/** 最小的假 IndexedDB（只有 clips 用到的 get / put / delete / count；请求、事务完成都异步）：只测 idbStore 自己的逻辑 */
+/** 最小的假 IndexedDB（get / put（外部键也行）/ delete（键或范围）/ count / getAll；请求按发出的顺序异步完成，事务最后完成）：只测 idbStore 自己的逻辑 */
 function fakeIDB() {
   const stores = new Map();
+  const K = k => (Array.isArray(k) ? JSON.stringify(k) : k);
   const db = {
     objectStoreNames: { contains: (n) => stores.has(n) }, createObjectStore: (n, o) => { stores.set(n, { key: o && o.keyPath, m: new Map() }); }, close() {},
     transaction() {
@@ -76,12 +81,25 @@ function fakeIDB() {
       let pending = 1;
       const done = () => { if (--pending === 0) setTimeout(() => tx.oncomplete && tx.oncomplete()); };
       const req = (fn) => { pending++; const r = {}; setTimeout(() => { r.result = fn(); if (r.onsuccess) r.onsuccess(); done(); }); return r; };
-      tx.objectStore = (n) => { const s = stores.get(n); return { get: k => req(() => s.m.get(k)), put: v => req(() => { s.m.set(v[s.key], v); }), delete: k => req(() => { s.m.delete(k); }), count: k => req(() => (s.m.has(k) ? 1 : 0)) }; };
+      tx.objectStore = (n) => {
+        const s = stores.get(n);
+        return {
+          get: k => req(() => s.m.get(K(k))), put: (v, k) => req(() => { s.m.set(s.key ? v[s.key] : K(k), v); }), count: k => req(() => (s.m.has(K(k)) ? 1 : 0)),
+          delete: k => req(() => { if (k && k.inRange) { for (const x of [...s.m.keys()]) if (k.inRange(JSON.parse(x))) s.m.delete(x); } else s.m.delete(K(k)); }),
+          getAll: (range) => req(() => [...s.m].filter(([k]) => !range || range.inRange(JSON.parse(k))).map(([, v]) => v)),
+        };
+      };
       setTimeout(done);
       return tx;
     },
   };
   return { stores, open() { const r = {}; setTimeout(() => { r.result = db; r.onupgradeneeded({ oldVersion: 0 }); r.onsuccess(); }); return r; } };
+}
+/** 分片的键是 [recId, seq]：Node 里没有 IDBKeyRange，换一个只认 bound 的 */
+function withKeyRange(fn) {
+  const had = globalThis.IDBKeyRange;
+  globalThis.IDBKeyRange = { bound: (lo, hi) => ({ inRange: k => Array.isArray(k) && k[0] === lo[0] && k[1] >= lo[1] && k[1] <= hi[1] }) };
+  return Promise.resolve().then(fn).finally(() => { if (had === undefined) delete globalThis.IDBKeyRange; else globalThis.IDBKeyRange = had; });
 }
 
 test('IndexedDB 版 deleteClip（假的 IndexedDB）：没上传的删掉；上传过的不删', async () => {
@@ -95,6 +113,89 @@ test('IndexedDB 版 deleteClip（假的 IndexedDB）：没上传的删掉；上�
   assert.equal(await s.hasClip(a.sha256), false);
   assert.equal(await s.hasClip(b.sha256), true);
   assert.deepEqual([...idb.stores.get('clips').m.keys()], [b.sha256]);
+});
+
+/** 两种实现一样的 deleteClips 测试：a（上传过）连同 recMeta、分片删掉；b（stillGone 不同意）、c（刚存过）、正在录的 recMeta 都不动 */
+async function deleteClipsCase(s) {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const a = await s.putClip(new Blob(['测试录音：永久删除了的']), { mime: 'audio/mp4', uploaded: true });
+    const b = await s.putClip(new Blob(['测试录音：又有人用了']), { mime: 'audio/mp4' });
+    for (const seq of [0, 1, 2]) await s.putChunk('r_a', seq, new Blob(['分片' + seq]));
+    await s.putRecMeta({ recId: 'r_a', startedAt: 1, mime: 'audio/mp4', tz: null, done: true, sha256: a.sha256 });
+    await s.putChunk('r_live', 0, new Blob(['正在录']));
+    await s.putRecMeta({ recId: 'r_live', startedAt: 2, mime: 'audio/mp4', tz: null });
+    now += 2 * 3600e3;
+    const c = await s.putClip(new Blob(['测试录音：刚导入的']), { mime: 'audio/mp4' });
+    await s.putChunk('r_c', 0, new Blob(['c']));
+    await s.putRecMeta({ recId: 'r_c', startedAt: 3, mime: 'audio/mp4', tz: null, done: true, sha256: c.sha256 });
+    const asked = [];
+    const out = await s.deleteClips([a.sha256, b.sha256, c.sha256, a.sha256, 'f'.repeat(64)], { stillGone: sha => { asked.push(sha); return sha !== b.sha256; }, minAge: 3600e3 });
+    assert.deepEqual(out, [a.sha256], '只删了 a');
+    assert.ok(asked.filter(x => x === a.sha256).length >= 1);
+    assert.deepEqual((await s.listClips()).map(r => r.sha256).sort(), [b.sha256, c.sha256].sort());
+    assert.equal((await s.getChunks('r_a')).length, 0, 'a 的分片删了');
+    assert.equal(await s.getRecMeta('r_a'), null, 'a 的 recMeta 删了（启动时不会再拼回来）');
+    assert.equal((await s.getChunks('r_live')).length, 1, '正在录的不碰');
+    assert.ok(await s.getRecMeta('r_live'));
+    assert.ok(await s.getRecMeta('r_c'), '没删的录音的 recMeta 留着');
+    assert.deepEqual(await s.deleteClips([c.sha256], { stillGone: () => true, minAge: sha => (sha === c.sha256 ? 0 : 3600e3) }), [c.sha256], 'minAge 可以按段给（自己刚永久删除的 = 0）');
+    assert.equal(await s.getRecMeta('r_c'), null);
+    assert.deepEqual(await s.deleteClips([], { stillGone: () => true }), []);
+    assert.deepEqual(await s.deleteClips([b.sha256]), [b.sha256], '没给 stillGone：照删');
+    assert.equal((await s.listClips()).length, 0);
+  } finally { Date.now = realNow; }
+}
+
+test('deleteClips（内存版）：上传过的也删，连同那几段的 recMeta 和分片；听 stillGone、minAge（touchedAt）', async () => {
+  await deleteClipsCase(memoryStore());
+});
+
+test('deleteClips（假的 IndexedDB）：同一个事务里删 clips、recMeta、分片；事务里删之前再问一次 stillGone', async () => {
+  const idb = fakeIDB();
+  await withKeyRange(async () => {
+    const s = idbStore(() => idb);
+    await deleteClipsCase(s);
+    let calls = 0;
+    const x = await s.putClip(new Blob(['测试录音：x']), { mime: 'audio/mp4' });
+    assert.deepEqual(await s.deleteClips([x.sha256], { stillGone: () => ++calls === 1 }), [], '读到记录时又不算永久删除了：不删');
+    assert.equal(calls, 2, '事务开头问一次、删之前再问一次');
+    assert.equal(await s.hasClip(x.sha256), true);
+    assert.deepEqual([...idb.stores.get('rec').m.keys()], ['["r_live",0]'], '只剩正在录的那段的分片');
+    assert.deepEqual([...idb.stores.get('recMeta').m.keys()], ['r_live']);
+  });
+  assert.equal(typeof audio.deleteClips, 'function');
+  await assert.rejects(audio.deleteClips(['x'], { stillGone: () => true }), /no-indexeddb/);
+});
+
+test('putClip 记下 touchedAt：新存的 = addedAt；同样内容再存一次只更新 touchedAt（5 分钟内碰过的不重写）（内存版和假的 IndexedDB）', async () => {
+  const realNow = Date.now;
+  try {
+    for (const s of [memoryStore(), idbStore(() => fakeIDB())]) {
+      let now = 1_000_000;
+      Date.now = () => now;
+      const a = await s.putClip(new Blob(['测试录音：留下']), { mime: 'audio/mp4' });
+      let r = (await s.listClips())[0];
+      assert.equal(r.addedAt, 1_000_000); assert.equal(r.touchedAt, 1_000_000);
+      now += 5000;
+      await s.putClip(new Blob(['测试录音：留下']), { mime: 'audio/mp4', uploaded: true });
+      r = (await s.listClips())[0];
+      assert.equal(r.addedAt, 1_000_000); assert.equal(r.touchedAt, 1_005_000);
+      assert.equal(r.uploaded, true, '照样升级 uploaded');
+      assert.equal(r.sha256, a.sha256);
+      now += 5000;
+      await s.putClip(new Blob(['测试录音：留下']), { mime: 'audio/mp4' });
+      r = (await s.listClips())[0];
+      assert.equal(r.uploaded, true, '再存一次不会把 uploaded 改回去');
+      assert.equal(r.touchedAt, 1_005_000, '5 分钟内碰过：不为了改时间重写整条');
+      now += 5 * 60e3;
+      await s.putClip(new Blob(['测试录音：留下']), { mime: 'audio/mp4' });
+      assert.equal((await s.listClips())[0].touchedAt, now, '过了 5 分钟再记');
+      assert.equal((await s.getClip(a.sha256)).blob instanceof Blob, true);
+    }
+  } finally { Date.now = realNow; }
 });
 
 test('内存版：分片按 seq 排序；clearChunks 只删分片；clearRec 全删', async () => {

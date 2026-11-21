@@ -57,6 +57,36 @@ test('恢复页面：实际读取所选备份；坏备份不执行替换', async
   }
 });
 
+test('恢复页面：从备份修复时只存合并后还有条目在用、没永久删除的录音；记下这次修过数据（repairedAt）', async () => {
+  const dom = installDom(); setLang('zh-Hans');
+  try {
+    const { buildBackup } = await import('../src/core/backup.js');
+    const { sha256Hex } = await import('../src/core/sha256.js');
+    const blobOf = (s) => new Blob([new TextEncoder().encode('假录音：' + s)], { type: 'audio/mp4' });
+    const clips = new Map();
+    for (const name of ['永久删除了的', '还在用的']) { const b = blobOf(name); clips.set(await sha256Hex(b), b); }
+    const [G, K] = [...clips.keys()];
+    const item = (sha) => ({ sha256: sha, mime: 'audio/mp4', bytes: 1, durationSec: 1, origName: '', addedAt: 1 });
+    const backup = blankState();
+    backup.data.entries.e_t = { ...makeEntry({ id: 'e_t', text: '旧备份里的原话', audio: [item(G)] }, 1000), deleted: true, deletedAt: 5000, updatedAt: 5000 };
+    backup.data.entries.e_k = makeEntry({ id: 'e_k', text: '留着的', audio: [item(K)] }, 1000);
+    const zip = await buildBackup(backup, { getClip: async (sha) => ({ blob: clips.get(sha) }) });
+    const state = blankState();
+    state.data.entries.e_t = { id: 'e_t', updatedAt: 9000, purged: true, purgedAt: 9000, purgedFrom: 5000, deleted: true, gone: [{ sha256: G, mime: 'audio/mp4', purgedAt: 9000, from: 5000 }] };
+    const put = [], local = {}, repairs = [];
+    const ctx = { state, local: {}, storageIssue: () => ({ code: 'corrupt' }), recoveryExport: () => null, retryData() {}, recoveryCloud: async () => null,
+      audio: { putClip: async (b) => { put.push(await sha256Hex(b)); } }, setLocal: (patch) => Object.assign(local, patch),
+      confirm: async () => true, repairData: async (next) => { repairs.push(next); } };
+    const main = new Element('main'); recoveryPanel(main, ctx);
+    const input = find(main, el => el.tag === 'input');
+    input.files = [zip];
+    await input.fire('change');
+    assert.equal(repairs.length, 1);
+    assert.deepEqual(put, [K]);
+    assert.ok(local.repairedAt > 0);
+  } finally { dom.restore(); }
+});
+
 test('真实 App 冷启动：损坏数据进入恢复页，不发起同步、不触碰录音存储，不显示空列表', async () => {
   const storage = fakeStorage([['babble.state', '{broken'], ['babble.local', JSON.stringify({ sync: { token: 'synthetic', repo: 'someone/test-data' } })],
     [PENDING_PREFIX + 'healthy', JSON.stringify({ app: 'babble', v: 1, patch: { data: { entries: { e: makeEntry({ id: 'e', text: '完整的测试记录' }) } }, settings: { nightOpensRecorder: false }, settingsAt: { nightOpensRecorder: 1000 } } })]]);

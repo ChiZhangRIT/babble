@@ -2,7 +2,9 @@
 //   1. 本机的版本记录本：条目要被换掉之前（本机修改、删除、恢复、撤销、导入备份、同步合并），把旧的那一版存进
 //      IndexedDB babble-history（单独一个库，不动录音库；只在这台设备上，不同步）。和上一份一模一样就不存；每条最多留 100 版。
 //      记录本只排队、不等写完，出错只打日志——绝不影响保存数据（见 state.js 的 setJournal）。
+//      永久删除了的条目（墓碑）不记，以前记的也忘掉（forget，排在已经排队的写入后面，所以不会有漏网的）。
 //   2. 云端历史：按需从 GitHub 上 babble.json 的提交记录里，一个版本一个版本地找这一条以前的样子（sync.js 的 commits / fileAt）。
+//      看过的提交缓存在内存里；永久删除了的条目从缓存里去掉（forget），清理过云端历史以后整个重来（reset）。
 //   3. 比较两版：改了哪些（原话 / 背景 / 录音 / 收藏 / 状态 / 日期 / 草稿 / 删除），原话按行比较。
 // 记录本里的一项：{ id, entryId, at（被换掉的时刻）, version（那一版的条目 JSON）, cause, replacedBy（换掉它的人 { who, device }） }
 // cause：'edit' 修改 | 'delete' 删除 | 'restore' 从最近删除恢复 | 'undo' 撤销 | 'import' 导入备份 | 'sync' 同步合并 | 'revert' 恢复旧版本
@@ -40,18 +42,20 @@ export function deletionBy(e) {
 const plain = (v) => JSON.parse(JSON.stringify(v));
 
 /**
- * @param {{ append(rec, {cap, same}): Promise<boolean>, list(entryId): Promise<object[]> }} backend
+ * @param {{ append(rec, {cap, same}): Promise<boolean>, list(entryId): Promise<object[]>, forget(ids): Promise<void>, entryIds(): Promise<string[]> }} backend
  * @param {{ cap?: number, log?: (e) => void }} [o]
- * @returns {{ record(items): Promise<void>, list(entryId): Promise<object[]>, idle(): Promise<void> }}
- *   record([{ entryId, version, cause, replacedBy, at }])：当场复制一份（之后数据再变也不影响），排队写入，马上返回；从不抛错
+ * @returns {{ record(items): Promise<void>, list(entryId): Promise<object[]>, forget(ids): Promise<void>, entryIds(): Promise<string[]>, idle(): Promise<void> }}
+ *   record([{ entryId, version, cause, replacedBy, at }])：当场复制一份（之后数据再变也不影响），排队写入，马上返回；从不抛错。墓碑不记
  *   list(entryId)：这一条的旧版本，新的在前
+ *   forget([entryId…])：这几条的旧版本全删掉（永久删除了）。排在已经排队的写入后面；出错只打日志
+ *   entryIds()：有旧版本的条目 id（等排队的写完再数；sweep 拿它找上次崩溃没忘掉的）
  */
 export function createJournal(backend, { cap = HISTORY_CAP, log = (e) => console.warn('babble-history', e) } = {}) {
   let chain = Promise.resolve();
   function record(items) {
     let recs = [];
     try {
-      recs = (Array.isArray(items) ? items : [items]).filter(x => x && x.entryId && isObj(x.version)).map(x => ({
+      recs = (Array.isArray(items) ? items : [items]).filter(x => x && x.entryId && isObj(x.version) && !x.version.purged).map(x => ({
         entryId: String(x.entryId), at: Number(x.at) || Date.now(), version: plain(x.version),
         cause: typeof x.cause === 'string' ? x.cause : 'edit', replacedBy: isObj(x.replacedBy) ? plain(x.replacedBy) : null,
       }));
@@ -67,7 +71,14 @@ export function createJournal(backend, { cap = HISTORY_CAP, log = (e) => console
     });
     return chain;
   }
-  return { record, list: (entryId) => backend.list(String(entryId)), idle: () => chain };
+  function forget(ids) {
+    const list = [...new Set((Array.isArray(ids) ? ids : [ids]).filter(x => typeof x === 'string' && x))];
+    if (!list.length) return chain;
+    chain = chain.then(async () => { try { await backend.forget(list); } catch (e) { log(e); } });
+    return chain;
+  }
+  const entryIds = () => chain.then(() => backend.entryIds());
+  return { record, forget, entryIds, list: (entryId) => backend.list(String(entryId)), idle: () => chain };
 }
 
 /** 内存版（测试用；IndexedDB 打不开时也能凑合） */
@@ -84,6 +95,8 @@ export function memoryBackend() {
       return true;
     },
     async list(entryId) { return rows.filter(r => r.entryId === entryId).sort((a, b) => b.id - a.id).map(r => plain(r)); },
+    async forget(ids) { const drop = new Set(ids); for (let i = rows.length - 1; i >= 0; i--) if (drop.has(rows[i].entryId)) rows.splice(i, 1); },
+    async entryIds() { return [...new Set(rows.map(r => r.entryId))]; },
   };
 }
 
@@ -151,6 +164,15 @@ export function idbBackend(getIDB = () => globalThis.indexedDB) {
     }),
     list: (entryId) => run('readonly', (store, done) => {
       store.index('entryId').getAll(only(entryId)).onsuccess = (e) => done((e.target.result || []).sort((a, b) => b.id - a.id));
+    }),
+    // 一个事务里把这几条的旧版本都删掉
+    forget: (ids) => run('readwrite', (store) => {
+      const idx = store.index('entryId');
+      for (const id of ids) idx.openKeyCursor(only(id)).onsuccess = (e) => { const c = e.target.result; if (c) { store.delete(c.primaryKey); c.continue(); } };
+    }),
+    entryIds: () => run('readonly', (store, done) => {
+      const out = [];
+      store.index('entryId').openKeyCursor(null, 'nextunique').onsuccess = (e) => { const c = e.target.result; if (c) { out.push(c.key); c.continue(); } else done(out); };
     }),
   };
 }
@@ -242,13 +264,13 @@ export function contentKey(e) {
  * @param {Array<{version, at, cause, replacedBy}>} local   本机记录本（新的在前）
  * @param {Array<{version, commit: {sha, at, device}}>} cloud  云端找到的（从新到旧）
  * @returns {Array<{ v, key, current: boolean, local: object|null, cloud: object|null }>}
- *   同样内容只留一份（当前版本优先，其次本机记录里较新的那份）；cloud 记的是这份内容出现过的最早的提交。
+ *   同样内容只留一份（当前版本优先，其次本机记录里较新的那份）；cloud 记的是这份内容出现过的最早的提交。墓碑不列
  *   当前版本排第一，其余按那一版的修改时间新的在前
  */
 export function buildVersions(current, local = [], cloud = []) {
   const map = new Map();
   const add = (v, extra) => {
-    if (!isObj(v) || !v.id) return;
+    if (!isObj(v) || !v.id || v.purged) return;      // 墓碑没有内容，不算一个版本
     const n = normalizeEntry(v, v.id), key = contentKey(n);
     const have = map.get(key);
     if (!have) { map.set(key, { v: n, key, current: !!extra.current, local: extra.local || null, cloud: extra.cloud || null }); return; }
@@ -268,13 +290,16 @@ export function buildVersions(current, local = [], cloud = []) {
 /**
  * 从 GitHub 上 babble.json 的提交记录里找某一条以前的版本（按需，一个提交一个提交地取）。
  * @param {{ commits({page, perPage}): Promise<Array<{sha, at, message}>>, fileAt(sha): Promise<object|null> }} api   sync.js 给的
- * @returns {{ session(entryId): { run({ batch, onProgress }): Promise<{found, more, checked, stopped}>, stop(), readonly checked: number }, files: Map }}
+ * @returns {{ session(entryId): { run({ batch, onProgress }): Promise<{found, more, checked, stopped}>, stop(), readonly checked: number },
+ *             files: Map, forget(entryId), reset() }}
  *   run 每次最多看 batch 个提交（接着上次停下的地方往更早找），中途可以 stop()；出错（SyncError）照样抛，下次 run 从出错的那个提交重来。
  *   看过的提交按 sha 缓存（只缓存问过的条目，不留整份文件）：同一次打开 App 里再看不用重新下载。
  *   某个版本里还没有这一条 → 更早的也不会有，到头了（more: false）。
+ *   forget(entryId)：缓存里去掉这一条（永久删除了）。reset()：清理过云端历史，提交全换了——缓存清空，已经开着的 session 下次 run 从第一页重来
  */
 export function createCloudHistory(api, { perPage = 30 } = {}) {
   const files = new Map();       // 提交 sha → { device, savedAt, ok, entries: Map(entryId → 条目 | null) }
+  let gen = 0;
   async function versionAt(c, entryId) {
     let f = files.get(c.sha);
     if (f && (!f.ok || f.entries.has(entryId))) return f;
@@ -289,7 +314,7 @@ export function createCloudHistory(api, { perPage = 30 } = {}) {
   }
   function session(entryId) {
     const commits = [];
-    let page = 0, idx = 0, morePages = true, reachedStart = false, stopFlag = false;
+    let page = 0, idx = 0, morePages = true, reachedStart = false, stopFlag = false, mine = gen;
     async function nextCommit() {
       while (idx >= commits.length && morePages) {
         const list = await api.commits({ page: page + 1, perPage });
@@ -300,6 +325,7 @@ export function createCloudHistory(api, { perPage = 30 } = {}) {
       return idx < commits.length ? commits[idx] : null;
     }
     async function run({ batch = perPage, onProgress = null } = {}) {
+      if (mine !== gen) { commits.length = 0; page = 0; idx = 0; morePages = true; reachedStart = false; mine = gen; }
       stopFlag = false;
       const found = [];
       let n = 0;
@@ -312,11 +338,16 @@ export function createCloudHistory(api, { perPage = 30 } = {}) {
         if (!f.ok) continue;                              // 那次提交里文件被删了 / 看不懂：跳过
         const v = f.entries.get(entryId);
         if (!v) { reachedStart = true; break; }           // 那时还没有这一条
+        if (v.purged) continue;                           // 那时是墓碑（后来作废了）：没有内容，跳过
         found.push({ version: v, commit: { sha: c.sha, at: c.at || f.savedAt || null, device: f.device } });
       }
       return { found, more: !reachedStart, checked: idx, stopped: stopFlag && !reachedStart };
     }
     return { run, stop: () => { stopFlag = true; }, get checked() { return idx; }, get more() { return !reachedStart; } };
   }
-  return { session, files };
+  return {
+    session, files,
+    forget(entryId) { for (const f of files.values()) f.entries.delete(String(entryId)); },
+    reset() { files.clear(); gen++; },
+  };
 }

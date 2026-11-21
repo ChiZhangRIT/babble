@@ -6,6 +6,11 @@
 // 下次打开同一个编辑页时恢复（app 冷启动时也会直接回到这里）；保存、取消、确认离开时删掉。
 // 工具栏的「🎙 录一段」：不离开编辑页就录（同录音页的录音机：每秒存一片、常亮、切到后台就存好），边录边接着写。
 // 录好：已有的条目马上接上（不保存也不丢）；新的一条先放进工作副本（随草稿另存），保存时一起存，没保存就离开 → 单独存成一条待整理。
+// 「移除」的录音保存以后放进「最近删除 → 移除的录音」（state.js 记下，能放回来），保存时提示一句；还没存进条目的（这次刚加的）只是不要了。
+// 这条在别的设备上永久删除了（打开时、或者开着的时候）：不再另存草稿、不能保存；有没保存的修改（或另存的草稿）就给
+//   「另存为新的一条」（确认以后：正在改的字存成一条待整理，只带这次加的录音、不带永久删除了的）和「丢掉」，没有就只说一句。
+//   这次录的、还没存进条目的录音「丢掉」时也照样单独存成一条（同离开）。
+// deps（测试用）：purgeEnabled 换掉 core/purge.js 的 PURGE_ENABLED（只影响说法：移除的录音 30 天后自动永久删除）。
 import { h, icon } from '../ui/dom.js';
 import { audioPlayer, stopAll } from '../ui/player.js';
 import { canon } from '../core/store.js';
@@ -16,6 +21,7 @@ import { REACTIONS, replaceText, writeTools, insertLine, startTemplate, keepFocu
 import { AUDIO_ACCEPT, readClipFiles, clipCaption, renameClipSheet } from './entry.js';
 import { renameClip } from '../core/clips.js';
 import { saveFile } from './record.js';
+import { PURGE_ENABLED } from '../core/purge.js';
 import { t } from '../i18n.js';
 export { REACTIONS, replaceText, EDIT_PREFIX };
 
@@ -61,15 +67,21 @@ export function addedAudio(a, b) {
   return B.slice(A.length);
 }
 
-export function render(main, params, ctx) {
+export function render(main, params, ctx, deps = {}) {
+  const purgeOn = deps.purgeEnabled ?? PURGE_ENABLED;
   const isNew = params.sub === 'new';
   const id = isNew ? null : params.id;
   const sp = () => ctx.state.settings.speakers;
   const nn = () => sp().nn.name || 'NN';
   const backTo = isNew ? '/' : '/e/' + enc(id);
   const src = isNew ? null : ctx.entry(id);
+  const tombOf = (x) => (x && ctx.tombstone ? ctx.tombstone(x) : null);   // 永久删除了的（墓碑）：ctx.entry 不给
+  let purged = !isNew && !src && !!tombOf(id);
+  /** 这条已经永久删除、也没有要另存的：只说一句（另存的草稿删掉） */
+  const showPurged = () => main.replaceChildren(h('header.navbar', null, h('button.back', { type: 'button', onclick: () => ctx.back('/') }, icon('back'), t('nav.list')), h('span'), h('span')),
+    h('div.page', null, h('p.empty', null, t('entry.purgedNote'))));
 
-  if (!isNew && !src) {
+  if (!isNew && !src && !purged) {
     try { const st = store(); if (st) st.removeItem(EDIT_PREFIX + id); } catch (e) { /* 没有就算了 */ }   // 条目不在了：另存的修改也用不上
     main.append(h('header.navbar', null, h('button.back', { type: 'button', onclick: () => ctx.back('/') }, icon('back'), t('nav.list')), h('span'), h('span')),
       h('div.page', null, h('p.empty', null, t('common.notFound'))));
@@ -98,7 +110,7 @@ export function render(main, params, ctx) {
   function persistNow() {
     clearTimeout(persistTimer); persistTimer = null;
     const st = store();
-    if (!st || gone) return false;
+    if (!st || gone || purged) return false;          // 永久删除了：不再另存（已经另存的那份留着，等「另存为新的一条」或「丢掉」）
     try {
       // rec：正在录的那段（App 被杀时，启动时把找回的录音和这份草稿放在一起，见 core/drafts.js）
       if (isDirty()) {
@@ -136,6 +148,7 @@ export function render(main, params, ctx) {
   // 另存时正在录音（rec）：上次 App 是录到一半被关掉的。启动时 App 先把找回的录音放好（「记一条」的会连同这份草稿存成一条），之后再看
   const waitRecovery = !!(stored && stored.rec);
   if (!waitRecovery) applyDraft(stored);
+  if (purged && !waitRecovery && !isDirty()) { dropDraft(); showPurged(); return; }
 
   // ---------- 控件 ----------
   const dateInput = h('input.ed-date#ed-date', { type: 'date', required: true, value: w.date, dataset: { fid: 'ed-date' },
@@ -152,6 +165,10 @@ export function render(main, params, ctx) {
     oninput: () => { w.draftText = draftTa.value; if (!w.draftSrc && w.draftText.trim()) w.draftSrc = 'paste'; grow(draftTa, 80); persistSoon(); } });
   const audioBox = h('div.ed-audio');
   const banner = h('p.ed-banner', { hidden: !(src && src.deleted), role: 'status' }, src && src.deleted ? t('edit.remoteDeleted') : null);
+  const purgedEl = h('div.ed-banner.ed-purged', { role: 'alert' }, h('p', null, t('edit.purged')),
+    h('div.row.ed-purged-acts', null,
+      h('button.btn.small.primary', { type: 'button', onclick: () => saveAsNew() }, t('edit.saveAsNew')),
+      h('button.btn.small', { type: 'button', onclick: () => discard() }, t('edit.discard'))));
   const saveError = h('p.ed-banner.err', { hidden: true, role: 'alert' }, t('edit.saveFailed'));
   const restoredMsg = () => t('edit.restored', { time: restoredAt ? fmtEntryDate({ ...localParts(restoredAt), timeSource: null }, ctx.lang(), { sep: daySep(ctx.lang()) }) : '' });
   const restoredEl = h('div.ed-banner.ed-restored', { hidden: !restoredAt, role: 'status' },
@@ -249,7 +266,9 @@ export function render(main, params, ctx) {
     });
   }
   async function removeClip(c) {
-    if (!(await ctx.confirm({ message: t('edit.removeConfirm'), confirmLabel: t('edit.removeClip'), danger: true }))) return;
+    // 条目里原有的 → 保存以后进「最近删除」；这次刚加、还没存进条目的 → 只是不要了（开放永久删除以后在「没有条目在用的录音」里）
+    const msg = addedSha.has(c.sha256) ? (purgeOn ? 'edit.removeConfirmNewPurge' : 'edit.removeConfirmNew') : (purgeOn ? 'edit.removeConfirmPurge' : 'edit.removeConfirm');
+    if (!(await ctx.confirm({ message: t(msg), confirmLabel: t('edit.removeClip'), danger: true }))) return;
     w.audio = w.audio.filter(a => a.sha256 !== c.sha256);
     if (addedSha.has(c.sha256)) addedSha.delete(c.sha256); else removedSha.add(c.sha256);
     drawAudio();
@@ -412,11 +431,14 @@ export function render(main, params, ctx) {
     if (saving) return;
     if (recBusy()) { saving = true; await stopRec('user'); saving = false; if (gone) return; }       // 正在录：先停下存好，录到的一起保存
     if (!isISODate(w.date)) { dateErr.hidden = false; dateInput.focus(); return; }
+    if (purged || (!isNew && tombOf(id))) { toPurged(); return; }               // 永久删除了：存不进去（ctx.update 也不会写）
     if (!isNew && !isDirty() && !markDone) { saved = true; dropDraft(); ctx.back(backTo); return; }
     // 新建但什么都没写（只有预填的「👰🏻‍♀️ “”」）：不建空条目，直接回去
     if (isNew && w.text === template.text && !w.note.trim() && !w.draftText.trim() && !w.audio.length) { saved = true; dropDraft(); ctx.back(backTo); return; }
+    if (isNew && tombOf(targetId)) targetId = ctx.newEntry({}).id;     // 上次没存成的那个 id 在别处永久删除了：换一个
     const prev = isNew ? null : ctx.entry(id);
     const curAudio = prev ? prev.audio || [] : [];
+    const removedN = curAudio.filter(a => removedSha.has(a.sha256)).length;   // 这次移除的（保存以后在「最近删除」里）
     const named = (a) => {                       // 这次改了名的：名字用工作副本里的
       const mine = renamedSha.has(a.sha256) && w.audio.find(x => x.sha256 === a.sha256);
       if (!mine) return a;
@@ -452,18 +474,49 @@ export function render(main, params, ctx) {
     inlineSha.clear();
     if (isNew) ctx.navigate('/e/' + enc(targetId), { replace: true });
     else {
-      if (markDone && doneUndoPending) ctx.toast(t('entry.doneToast'), { ms: 10000, action: { label: t('common.undo'), run: () => ctx.undo() } });
-      else ctx.toast(t('edit.saved'), { ms: 1600 });
+      const note = removedN ? t(purgeOn ? 'edit.removedNotePurge' : 'edit.removedNote', { n: removedN }) : null;
+      if (markDone && doneUndoPending) ctx.toast([t('entry.doneToast'), note].filter(Boolean).join('\n'), { ms: 10000, action: { label: t('common.undo'), run: () => ctx.undo() } });
+      else ctx.toast([t('edit.saved'), note].filter(Boolean).join('\n'), { ms: note ? 6000 : 1600 });
       ctx.back(backTo);
     }
   }
-  const cancel = () => ctx.back(backTo);
+  const cancel = () => ctx.back(purged ? '/' : backTo);
+
+  // ---------- 这条在别的设备上永久删除了 ----------
+  /** 开着的时候发现永久删除了：不再另存；有没保存的修改、另存的草稿 → 换成提示和两个按钮；都没有 → 只说一句 */
+  function toPurged() {
+    purged = true;
+    clearTimeout(persistTimer); persistTimer = null;
+    if (!isDirty() && !hasDraft()) { saved = true; dropDraft(); showPurged(); return; }
+    build();
+  }
+  const hasDraft = () => { try { const st = store(); return !!(st && st.getItem(draftKey)); } catch (e) { return false; } };
+  /** 另存为新的一条（先确认）：正在改的字存成一条待整理，只带这次加进来的录音，永久删除了的不带 */
+  async function saveAsNew() {
+    if (saving || !(await ctx.confirm({ message: t('edit.saveAsNewMsg'), confirmLabel: t('edit.saveAsNew') }))) return;
+    if (recBusy()) { saving = true; await stopRec('user'); saving = false; }
+    const tomb = tombOf(id), dead = new Set([...((tomb && tomb.gone) || []).map(g => g.sha256), ...(ctx.goneShas ? ctx.goneShas() : [])]);
+    const audio = w.audio.filter(a => addedSha.has(a.sha256) && !dead.has(a.sha256));
+    let e = null;
+    try { e = ctx.put(ctx.newEntry({ ...savedFields(w, { template, prev: null, audio }), status: 'inbox', source: { kind: 'app' } })); } catch (x) { e = null; }
+    if (!e || !ctx.saveOk()) { saveFailed = true; saveError.hidden = false; ctx.toast(t('edit.saveFailed'), { ms: 10000 }); return; }
+    saved = true; saveFailed = false;
+    dropDraft(); inlineSha.clear();
+    ctx.toast(t('edit.savedNew'), { ms: 4000 });
+    ctx.navigate('/e/' + enc(e.id), { replace: true });
+  }
+  /** 丢掉没保存的修改（这次录的、还没存进条目的录音离开时照样单独存成一条，见 cleanup） */
+  function discard() {
+    dropDraft();
+    ctx.guard(null);
+    ctx.back('/');
+  }
 
   // ---------- 画 ----------
   const draftOpen = () => !!w.draftText.trim();
   let draftEl;
   function build() {
-    const inbox = !isNew && src.status === 'inbox';
+    const inbox = !isNew && !purged && !!src && src.status === 'inbox';
     toolsEl = tools();
     draftEl = h('details.ed-draft-box', { open: draftOpen(), ontoggle: () => { if (draftEl.open) grow(draftTa, 80); } },
       h('summary', null, icon('chev'), h('span', null, t('edit.draft')), h('small', null, t('edit.draftHint'))),
@@ -478,9 +531,9 @@ export function render(main, params, ctx) {
       h('header.navbar', null,
         h('button.back.text', { type: 'button', onclick: cancel }, t('common.cancel')),
         h('span.nb-title', null, isNew ? t('nav.new') : t('common.edit')),
-        h('button.tb-btn.ed-save', { type: 'button', onclick: () => save(false) }, t('common.save'))),
+        purged ? h('span') : h('button.tb-btn.ed-save', { type: 'button', onclick: () => save(false) }, t('common.save'))),
       h('div.page.editor', null,
-        restoredEl, banner, saveError,
+        ...(purged ? [purgedEl] : [restoredEl, banner]), saveError,
         h('div.ed-dt', null,
           h('div', null, h('div.f-label', null, h('label', { for: 'ed-date' }, t('edit.date'))), dateInput),
           h('div', null, h('div.f-label', null, h('label', { for: 'ed-time' }, t('edit.time'), ' ', h('small', null, t('edit.optional'))), h('span.ed-time-acts', null, nowBtn, clearTime)), timeInput)),
@@ -535,7 +588,7 @@ export function render(main, params, ctx) {
   if (waitRecovery) {
     Promise.resolve(ctx.recovered).catch(() => {}).then(() => {
       if (gone || !main.isConnected || isDirty()) return;
-      if (!applyDraft(readDraft(store(), draftKey))) return;
+      if (!applyDraft(readDraft(store(), draftKey))) { if (purged) { saved = true; dropDraft(); showPurged(); } return; }
       restoredEl.firstChild.textContent = restoredMsg(); restoredEl.hidden = !restoredAt;
       dateInput.value = w.date; timeInput.value = w.time; ta.value = w.text; noteTa.value = w.note; draftTa.value = w.draftText;
       build();
@@ -543,9 +596,9 @@ export function render(main, params, ctx) {
   }
 
   function onChange(info) {
-    if (saved || isNew || (saveFailed && info?.source === 'local')) return;
+    if (saved || isNew || purged || (saveFailed && info?.source === 'local')) return;
     const e = ctx.entry(id);
-    if (!e) return;
+    if (!e) { if (tombOf(id)) toPurged(); return; }
     const cur = pickEditable(e), now = canon(cur);
     if (now === baseEntry) return;                  // 改的是别的（比如列表里点了收藏）
     const was = JSON.parse(baseEntry), more = addedAudio(was, cur);

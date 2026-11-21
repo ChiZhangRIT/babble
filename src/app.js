@@ -1,4 +1,5 @@
-// 牙牙呓语：启动、外壳（手机底栏 / 侧栏 / 双栏）、路由、主题与夜间、同步调度、录音恢复（含上次没收尾的床头模式）。页面在 views/，计算在 core/。
+// 牙牙呓语：启动、外壳（手机底栏 / 侧栏 / 双栏）、路由、主题与夜间、同步调度、录音恢复（含上次没收尾的床头模式）、
+// 永久删除后的本机清理和 30 天到期（core/purge.js）、新版设备报到。页面在 views/，计算在 core/。
 //
 // ===== 页面接口 =====
 // export function render(main, params, ctx) → 清理函数 | { cleanup?(), onChange?(info) } | undefined
@@ -24,11 +25,15 @@
 // 数据（src/core/state.js 的包装；改数据一律走这些，app 会保存、同步、重画）
 //   ctx.state                  当前数据（只读）：{ app, v, data: { entries }, settings, settingsAt }
 //   ctx.local                  本机设置 babble.local（只读）：{ lang, theme, device, sync, lastBackupAt, audioSync }（页面自己的：recOnly、listMode、床头模式的 bedAutoEnd / bedVadOk / bedKeepNoted…）
+//                              永久删除用的：deviceId（报到用的设备 id）、squashMark / squashNote（清理云端历史）、purgeNoticeAt、repairedAt（这次修过数据的时刻）
 //   ctx.entries()              没删除的条目，新的在前（byNewest）；缓存到下次数据变化
-//   ctx.entry(id)              按 id 取条目（含已删除的），没有 → null
+//   ctx.entry(id)              按 id 取条目（含已删除的），没有、或已经永久删除（只剩墓碑）→ null
+//   ctx.tombstone(id)          永久删除以后留下的墓碑（{ id, purged, purgedAt, purgedFrom, gone… }，没有内容）；不是墓碑 → null
 //   ctx.mutate(fn, { undoLabel })  fn(state) 直接改（同步函数），返回 fn 的返回值；修改时间自动补；给 undoLabel 会弹 10 秒「撤销」提示
-//   ctx.put(entry, { undoLabel })  新建或整条替换，返回存好的条目
-//   ctx.update(id, patch, { undoLabel })  改几个字段，返回存好的条目（没有这条 → null）
+//   ctx.put(entry, { undoLabel })  新建或整条替换，返回存好的条目（那条已经永久删除 → null，什么都不写）
+//   ctx.update(id, patch, { undoLabel })  改几个字段，返回存好的条目（没有这条、已经永久删除 → null）
+//   ctx.goneShas()             Set：永久删除了、也没有别的条目在用的录音 sha（store.js goneShas）；缓存到下次数据变化
+//   ctx.removedClips()         「移除的录音」[{ entryId, item, at }]，新移除的在前（store.js removedClips；没删除的条目里的）
 //   ctx.newEntry(fields)       makeEntry：补齐默认值的新条目（还没存，要 ctx.put）
 //   ctx.remove(id)             软删除 + 10 秒「撤销」提示，返回删除前的条目
 //   ctx.restore(id)            从「最近删除」恢复
@@ -38,6 +43,17 @@
 //   ctx.setLocal(patch)        改本机设置（不重画页面）
 //   ctx.editVersion            本机修改计数
 //   ctx.saveOk()               最近一次数据写入是否成功；编辑页确认成功后才清草稿、离开
+// 永久删除（core/purge.js）。PURGE_ENABLED 关着（第一阶段）：页面不显示这些按钮，这里也什么都不删，返回 { done: [], changed: [], skipped: true }
+//   ctx.purge(list)            永久删除「最近删除」里的条目：list = [{ id, at: 画出来时的 updatedAt }]；开着同步先同步一次（最多等 10 秒）
+//                              → Promise<{ done: [id], changed: [id] }>（changed：期间在别的设备上改过 / 恢复了，没删；页面重画、提示 deleted.changedElsewhere）
+//   ctx.purgeClips(list)       永久删除移除的录音：[{ id, sha256, removedAt }] → 同上（done / changed 里是 { id, sha256 }）
+//   ctx.purgeAll({ entries, clips })  「全部永久删除」：传画出来的那份清单（同上两种），一次删完 → 同上（两种混在一起）
+//   ctx.purgeOrphans(list)     没有条目在用的录音 [{ sha256, mime }] → Promise<{ done: [sha], changed: [sha] }>（写一个孤儿墓碑）
+//                              以上几个：开着同步时页面接着调 ctx.sync.now()（不等防抖），没同步成功就提示 common.purgedOffline；没有撤销
+//   ctx.restoreClip(id, sha)   「移除的录音」放回那条 → 存好的条目 | null（第一阶段也能用；提示由页面弹）
+//   ctx.localOrphans()         → Promise<[{ sha256, mime, bytes, addedAt, uploaded }]>：这台设备上没有条目在用的录音（一小时内的、草稿里的不算）
+//   ctx.trashInfo(key)         「最近删除」里一项的日期 → { shownAt }（这天以后才会被自动永久删除；还没开放永久删除 → null）
+//                              key：'e:'+条目 id | 'c:'+条目 id+':'+sha（store.js trashKeys）
 // 导航
 //   ctx.navigate(path, { replace })  path 如 '/e/abc'、'/rec?attach=abc'（前面的 # 可有可无）；同一地址 = 重画
 //   ctx.replaceHash(path)      页面自己换了状态（日历翻月、选日子）：只换地址栏，不重画、不加历史记录
@@ -58,7 +74,7 @@
 // 录音
 //   ctx.audio                  src/core/audioStore.js 整个模块（putClip、getClip、hasClip…）
 //   ctx.clipBlob(sha, mime?)   → Promise<Blob|null>：先找本机，没有且开了同步就按需下载（播放器的 getBlob 用它；
-//                              已经没有条目引用的录音要给 mime，才找得到仓库里的文件）
+//                              已经没有条目引用的录音要给 mime，才找得到仓库里的文件）。永久删除了的（goneShas）→ null，本机还没清掉也不给
 //   ctx.recovered              Promise<string[]>：启动时找回的录音（和边录边写没存完的字）放进的条目 id；录音页、编辑页要等它，再读草稿
 //   ctx.bootAt                 这次启动的时刻（毫秒）
 //   ctx.takeFiles()            拖进窗口的录音文件（File[]，取一次就清空；没有 → null）。导入页打开时调一下
@@ -68,7 +84,8 @@
 //                              床头页、昨夜页、列表的「昨夜」卡片要等它再读 babble-night（数据有问题时直接 resolve，不碰）
 //   ctx.build                  这一版的名字（src/start.js 的 BUILD，启动器放在 window.__babbleBuild；开发时没有 → null）
 // 同步
-//   ctx.sync.now()             立即同步 → Promise<{ ok, skipped?, error?, offline? }>（暂停着也照样同步：「立即同步」是用户自己点的）
+//   ctx.sync.now(opts)         立即同步 → Promise<{ ok, skipped?, error?, offline? }>（暂停着也照样同步：「立即同步」是用户自己点的）。
+//                              opts 交给 sync.js（{ forcePush, forceAudit }，一般不用给）。每一轮做完：清理本机已经确认删掉的、到期的自动永久删除、报到
 //   ctx.sync.pause(tag)        暂停自动同步，返回 resume()：有人暂停着时改了数据、定时、联网、切到后台都不同步；最后一个 resume() 后马上排一次
 //                              （已经在后台了就马上同步）。别的标签页暂停着也算（每个暂停拿一个 Web Lock「babble-sync-hold:…」）。
 //                              床头模式开着时（'bedside'）、昨夜页每次留下以后 10.5 秒（'night-undo'：提示条上撤销时录音还没传上去）、
@@ -76,18 +93,31 @@
 //   ctx.sync.connect({ repo, token, tokenExp })  保存同步设置并马上同步一次 → 同上（tokenExp：用户填的令牌到期时刻，可选）
 //   ctx.sync.stop()            停止同步（只清本机设置）
 //   ctx.sync.checkRepo(repo, token) → Promise<仓库全名>（不是私有 / 没权限会抛 SyncError）
-//   ctx.sync.status()          { on, running, pendingUp, pendingDown, lastError, at, err, offline, dirty, repo }
+//   ctx.sync.status()          { on, running, pendingUp, pendingDown, lastError, at, err, offline, dirty, repo,
+//                                pendingPurge（待从仓库删的录音段数）, purging, oldDevices（最近还在用旧版本推送的设备名） }
 //   ctx.sync.getAudio(sha)     → Promise<Blob|null>
+//   ctx.sync.squash()          「清理云端历史」→ Promise<{ ok, already?, commit?, branch?, missing?, error? }>（错误照常翻译 syncErr.<code>）；
+//                              成功后写同步的 cloudResetAt（别的设备据此把录音和仓库对一遍）、local.squashNote（{ at, branch }：显示 Mac 上的步骤，
+//                              页面「知道了」时 setLocal({ squashNote: null })）。开关关着 → { ok: false, skipped: true }
+//   ctx.sync.orphans()         先同步一轮，再找仓库里没有条目在用的录音（只读）→ Promise<{ ok, files: [{ sha256, path, ext, size, at, mime }], recent, more, error? }>
+//                              （recent：24 小时内传上来的，只计数不列出）
+//   ctx.sync.historyInfo()     → Promise<{ commits, branch, others: [名字] } | null>：仓库有几个提交、默认分支、别的分支 / 标签（尽力而为，确认框用）
+//   ctx.sync.devices()         新版设备报到（同步的 data.devices，每台设备每轮同步成功后报到，名字、版本没变时 3 天一次）
+//                              → { updated: [{ id, name, who, build, seenAt, me }]（最近报到的在前；me：这台设备）,
+//                                  waiting: [{ name, who, at, old }]（60 天内改过梦话、或用旧版本推送过的设备里，还没有对得上的报到的；
+//                                  这台设备不算；同名同人的分不出来。at：最近改梦话的时刻，只见过推送 → null；old：最近同步时还是旧版本） }
 // 修改记录
 //   ctx.history.list(id)       → Promise<[{ id, entryId, at, version, cause, replacedBy }]>：这台设备记下的旧版本，新的在前
 //   ctx.history.cloud          core/history.js 的 createCloudHistory：.session(id).run() 从云端的历史版本里找更早的
+//                              （永久删除的条目从缓存里去掉；清理过云端历史——本机或别的设备，看 cloudResetAt——缓存整个重来）
 // 其他
 //   ctx.device                 设备名（babble.local.device，没填就是 iPhone / iPad / Mac / Browser）
 //   ctx.isNight()              现在是不是夜间时段（按设置）
 import * as state from './core/state.js';
-import { stamp, deletedRecord, restoredRecord, setSetting, live, byNewest, makeEntry, normalizeEntry, clipIndex, newId } from './core/store.js';
+import { stamp, deletedRecord, restoredRecord, setSetting, live, byNewest, makeEntry, normalizeEntry, clipIndex, newId, goneShas, stubShas, removedClips, trashKeys, isTombstone } from './core/store.js';
 import { isNight, localParts, fmtTime } from './core/dates.js';
-import { debounce } from './core/util.js';
+import { debounce, sleep } from './core/util.js';
+import { createPurger, PURGE_ENABLED, shaSig, deviceSeen, deviceReport } from './core/purge.js';
 import { createSync } from './core/sync.js';
 import { journal, createCloudHistory, platformDevice } from './core/history.js';
 import * as audio from './core/audioStore.js';
@@ -100,7 +130,7 @@ import * as list from './views/list.js';
 import * as calendar from './views/calendar.js';
 import * as entry from './views/entry.js';
 import * as editor from './views/editor.js';
-import { EDIT_PREFIX, REC_DRAFT, NEW_DRAFT, readDraft, writeDraft, applyRecovery } from './core/drafts.js';
+import { EDIT_PREFIX, REC_DRAFT, NEW_DRAFT, readDraft, writeDraft, applyRecovery, stashPurgedText } from './core/drafts.js';
 import * as deleted from './views/deleted.js';
 import * as record from './views/record.js';
 import * as nightView from './views/night.js';
@@ -109,6 +139,7 @@ import * as settings from './views/settings.js';
 import * as diagnostics from './views/diagnostics.js';
 import { askWho, shouldAskWho } from './views/device.js';
 import { recoveryPanel } from './ui/recovery.js';
+import { forgetClip } from './ui/player.js';
 
 const BOOT = Date.now();
 const VIEWS = { list, calendar, entry, editor, deleted, record, night: nightView, import: importView, settings, diag: diagnostics };
@@ -117,7 +148,7 @@ const THEME_COLOR = { light: '#f8f3ee', dark: '#141216', night: '#0b0c12' };
 
 state.load();
 state.setDefaultDevice(DEVICE);
-state.setJournal(journal.record);            // 条目被换掉前把旧版本记进 babble-history（只排队，不挡保存）
+state.setJournal(journal.record, journal.forget);   // 条目被换掉前把旧版本记进 babble-history（只排队，不挡保存）；永久删除的条目连旧版本一起忘掉
 const S = () => state.getState();
 const L = () => state.getLocal();
 
@@ -241,15 +272,20 @@ window.addEventListener('beforeunload', e => {
 });
 
 // ---------- 衍生数据 ----------
-let cache = null;
+let cache = null, goneCache = null;
 let askWhoPending = false;      // 要问「这台设备是谁在用」，等离开录音页 / 关掉面板再问（见 askWhoSoon）
 function entries() {
   if (!cache) cache = live(S()).sort(byNewest);
   return cache;
 }
+/** 永久删除了、没有别的条目在用的录音（缓存到下次数据变化） */
+const goneNow = () => goneCache || (goneCache = goneShas(S()));
+const tombOf = (id) => { const e = id && S().data.entries[id]; return isTombstone(e) ? e : null; };
 
 // ---------- 同步 ----------
 let lastSyncTry = 0;
+// babble.purge（仓库里删录音的进度、确认过的云端版本，几个标签页共用）：每次用时再拿 localStorage（权限恢复后换了对象也跟着换）
+const purgeStore = { getItem: (k) => { try { return globalThis.localStorage.getItem(k); } catch (e) { return null; } }, setItem: (k, v) => globalThis.localStorage.setItem(k, v) };
 const syncer = createSync({
   getState: S,
   applyRemote: (merged, info) => state.applyRemote(merged, info),
@@ -265,18 +301,25 @@ const syncer = createSync({
   editVersion: state.editVersion,
   device: () => state.deviceName(),            // 设置里改了设备名，下一次上传就用新名字
   audioStore: audio,
-  getLocal: L, saveLocal: state.saveLocal,
+  getLocal: L, saveLocal: state.saveLocal, setLocal: state.setLocal,     // setLocal：清理云端历史前记下 squashMark
+  storage: purgeStore,
   onStatus: () => syncChanged(),
 });
 function syncStatus() {
   const c = L().sync;
   const st = (() => { try { return syncer.status() || {}; } catch (e) { return {}; } })();
-  return { running: false, pendingUp: 0, pendingDown: 0, lastError: null, ...st, on: !!c,
+  return { running: false, pendingUp: 0, pendingDown: 0, lastError: null, pendingPurge: 0, purging: false, oldDevices: [], ...st, on: !!c,
     repo: c ? c.repo : null, at: c ? c.at || null : null, err: c ? c.err || null : null, offline: !!(c && c.offline), dirty: !!(c && c.dirty) };
 }
 function syncChanged() { renderSyncBadges(); emit('sync', syncStatus()); }
 const syncApi = {
-  now: () => { if (state.storageIssue()) return Promise.resolve({ ok: false, skipped: true }); lastSyncTry = Date.now(); const p = syncer.syncNow(); syncChanged(); return p.finally(syncChanged); },
+  now: (opts) => {
+    if (state.storageIssue()) return Promise.resolve({ ok: false, skipped: true });
+    lastSyncTry = Date.now();
+    const p = syncer.syncNow(opts);
+    syncChanged();
+    return p.then(r => { afterRound(r); return r; }).finally(syncChanged);
+  },
   connect: ({ repo, token, tokenExp = null }) => {
     state.setLocal({ sync: { repo, token, sha: null, etag: null, dirty: true, at: null, err: null, offline: false, ...(tokenExp ? { tokenExp } : {}) } });
     syncChanged();
@@ -286,6 +329,21 @@ const syncApi = {
   checkRepo: (repo, token) => syncer.checkRepo(repo, token),
   status: syncStatus,
   getAudio: (sha) => syncer.getAudio(sha),
+  async squash() {
+    if (!PURGE_ENABLED || state.storageIssue() || !L().sync) return { ok: false, skipped: true };
+    squashing = true;
+    let r;
+    try { r = await syncer.squash(); }
+    finally { squashing = false; }
+    if (r && r.ok && !r.already) { markCloudReset(); state.setLocal({ squashNote: { at: Date.now(), branch: r.branch || null } }); }
+    else if (L().squashMark) markCloudReset();   // 强制更新以后核对没通过（可能已经换了）：照样写 cloudResetAt，别的设备复查一遍
+    afterRound({ ok: false });
+    syncChanged();
+    return r;
+  },
+  orphans: async () => { const r = await syncer.orphans(); afterRound({ ok: false }); syncChanged(); return r; },   // 里面先同步了一轮
+  historyInfo: () => syncer.historyInfo(),
+  devices: () => deviceReport(S(), { me: L().deviceId || null, self: { name: state.deviceName(), who: L().who }, oldDevices: syncStatus().oldDevices }),
 };
 // 暂停自动同步（床头模式整夜开着、昨夜页留下后等撤销、录音页刚存好的录音）：每次 pause 一个记号，都 resume 了才恢复，并马上排一次
 //（这时已经切到后台了：不等 3 秒，马上传——后台的定时器要等回到前台才跑）。
@@ -346,21 +404,25 @@ function applyTheme() {
   if (changed) emit('theme', th);
   return changed;
 }
-/** 编辑页另存的没保存的修改（iOS 在后台把 App 杀掉时留下的，见 views/editor.js）：一天以内的 → 那个编辑页的地址 */
+/** 编辑页另存的没保存的修改（iOS 在后台把 App 杀掉时留下的，见 views/editor.js）：一天以内的 → 那个编辑页的地址。
+ *  那条已经永久删除了的不管多久以前都回去（先回这种）：编辑页显示「已经永久删除」，让用户选另存为新的一条或丢掉——
+ *  不然草稿（里面是原来的原话）就一直留在这台设备上，别处又进不了那个编辑页（草稿不悄悄丢，也不悄悄留着） */
 function pendingEdit() {
+  let fresh = null;
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
       if (!k || !k.startsWith(EDIT_PREFIX)) continue;
       const d = JSON.parse(localStorage.getItem(k) || 'null');
-      if (!d || !(Date.now() - (Number(d.at) || 0) < 86400000)) continue;
+      if (!d) continue;
       // 录音页那份、「记一条」录到一半的那份：不用回去接着写，启动时 recover() 会把字和录音存进条目
       if (k === REC_DRAFT || (k === NEW_DRAFT && d.rec)) continue;
-      const id = k.slice(EDIT_PREFIX.length);
-      return id === 'new' ? '#/new' : '#/edit/' + encodeURIComponent(id);
+      const id = k.slice(EDIT_PREFIX.length), go = id === 'new' ? '#/new' : '#/edit/' + encodeURIComponent(id);
+      if (id !== 'new' && tombOf(id)) return go;
+      if (!fresh && Date.now() - (Number(d.at) || 0) < 86400000) fresh = go;
     }
   } catch (e) { /* 读不到就算了 */ }
-  return null;
+  return fresh;
 }
 /** 夜间时段打开（冷启动，或在后台放了很久再回来）而且停在列表 → 直接进录音页 */
 function nightRedirect() {
@@ -390,17 +452,21 @@ const ctx = {
   retryData() { state.reload(); },
   get route() { return route(); },
   entries,
-  entry: (id) => (id && S().data.entries[id]) || null,
+  entry: (id) => { const e = id && S().data.entries[id]; return e && !isTombstone(e) ? e : null; },
+  tombstone: tombOf,
   mutate: (fn, opts) => state.mutate(fn, opts),
   put(e, opts) {
     const id = e.id || newId('e_');
+    if (tombOf(id)) return null;                 // 永久删除了：不能再写进去（state.js 的 diff 也会挡）
     state.mutate(s => { const prev = s.data.entries[id]; s.data.entries[id] = normalizeEntry(stamp({ ...e, id }, prev), id); }, opts);
     return S().data.entries[id];
   },
   update(id, patch, opts) {
-    const prev = S().data.entries[id];
+    const prev = ctx.entry(id);
     return prev ? ctx.put({ ...prev, ...patch, id }, opts) : null;
   },
+  goneShas: goneNow,
+  removedClips: () => removedClips(S()),
   newEntry: (fields) => makeEntry(fields),
   remove(id) {
     const prev = S().data.entries[id];
@@ -419,6 +485,13 @@ const ctx = {
   setSetting: (key, value) => state.mutate(s => setSetting(s, key, value)),
   mergeIn: (other) => state.mergeIn(other),
   setLocal: (patch) => state.setLocal(patch),
+  async purge(list) { await freshFirst(); return purger.purgeEntries(list); },
+  async purgeClips(list) { await freshFirst(); return purger.purgeClips(list); },
+  async purgeAll(lists) { await freshFirst(); return purger.purgeAll(lists); },
+  purgeOrphans: (list) => purger.purgeOrphans(list),
+  restoreClip: (id, sha) => purger.restoreClip(id, sha),
+  localOrphans: () => purger.localOrphans(),
+  trashInfo: (key) => purger.trashInfo(key),
 
   navigate, back, replaceHash, home, refresh: () => refresh(), layout,
   setListMode(mode) {
@@ -437,6 +510,7 @@ const ctx = {
 
   audio,
   clipBlob: async (sha, mime) => {
+    if (goneNow().has(sha)) return null;         // 永久删除了：本机还没清掉（等云端确认）也不给
     const rec = await audio.getClip(sha).catch(() => null);
     if (rec && rec.blob) return rec.blob;
     return L().sync ? (await syncer.getAudio(sha, mime).catch(() => null)) || null : null;
@@ -459,6 +533,93 @@ const ctx = {
   get device() { return state.deviceName(); },
   isNight: () => isNight(new Date(), S().settings),
 };
+
+// ---------- 永久删除：本机清理、30 天到期、清理云端历史以后（数据和合并规则在 core/store.js，做法在 core/purge.js） ----------
+// 录音只在「确实没了」时删：开着同步要云端确认过（confirmedGone），没开同步要墓碑已经存进本机。什么时候清理：
+//   数据变了（本机、撤销、导入、别的标签页、同步合并）而「没了的录音」变了，或者有条目刚被永久删除 → sweepSoon；
+//   每一轮同步做完，云端确认的变了 → sweepSoon；这次打开后第一次确认过云端 → 整个清理一遍（full）；
+//   启动时（找回录音、床头模式收尾之后）没开同步 → 整个清理一遍。别的设备来的墓碑照样清理（第一阶段也是）。
+// 30 天到期（PURGE_ENABLED 打开以后）：启动时、每一轮同步以后（成没成功都算）、开着的时候每小时，本机数据有问题时不做。
+const purger = createPurger({
+  getState: S, mutate: (fn, opts) => state.mutate(fn, opts), audio, night: nightStore, journal,
+  saveOk: state.saveOk, syncOn: () => !!L().sync, storageOk: () => !state.storageIssue(),
+  confirmedGone: () => syncer.confirmedGone(),
+  storage: () => globalThis.localStorage, forgetPlayer: forgetClip, scrubText: (ids) => state.scrubText(ids),
+  cloudHistory: ctx.history.cloud, getLocal: L, setLocal: state.setLocal, gone: goneNow,
+});
+let goneSeen = shaSig(goneNow()), confirmedSeen = null, cloudResetSeen = S().settings.cloudResetAt || null;
+let firstRound = true, firstConfirmed = true, squashing = false;
+const noteTrashSoon = debounce(() => purger.noteTrash(), 1000);
+const SQUASH_GRACE = 2 * 60e3;       // 别的标签页正在清理：记号刚写下的先不补（强制更新、核对要几个来回）
+
+/** 开着同步时永久删除前先同步一次（最多等 10 秒）：别的设备刚改过、恢复了的按新的那版判断，变了就不删 */
+async function freshFirst() {
+  if (purger.enabled && L().sync && !state.storageIssue()) await Promise.race([syncApi.now(), sleep(10000)]).catch(() => {});
+}
+/** 数据变了：「没了的录音」变了或者有条目刚被永久删除 → 清理本机；清理过云端历史（cloudResetAt 变了）→ 云端历史的缓存重来；记下「最近删除」第一次看到的时刻 */
+function purgeWatch(info) {
+  const sig = shaSig(goneNow());
+  if ((info.purged && info.purged.length) || sig !== goneSeen) { goneSeen = sig; purger.sweepSoon(); }
+  const cr = S().settings.cloudResetAt || null;
+  if (cr !== cloudResetSeen) { cloudResetSeen = cr; try { ctx.history.cloud.reset(); } catch (e) { console.warn('cloud history', e); } }
+  if (purger.enabled) noteTrashSoon();
+}
+/** 每一轮同步做完：补写清理云端历史的记号；第一次确认过云端 → 整个清理一遍，云端确认的变了 → 清理；
+ *  成功的话：这次打开后第一次 → 写 trashSince（这时才知道云端有没有别的设备写过；开关关着不写）、报到；到期的自动永久删除（同步成没成功都做） */
+function afterRound(r) {
+  try {
+    if (state.storageIssue()) return;
+    replaySquash();
+    const C = syncer.confirmedGone();
+    if (C && firstConfirmed) { firstConfirmed = false; confirmedSeen = shaSig(C); purger.sweep({ full: true }); }
+    else if (C && shaSig(C) !== confirmedSeen) { confirmedSeen = shaSig(C); purger.sweepSoon(); }
+    if (r && r.ok && !r.skipped) {
+      if (firstRound) { firstRound = false; purger.ensureTrashSince(); }
+      registerDevice();
+    }
+    purger.autoPurge();
+  } catch (e) { console.warn('purge', e); }
+}
+/** 启动（和修好数据以后）：等找回录音、床头模式收尾做完再动 babble-audio / babble-night。没开同步 → 写 trashSince、整个清理一遍；
+ *  开着同步 → 等第一次确认过云端的那一轮（afterRound）。到期的照样删 */
+function bootPurge() {
+  Promise.all([ctx.recovered, ctx.nightRecovered].map(p => Promise.resolve(p).catch(() => {}))).then(() => {
+    if (state.storageIssue()) return;
+    replaySquash();
+    if (!L().sync) { purger.ensureTrashSince(); purger.sweep({ full: true }); }
+    purger.autoPurge();
+    policyNote();
+  }).catch(e => console.warn('purge', e));
+}
+/** 开放永久删除以后第一次打开：「最近删除」里有东西就说一声 30 天的规矩（只说一次；已经在里面的从今天算） */
+function policyNote() {
+  if (!purger.enabled || L().purgeNoticeAt) return;
+  state.setLocal({ purgeNoticeAt: Date.now() });
+  const E = S().data.entries, shown = [...trashKeys(S()).values()].some(v => !(v.kind === 'entry' && E[v.id] && E[v.id].discarded));   // 录音页丢掉的那种不显示
+  if (shown) toast(t('deleted.policyNote'), { ms: 10000 });
+}
+/** 清理云端历史成功（或强制更新以后核对没通过：可能已经换了）：写同步的 cloudResetAt，别的设备看到就把录音和仓库对一遍；
+ *  这台设备的云端历史缓存由 purgeWatch 看到 cloudResetAt 变了重来 */
+function markCloudReset() {
+  try { ctx.setSetting('cloudResetAt', Date.now()); } catch (e) { console.warn('cloudResetAt', e); return; }   // 存不了（数据有问题）：记号留着，下次再补
+  state.setLocal({ squashMark: null });
+}
+/** 上次清理到一半（强制更新前记下了 squashMark）就被关掉：补写 cloudResetAt（启动时、每一轮同步以后；这一页正在清理时不补） */
+function replaySquash() {
+  const m = L().squashMark;
+  if (m && !squashing && !state.storageIssue() && !(Date.now() - (Number(m.at) || 0) < SQUASH_GRACE)) markCloudReset();
+}
+
+// ---------- 报到：这台设备已经是这一版（两步上线：「设置 → 同步」列出更新了的设备和还没报到的） ----------
+// 记在同步的数据里（data.devices，按这台设备的 id；旧版本 App 会原样保留不认识的集合），每轮同步成功后：名字、谁在用、版本变了，
+// 或者上次报到超过 3 天才写（每次写都要再推一次）。设备 id 存在 babble.local.deviceId（设备名可以改、两台可以同名，id 不变）
+function registerDevice() {
+  if (state.storageIssue() || !L().sync) return;
+  if (!L().deviceId) state.setLocal({ deviceId: newId('d_') });
+  const id = L().deviceId, D = S().data.devices, prev = D && typeof D === 'object' ? D[id] : null;
+  const rec = deviceSeen(prev, { id, name: state.deviceName(), who: L().who, build: ctx.build });
+  if (rec) state.mutate(s => { if (!s.data.devices || typeof s.data.devices !== 'object') s.data.devices = {}; s.data.devices[id] = rec; });
+}
 
 // ---------- 外壳 ----------
 function syncBadge() {
@@ -617,6 +778,7 @@ function recoveryScreen() {
 function resumeAfterRecovery() {
   ctx.recovered = recover();
   ctx.nightRecovered = bootNight();
+  bootPurge();
   render();
 }
 function render() {
@@ -660,14 +822,16 @@ function askWhoSoon() {
 // 数据变化 → 提示撤销 / 存储满 → 安排同步 → 页面更新
 let rerenderQueued = false;
 state.subscribe((st, info) => {
-  cache = null;
+  cache = null; goneCache = null;
   const wasBlocked = !!recoveryRoot;
   if (recoveryScreen()) return;
   if (wasBlocked) resumeAfterRecovery();        // 本页或别的标签页修好数据后，都重新挂载页面并找回待处理录音
-  if (info.source === 'local' && info.ids && info.ids.length) askWhoSoon();
+  if (info.source === 'local' && info.ids && info.ids.some(id => S().data.entries[id])) askWhoSoon();   // 改的是梦话才问（设备报到不算）
   if (info.saved === false) toast(t('common.storageFull'), { ms: 10000 });
   else if (info.undoLabel) toast(info.undoLabel, { ms: 10000, action: { label: t('common.undo'), run: () => ctx.undo() } });
+  else if (info.unpurged && info.unpurged.length) toast(t('deleted.unpurged', { n: info.unpurged.length }), { ms: 10000 });   // 永久删除的时候别的设备上正好改过 / 恢复了：又回来了（哪台设备删的都这么说）
   if (info.source === 'local' || info.source === 'undo' || info.source === 'merge' || (info.source === 'storage' && info.changed)) syncSoon();
+  purgeWatch(info);
   emit('change', info);
   applyTheme();                                // 夜间设置可能变了；主题只换颜色，不用重画
   if (rerenderQueued) return;
@@ -717,9 +881,12 @@ async function recover() {
   let clips = [];
   try { clips = (await recoverPending({ audioStore: audio, before: BOOT })) || []; }
   catch (e) { toast(t('common.recoverFail', { msg: (e && e.message) || String(e) }), { ms: 8000 }); return []; }
-  const valid = clips.filter(c => c && c.sha256);
+  // 永久删除了的录音不再拼回来、不再建一条：恢复记录直接清掉。有过永久删除记号、又不在哪条的 audio 里的也一样（剩下的分片不算新录音）
+  const known = clipIndex(S(), { includeDeleted: true }), gone = goneNow(), stubs = stubShas(S());
+  const all = clips.filter(c => c && c.sha256), dead = all.filter(c => gone.has(c.sha256) || (stubs.has(c.sha256) && !known.has(c.sha256)));
+  const valid = all.filter(c => !dead.includes(c));
+  clearRecs(dead);
   const drafts = { rec: snap.rec && snap.rec.d, fresh: snap.fresh && snap.fresh.d && snap.fresh.d.rec ? snap.fresh.d : null };
-  const known = clipIndex(S(), { includeDeleted: true });
   if (!drafts.rec && !drafts.fresh && valid.every(c => known.has(c.sha256))) { clearRecs(valid); if (snap.rec) settleDraft(snap.rec, null); return []; }   // 已经在某条里的不再建
   let saved = true, res = null;
   const off = state.subscribe((st, info) => { if (info.saved === false) saved = false; });
@@ -728,10 +895,14 @@ async function recover() {
   off();
   if (!saved || !res) return res ? res.ids : [];          // 存不下已经提示过「空间满」：录音、草稿都留着，下次再来
   clearRecs(valid);
-  if (res.dropRec) settleDraft(snap.rec, null);
+  // 旧原话改过的那段字：先放进那条的编辑页草稿（存不下就留着录音页那份，下次再来），再删录音页那份
+  const stashed = !res.stash || stashPurgedText(localStorage, res.stash.id, res.stash.text);
+  if (res.dropRec && stashed) settleDraft(snap.rec, null);
   if (res.dropFresh) settleDraft(snap.fresh, null); else if (res.fresh) settleDraft(snap.fresh, res.fresh);
-  if (res.clips) toast(t('common.recovered', { n: res.clips }), { ms: 8000 });
-  else if (res.texts) toast(t('rec.recoveredText'), { ms: 8000 });
+  // 录音页要写进的那条已经永久删除了：只有新写的字（和录音）存成了新的一条，说一声
+  const msg = [res.clips ? t('common.recovered', { n: res.clips }) : res.texts ? t('rec.recoveredText') : null,
+    res.purgedText ? t(res.stash ? 'rec.targetPurgedKept' : 'rec.targetPurged') : null].filter(Boolean).join('\n');
+  if (msg) toast(msg, { ms: res.purgedText ? 10000 : 8000, action: res.stash && stashed ? { label: t('rec.openEdit'), run: () => navigate('/edit/' + encodeURIComponent(res.stash.id)) } : null });
   return res.ids;
 }
 
@@ -794,6 +965,7 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('online', () => autoSync());
 window.addEventListener('storage', e => { if (e.key === state.KEY || e.key === state.LKEY || e.key?.startsWith(state.PENDING_PREFIX)) state.reload(); });   // 别的标签页改了数据
 setInterval(() => { if (document.visibilityState === 'visible') { syncIfStale(); applyTheme(); } }, 60000);
+setInterval(() => { if (document.visibilityState === 'visible' && !state.storageIssue()) purger.autoPurge(); }, 3600000);   // 开着过夜：到期的照样删
 prefersDark.addEventListener('change', () => applyTheme());
 for (const mq of [mqSide, mqTwo]) mq.addEventListener('change', () => { render(); emit('layout', layout()); });
 
@@ -808,6 +980,7 @@ currentHash = location.hash || '#/';
 track(currentHash);
 ctx.recovered = state.storageIssue() ? Promise.resolve([]) : recover();
 ctx.nightRecovered = state.storageIssue() ? Promise.resolve() : bootNight();      // 数据有问题时不碰 babble-night（修好以后 resumeAfterRecovery 再做）
+if (!state.storageIssue()) bootPurge();
 render();
 autoSync();
 window.__babble = { state, ctx, mounted, get S() { return S(); } };   // 方便在浏览器控制台里查看

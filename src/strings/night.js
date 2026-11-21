@@ -1,7 +1,7 @@
 // 文案（床头模式、昨夜）：bed.* 床头那一页和录音页的入口、night.* 昨夜的记录和整理、night.why.* 没在听的原因、night.rep.* 复制出去的摘要。
 // 繁體（台灣）用台灣用語（螢幕、麥克風、裝置、儲存、設定、刪除、還原…）；{nn} 是设置里 TA 的称呼，用户写的字不转换。
 // {time} {from} {to} 是 fmtTime（凌晨2:13 / 2:13 AM），{date} 是不带年份的 fmtDate，{dur} 是 nightReport 的 fmtSpan（night.hm / m / s）。
-// 英文单复数：en(一个, 多个)，变量都会替换（没给的换成空）。
+// 英文单复数：en(一个, 多个)，变量都会替换（没给的换成空）。night.syncNotePurge 是开放永久删除（core/purge.js 的 PURGE_ENABLED）以后的说法。
 const en = (one, many) => (v) => (Number(v.n) === 1 ? one : many).replace(/\{(\w+)\}/g, (m, k) => (v[k] != null ? String(v[k]) : ''));
 
 export const STRINGS = {
@@ -68,13 +68,16 @@ export const STRINGS = {
     'night.episode': '{time} 前后 · {n} 段', 'night.pickGroup': '选这一组', 'night.pick': '选这段',
     'night.noiseTag': '一直有声音', 'night.crashTag': '没录完（App 被关掉了）',
     'night.del': '删掉这段', 'night.deleted': '删掉了 {time} 那段', 'night.keptTag': '已留下', 'night.keptDel': '留下过，那条已删除', 'night.open': '去看看',
+    'night.keptPurged': '留下过，那条已永久删除',
     'night.keepN': '留下选中的 {n} 段', 'night.keepOne': '放进「待整理」', 'night.keepMany': '合成一条，放进「待整理」',
     'night.kept': '留下了 {n} 段，放进了「待整理」', 'night.keepFail': '没能留下：{msg}', 'night.gone': '这段的声音已经清掉了', 'night.notSaved': '这段的声音没存进这台设备',
     'night.goneAt': '{time} 那段的声音已经清掉了，留不了',
+    'night.purgedClip': '这段的录音已经永久删除了', 'night.purgedAt': '{time} 那段的录音已经永久删除了，留不了',
     'night.rest': '其余都删', 'night.noTalk': '{label}没有梦话', 'night.restDone': '删掉了 {n} 段',
     'night.done': '这一晚整理完了。', 'night.toList': '回到呓语',
     'night.deletedRow': '已删掉 {n} 段（24 小时后清掉）', 'night.restore': '恢复',
     'night.syncNote': '留下的录音会放进「待整理」，10 秒后（过了还能撤销的时候）同步到你的私有仓库。录音一旦同步过，就一直留在仓库的提交历史里，以后删掉这条也清不掉。',
+    'night.syncNotePurge': '留下的录音会放进「待整理」，10 秒后（过了还能撤销的时候）同步到你的私有仓库。以后永久删除这条，仓库里的文件也会删掉；提交历史里的要用「设置 → 同步 → 清理云端历史」清掉。',
     'night.syncOk': '知道了，留下', 'night.syncNo': '先不留',
     'night.syncHeld': '刚留下的录音 10 秒后才同步，这期间点「撤销」不会传上去。', 'night.retain': '没留下的片段 7 天后自动删掉，只在这台设备上。',
     'night.others': '前几晚还有没整理的：', 'night.otherItem': '{label}（{n} 段）', 'night.older': '前几晚',
@@ -161,13 +164,16 @@ export const STRINGS = {
     'night.episode': '{time} 前後 · {n} 段', 'night.pickGroup': '選這一組', 'night.pick': '選這段',
     'night.noiseTag': '一直有聲音', 'night.crashTag': '沒錄完（App 被關掉了）',
     'night.del': '刪除這段', 'night.deleted': '刪除了 {time} 那段', 'night.keptTag': '已留下', 'night.keptDel': '留下過，那則已刪除', 'night.open': '去看看',
+    'night.keptPurged': '留下過，那則已永久刪除',
     'night.keepN': '留下選取的 {n} 段', 'night.keepOne': '放進「待整理」', 'night.keepMany': '合成一則，放進「待整理」',
     'night.kept': '留下了 {n} 段，放進了「待整理」', 'night.keepFail': '沒能留下：{msg}', 'night.gone': '這段的聲音已經清除了', 'night.notSaved': '這段的聲音沒存進這臺裝置',
     'night.goneAt': '{time} 那段的聲音已經清除了，留不了',
+    'night.purgedClip': '這段的錄音已經永久刪除了', 'night.purgedAt': '{time} 那段的錄音已經永久刪除了，留不了',
     'night.rest': '其餘都刪除', 'night.noTalk': '{label}沒有夢話', 'night.restDone': '刪除了 {n} 段',
     'night.done': '這一晚整理完了。', 'night.toList': '回到囈語',
     'night.deletedRow': '已刪除 {n} 段（24 小時後清除）', 'night.restore': '還原',
     'night.syncNote': '留下的錄音會放進「待整理」，10 秒後（過了還能復原的時候）同步到你的私人儲存庫。錄音一旦同步過，就會一直留在儲存庫的提交歷史裡，以後刪除這則也清不掉。',
+    'night.syncNotePurge': '留下的錄音會放進「待整理」，10 秒後（過了還能復原的時候）同步到你的私人儲存庫。以後永久刪除這則，儲存庫裡的檔案也會刪除；提交歷史裡的要用「設定 → 同步 → 清理雲端歷史」清掉。',
     'night.syncOk': '知道了，留下', 'night.syncNo': '先不留',
     'night.syncHeld': '剛留下的錄音 10 秒後才同步，這段期間點「復原」不會傳上去。', 'night.retain': '沒留下的片段 7 天後自動刪除，只在這臺裝置上。',
     'night.others': '前幾晚還有沒整理的：', 'night.otherItem': '{label}（{n} 段）', 'night.older': '前幾晚',
@@ -256,13 +262,16 @@ export const STRINGS = {
     'night.episode': en('Around {time} · {n} clip', 'Around {time} · {n} clips'), 'night.pickGroup': 'Select this group', 'night.pick': 'Select this clip',
     'night.noiseTag': 'Constant sound', 'night.crashTag': 'Cut short (the app was closed)',
     'night.del': 'Delete this clip', 'night.deleted': 'Deleted the {time} clip', 'night.keptTag': 'Kept', 'night.keptDel': 'Kept, entry since deleted', 'night.open': 'Take a look',
+    'night.keptPurged': 'Kept, then permanently deleted',
     'night.keepN': en('Keep {n} selected clip', 'Keep {n} selected clips'), 'night.keepOne': 'Goes to To tidy', 'night.keepMany': 'Joined into one entry in To tidy',
     'night.kept': en('Kept {n} clip; it is in To tidy', 'Kept {n} clips as one entry in To tidy'), 'night.keepFail': "Couldn't keep it: {msg}", 'night.gone': "This clip's audio has already been cleared", 'night.notSaved': "This clip's audio wasn't saved on this device",
     'night.goneAt': "The {time} clip's audio has already been cleared, so it can't be kept",
+    'night.purgedClip': "This clip's recording was permanently deleted", 'night.purgedAt': "The {time} clip's recording was permanently deleted, so it can't be kept",
     'night.rest': 'Delete the rest', 'night.noTalk': '{label}: no sleep talk', 'night.restDone': en('Deleted {n} clip', 'Deleted {n} clips'),
     'night.done': 'This night is all sorted.', 'night.toList': 'Back to Murmurs',
     'night.deletedRow': en('{n} deleted clip (cleared after 24 hours)', '{n} deleted clips (cleared after 24 hours)'), 'night.restore': 'Restore',
     'night.syncNote': "Kept recordings go to To tidy and sync to your private repository 10 seconds later, once Undo is no longer offered. Once a recording has synced, it stays in the repository's commit history, even if you delete the entry later.",
+    'night.syncNotePurge': 'Kept recordings go to To tidy and sync to your private repository 10 seconds later, once Undo is no longer offered. If you later delete the entry permanently, the file is removed from the repository too; to clear it from the commit history, use Settings → Sync → Clean up cloud history.',
     'night.syncOk': 'Got it, keep', 'night.syncNo': 'Not now',
     'night.syncHeld': "Just-kept recordings sync after 10 seconds; tap Undo before then and they're never uploaded.", 'night.retain': "Clips you don't keep stay only on this device and are deleted after 7 days.",
     'night.others': 'Earlier nights still to sort:', 'night.otherItem': en('{label} ({n} clip)', '{label} ({n} clips)'), 'night.older': 'Earlier nights',

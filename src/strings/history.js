@@ -20,6 +20,7 @@ export const STRINGS = {
     'hist.cloudChecked': '已经看了云端 {n} 个版本。', 'hist.cloudStart': '已经找到最早的版本了。', 'hist.cloudNothing': '云端没有更多不同的版本。',
     'hist.preview': '{time} 的版本', 'hist.restore': '恢复这个版本', 'hist.restoring': '正在找录音…', 'hist.isCurrent': '这就是现在的版本。',
     'hist.restored': '已恢复到 {time} 的版本', 'hist.clipMissing': '有 {n} 段录音在这台设备和云端都找不到，没有恢复。',
+    'hist.clipsBack': '放回了 {n} 段录音（现在的录音都留着）。', 'hist.clipPurged': '{n} 段录音已经永久删除，没有恢复。',
     'hist.versionDeleted': '这一版是删除后的样子（恢复它会把这条梦话放回列表）。', 'hist.loading': '读取修改记录…',
     'hist.loadFail': '读不到这台设备上的修改记录：{msg}', 'hist.noText': '（这一版还没有原话）', 'hist.clipLocalMissing': '这台设备上没有',
 
@@ -45,6 +46,7 @@ export const STRINGS = {
     'hist.cloudChecked': '已經看了雲端 {n} 個版本。', 'hist.cloudStart': '已經找到最早的版本了。', 'hist.cloudNothing': '雲端沒有更多不同的版本。',
     'hist.preview': '{time} 的版本', 'hist.restore': '還原這個版本', 'hist.restoring': '正在找錄音…', 'hist.isCurrent': '這就是現在的版本。',
     'hist.restored': '已還原到 {time} 的版本', 'hist.clipMissing': '有 {n} 段錄音在這臺裝置和雲端都找不到，沒有還原。',
+    'hist.clipsBack': '放回了 {n} 段錄音（現在的錄音都留著）。', 'hist.clipPurged': '{n} 段錄音已經永久刪除，沒有還原。',
     'hist.versionDeleted': '這一版是刪除後的樣子（還原它會把這則夢話放回列表）。', 'hist.loading': '讀取修改紀錄…',
     'hist.loadFail': '讀不到這臺裝置上的修改紀錄：{msg}', 'hist.noText': '（這一版還沒有原話）', 'hist.clipLocalMissing': '這臺裝置上沒有',
 
@@ -71,6 +73,8 @@ export const STRINGS = {
     'hist.cloudChecked': en('Checked 1 cloud version.', 'Checked {n} cloud versions.'), 'hist.cloudStart': 'Reached the oldest version.', 'hist.cloudNothing': 'No more different versions in the cloud.',
     'hist.preview': 'Version from {time}', 'hist.restore': 'Restore this version', 'hist.restoring': 'Finding recordings…', 'hist.isCurrent': 'This is the current version.',
     'hist.restored': 'Restored the version from {time}', 'hist.clipMissing': en("1 recording couldn't be found on this device or in the cloud, so it wasn't restored.", "{n} recordings couldn't be found on this device or in the cloud, so they weren't restored."),
+    'hist.clipsBack': en('Put back 1 recording (the current ones stay).', 'Put back {n} recordings (the current ones stay).'),
+    'hist.clipPurged': en("1 recording was permanently deleted and wasn't restored.", "{n} recordings were permanently deleted and weren't restored."),
     'hist.versionDeleted': 'This version is the deleted state (restoring it puts the entry back in the list).', 'hist.loading': 'Loading history…',
     'hist.loadFail': "Couldn't read this device's history: {msg}", 'hist.noText': '(no words in this version yet)', 'hist.clipLocalMissing': 'not on this device',
 

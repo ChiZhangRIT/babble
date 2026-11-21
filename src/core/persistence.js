@@ -1,8 +1,10 @@
 // 本机数据：每次改动先写一条独立日志，才算保存成功。各标签页不覆盖彼此的日志。
 // babble.state 是兼容旧版的快照；只有持有 Web Lock 的整理任务能更新它，写成功后才删已合并的日志。
 // 整理前被关掉、快照写不下或浏览器没有 Web Locks 都不丢数据：下次读取仍会合并日志。
-import { canon, mergeStates, normalizeState } from './store.js';
-import { isObj } from './util.js';
+// 永久删除以后 scrub 把磁盘上还留着的旧原话（快照、日志、修复存档）换成墓碑：只换墓碑盖得过的，读不懂的原件一个字不改（报出来让用户自己删）。
+// scrub 也拿着整理用的那把锁改快照和日志；没有 Web Locks 时没人整理，它直接改（换进去的墓碑比原来的新，读出来合并的结果不变）。
+import { canon, mergeStates, normalizeState, normalizeEntry } from './store.js';
+import { isObj, own } from './util.js';
 
 export const STATE_KEY = 'babble.state';
 export const PENDING_PREFIX = 'babble.pending.';
@@ -88,6 +90,61 @@ function changes(before, after) {
   return Object.keys(patch.data).length || Object.keys(patch.settings).length ? patch : null;
 }
 
+/**
+ * 把 ids 这几条墓碑盖得过的旧记录换成墓碑（scrub 用；调用的人管锁）。
+ *   盖得过 = 不是墓碑、updatedAt ≤ purgedFrom（让这次永久删除作废的、更新的那份不动）；本身是墓碑但带着字的（旧版 app 写进去的）只去掉字。
+ *   babble.state、此刻读到的每份 babble.pending.*、每份 babble.recovery.*（整理出的 state，和 records 里能读懂的原件：快照或日志的样子）。
+ * @returns {{ changed: number, left: string[] }}  left：改不干净的修复存档（读不懂的原件里还提到这一条，或者写不回去）
+ */
+function scrubKeys(storage, ids, state) {
+  const out = { changed: 0, left: [] };
+  const T = new Map();
+  for (const id of ids) { const t = own(own(own(state, 'data'), 'entries'), id); if (isObj(t) && t.purged) T.set(id, t); }
+  if (!storage || !T.size) return out;
+  /** 一份 entries 里换掉盖得过的 → 换了几条 */
+  const fix = (entries) => {
+    let n = 0;
+    if (!isObj(entries)) return 0;
+    for (const [id, t] of T) {
+      const rec = own(entries, id);
+      if (!isObj(rec)) continue;
+      let next = null;
+      if (rec.purged) { const clean = normalizeEntry(rec, id); if (canon(clean) !== canon(rec)) next = clean; }
+      else if ((Number(rec.updatedAt) || 0) <= t.purgedFrom) next = t;
+      if (next) { entries[id] = next; n++; }
+    }
+    return n;
+  };
+  const dataOf = v => (isObj(v) && isObj(v.patch) ? v.patch.data : isObj(v) ? v.data : null);   // 日志 { patch: { data } }、快照 { data }
+  const mentions = raw => [...T.keys()].some(id => raw.includes(id));          // 只用在读不懂的原件上（存档里的原件是转义过的字符串：只找 id 本身）
+  const parse = raw => { try { const v = JSON.parse(raw); return isObj(v) ? v : null; } catch (e) { return null; } };
+  const keys = [];
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i);
+    if (key && (key === STATE_KEY || key.startsWith(PENDING_PREFIX) || key.startsWith(ARCHIVE_PREFIX))) keys.push(key);
+  }
+  for (const key of keys) {
+    const raw = storage.getItem(key);
+    if (raw === null) continue;
+    const archive = key.startsWith(ARCHIVE_PREFIX), v = parse(raw);
+    let n = 0, stuck = false;
+    if (!v) { if (archive && mentions(raw)) out.left.push(key); continue; }   // 读不懂（坏了的快照、日志由修复页面处理）：不改
+    if (!archive) n = fix(own(dataOf(v), 'entries'));
+    else {
+      n = fix(own(own(v.state, 'data'), 'entries'));
+      for (const r of Array.isArray(v.records) ? v.records : []) {
+        if (!isObj(r) || typeof r.raw !== 'string') continue;
+        const w = parse(r.raw), m = w ? fix(own(dataOf(w), 'entries')) : 0;
+        if (m) { r.raw = JSON.stringify(w); n += m; }
+        else if (!w && mentions(r.raw)) stuck = true;                         // 读不懂的原件一个字不改
+      }
+    }
+    if (n) { try { storage.setItem(key, JSON.stringify(v)); out.changed += n; } catch (e) { stuck = true; } }
+    if (archive && stuck) out.left.push(key);
+  }
+  return out;
+}
+
 export function createPersistence(storage, { locks = globalThis.navigator?.locks } = {}) {
   const writer = globalThis.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2);
   let seq = 0, job = null, again = false;
@@ -149,5 +206,15 @@ export function createPersistence(storage, { locks = globalThis.navigator?.locks
       });
     },
     async idle() { while (job) await job; },
+    /**
+     * 永久删除以后：磁盘上的旧原话换成墓碑（规则见 scrubKeys）。state 可以是函数（拿到锁的时候再取最新的）。
+     * 有 Web Locks 就拿着整理用的那把锁做（不和整理、修复抢）；没有的话没人整理、快照只在锁里写、日志写好就不再变，直接改。
+     * @returns {Promise<{ changed: number, left: string[] }>}
+     */
+    async scrub(ids, state) {
+      const run = () => scrubKeys(storage, Array.isArray(ids) ? ids : [], typeof state === 'function' ? state() : state);
+      if (!storage) return { changed: 0, left: [] };
+      return locks?.request ? locks.request(STATE_LOCK, run) : run();
+    },
   };
 }
