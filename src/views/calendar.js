@@ -5,7 +5,7 @@
 // 宽屏双栏时在左栏（params.pane === 'list'），点卡片右栏显示条目；看着条目时（地址是 #/e/<id>）日历停在那条的那一天。
 // 翻月、选日子只换地址（ctx.replaceHash，不加历史记录、不整页重画）；自己管更新（返回 onChange）。
 // 页头下面和列表一样放「昨夜」卡片（views/night.js 的 nightBanner；每次打开建一个，重画页头时放回同一个）。
-// 那天的卡片和列表一样能左右滑（往左删除、往右收藏，ui/swipe.js）。
+// 那天的卡片和列表一样能左右滑（往左露出「删除」、往右露出「收藏」，点了按钮才做；ui/swipe.js）。
 import { h, icon } from '../ui/dom.js';
 import { createSwipes } from '../ui/swipe.js';
 import { fmtDate, fmtMonth, fmtYear, monthKey, today, isISODate } from '../core/dates.js';

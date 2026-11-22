@@ -3,7 +3,7 @@
 // 自己管更新（返回 onChange）：数据变了只重画标题和卡片，搜索框原样留着，不丢输入和光标。
 // 卡片（entryCard）和页头（listHead）日历页（views/calendar.js）也用。
 // 卡片上是整段原话（条目没有标题）：超过 16 行的先显示前 12 行，「展开全部」就地展开，这次打开 App 期间记住。
-// 卡片能左右滑（ui/swipe.js）：往左滑露出「删除」（同详情页的删除：进「最近删除」，10 秒内能撤销），往右滑露出「收藏 / 取消收藏」。
+// 卡片能左右滑（ui/swipe.js）：往左滑露出「删除」（同详情页的删除：进「最近删除」，10 秒内能撤销），往右滑露出「收藏 / 取消收藏」；滑开只是露出按钮，点了按钮才做。
 import { h, icon } from '../ui/dom.js';
 import { createSwipes } from '../ui/swipe.js';
 import { audioPlayer } from '../ui/player.js';
@@ -126,7 +126,7 @@ export function cardExtra(e, q, items) {
  * 一张条目卡片：日期、录音时长、待整理，下面是整段原话（和详情页一样：引号里说的话楷体，动作 / 旁白普通字体、淡一点）；
  * 长的先折起来（「展开全部（还有 N 行）」，就地展开，不跳页）。整张卡片点了进详情，⭐、▶、展开按钮除外。
  * opts: { q 搜索词（高亮；命中在折起来的那部分时直接展开）, selected 双栏时右栏正在看这条, players 数组（卡片里的播放器放进去，重画前要 destroy）,
- *         swipes 这一页的可滑卡片（ui/swipe.js 的 createSwipes；给了就返回包着卡片的 div.swipe：往左滑删除、往右滑收藏） }
+ *         swipes 这一页的可滑卡片（ui/swipe.js 的 createSwipes；给了就返回包着卡片的 div.swipe：往左滑露出「删除」、往右滑露出「收藏」，点了按钮才做） }
  */
 export function entryCard(e, ctx, { q = '', selected = false, players = [], swipes = null } = {}) {
   const { t } = ctx;
@@ -183,7 +183,7 @@ export function entryCard(e, ctx, { q = '', selected = false, players = [], swip
       }, icon('star')),
       player));
   if (!swipes) return card;
-  // 左右滑：收藏改成滑之前看到的那样（期间同步进来已经是了就不再改）；取消收藏弹「撤销」（滑比点 ⭐ 容易误碰，在「收藏」筛选里卡片还会直接不见）。
+  // 滑开以后点了按钮：收藏改成滑之前看到的那样（期间同步进来已经是了就不再改）；取消收藏弹「撤销」（在「收藏」筛选里卡片会直接不见，点错了能找回来）。
   // 删除同详情页：进「最近删除」、10 秒内能撤销；双栏时右栏还看着这条 → 右栏回到提示（动画期间已经点去别处了就不跳）。
   // 双栏时右栏正在改这条：不给「删除」（编辑页会留着没保存的修改、说成「已在别的设备上删除」，一保存又恢复了）
   const route = ctx.route, editing = !!route && route.name === 'editor' && route.id === e.id;
