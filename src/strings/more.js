@@ -154,8 +154,9 @@ export const STRINGS = {
     'set.about1': '梦话和录音只存在你的设备和你自己的 GitHub 私有仓库里，没有别的服务器。',
     'set.about2': '你写的原话原样保存，不做简繁转换，标点和引号也不会被「修正」。',
     'set.about3': '没有统计、没有广告，不联网也能用（同步除外）。',
+    'set.version': '版本 {v}', 'set.updateReady': '新版本已经下载好了：关掉牙牙呓语再打开就是新版。',
     'set.firstTime': '还没设置过', 'set.tokenExp': '令牌 {date} 到期。', 'set.tokenSoon': '还有 {n} 天：到期前在 GitHub 新建一个令牌，点「换令牌」换上。',
-    'set.tokenExpired': '已经到期了：在 GitHub 新建一个令牌，点「换令牌」换上。',
+    'set.tokenExpired': '已经到期了：在 GitHub 新建一个令牌，点「换令牌」换上。', 'set.tokenToday': '今天到期：在 GitHub 新建一个令牌，点「换令牌」换上。',
     'set.tokenExpLabel': '令牌到期日（可选）', 'set.tokenExpHelp': '新建令牌时 GitHub 页面上写着。填了以后，到期前两周会在这里提醒你换令牌（App 自己读不到这个日期）。',
     'set.renew': '换令牌', 'set.renewHelp': '令牌快到期或者被撤销了：在 GitHub 新建一个（权限和原来一样），粘贴到这里，不用停止同步。同步码会跟着变：别的设备也点「换令牌」，粘贴这台复制的新同步码就行。',
 
@@ -330,8 +331,9 @@ export const STRINGS = {
     'set.about1': '夢話和錄音只存在你的裝置和你自己的 GitHub 私人儲存庫裡，沒有別的伺服器。',
     'set.about2': '你寫的原話原樣儲存，不做簡繁轉換，標點和引號也不會被「修正」。',
     'set.about3': '沒有統計、沒有廣告，不連網也能用（同步除外）。',
+    'set.version': '版本 {v}', 'set.updateReady': '新版本已經下載好了：關掉牙牙囈語再開啟就是新版。',
     'set.firstTime': '還沒設定過', 'set.tokenExp': '存取權杖 {date} 到期。', 'set.tokenSoon': '還有 {n} 天：到期前在 GitHub 新建一個存取權杖，點「更換權杖」換上。',
-    'set.tokenExpired': '已經到期了：在 GitHub 新建一個存取權杖，點「更換權杖」換上。',
+    'set.tokenExpired': '已經到期了：在 GitHub 新建一個存取權杖，點「更換權杖」換上。', 'set.tokenToday': '今天到期：在 GitHub 新建一個存取權杖，點「更換權杖」換上。',
     'set.tokenExpLabel': '存取權杖到期日（選填）', 'set.tokenExpHelp': '新建存取權杖時 GitHub 頁面上會寫。填了以後，到期前兩週會在這裡提醒你更換（App 自己讀不到這個日期）。',
     'set.renew': '更換權杖', 'set.renewHelp': '存取權杖快到期或被撤銷了：在 GitHub 新建一個（權限和原本一樣），貼到這裡，不用停止同步。同步碼會跟著改變：別的裝置也點「更換權杖」，貼上這台複製的新同步碼就好。',
 
@@ -514,8 +516,9 @@ export const STRINGS = {
     'set.about1': 'Entries and recordings live only on your devices and in your own private GitHub repository. There is no other server.',
     'set.about2': 'What you write is saved exactly as typed: no Simplified/Traditional conversion, and quotes and punctuation are never “fixed”.',
     'set.about3': 'No analytics, no ads, and it works offline (except sync).',
+    'set.version': 'Version {v}', 'set.updateReady': 'A new version has been downloaded. Close Babble and open it again to use it.',
     'set.firstTime': 'Not set up yet', 'set.tokenExp': 'Token expires {date}.', 'set.tokenSoon': en('{n} day left: create a new token on GitHub before then and tap Replace token.', '{n} days left: create a new token on GitHub before then and tap Replace token.'),
-    'set.tokenExpired': 'It has expired: create a new token on GitHub and tap Replace token.',
+    'set.tokenExpired': 'It has expired: create a new token on GitHub and tap Replace token.', 'set.tokenToday': 'It expires today: create a new token on GitHub and tap Replace token.',
     'set.tokenExpLabel': 'Token expiry date (optional)', 'set.tokenExpHelp': "GitHub shows it when you create the token. If you enter it, you'll be reminded here two weeks before it expires (the app can't read this date itself).",
     'set.renew': 'Replace token', 'set.renewHelp': 'Token about to expire or revoked? Create a new one on GitHub (same permissions) and paste it here — no need to stop syncing. The sync code changes too: on your other devices tap “Replace token” and paste the new sync code from this one.',
 

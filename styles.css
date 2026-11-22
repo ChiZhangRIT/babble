@@ -13,7 +13,7 @@
    通用组件：.navbar .back .nb-title .nb-actions | .page-head .toolbar .tb-btn .lt .lt-sub | .page .stack .row
              .btn(.primary .soft .ghost .danger .danger-fill .small .big .block) .icon-btn .link-btn .bottom-bar
              .card .group .group-row .group-h .group-foot | .f-label .f-help .search .toggle | .chip(.on) .pill(.rose .amber) .tag(.amber .neutral)
-             .seg | .empty .detail-empty | .sync-badge | dialog.sheet | #toast | .ic（图标，见 ui/dom.js 的 icon()） */
+             .seg | .empty .detail-empty | .sync-badge(.ok .wait .warn .err .off) | dialog.sheet | #toast | .ic（图标，见 ui/dom.js 的 icon()） */
 
 :root {
   --bg: #f8f3ee; --card: #fffdfb; --ink: #2b2523; --ink-2: #4d413c; --muted: #7a6c65; --faint: #ab9d95;
@@ -255,6 +255,8 @@ input.toggle:checked::before { transform: translateX(20px); }
 .sync-badge.err { color: var(--danger); }
 .sync-badge.err .dot { background: var(--danger); }
 .sync-badge.off .dot { border: 1.5px solid var(--faint); }
+.sync-badge.warn { color: var(--amber); }   /* 令牌快到期（真出了错还是红的） */
+.sync-badge.warn .dot { background: var(--amber); }
 .safe-mode { margin-top: calc(24px + env(safe-area-inset-top)); }
 .safe-mode .row { margin-top: 14px; }
 
@@ -1166,6 +1168,8 @@ textarea.im-paths { min-height: 92px; font: 13px/1.5 ui-monospace, SFMono-Regula
 .set-state.err { color: var(--danger); }
 .set-state.err .dot { background: var(--danger); }
 .set-state.off .dot { border: 1.5px solid var(--faint); }
+.set-state.warn { color: var(--amber); }
+.set-state.warn .dot { background: var(--amber); }
 .set-block { display: block; padding: 14px 16px; }
 .set-backup .f-help { margin-left: 0; }
 .set-backup .row { margin-top: 10px; }
@@ -1178,6 +1182,8 @@ textarea.im-paths { min-height: 92px; font: 13px/1.5 ui-monospace, SFMono-Regula
 .set-about-top { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .set-about-top img { border-radius: 11px; box-shadow: var(--shadow-card); }
 .set-about-top b.kai { font-size: 19px; font-weight: 400; letter-spacing: .12em; }
+.set-version { margin-top: 2px; font-variant-numeric: tabular-nums; }
+.set-update { margin: 12px 0 0; font-size: 14px; line-height: 1.6; color: var(--accent-text); }
 .set-syncpage { padding-top: 4px; }
 .set-lead { margin: 4px 4px 14px; font-size: 14px; line-height: 1.65; color: var(--ink-2); }
 .set-sync > * + * { margin-top: 6px; }

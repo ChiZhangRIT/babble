@@ -55,6 +55,37 @@ export function parseSyncCode(text) {
 /** 录音在仓库里的路径 */
 export const audioPath = (sha, mime) => `audio/${sha}.${extForMime(mime)}`;
 
+// ---------- 令牌到期（和 PickNest、房屋账本、虚拟书架一样：按日历日算，不到 14 天或者已经过期就提醒） ----------
+// 到期时刻 tokenExp（毫秒）：自己填的日期存成那天本地 23:59；GitHub 响应头里读到的是具体时刻
+export const TOKEN_WARN_DAYS = 14;
+const dayStart = (ms) => { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
+/**
+ * 令牌还有几天到期：按本地日历日算（今天到期 0、明天 1、昨天 -1）；没有到期时间 → null。
+ * 不用毫秒差除以 24 小时：夏令时那天只有 23 / 25 小时，早上看和晚上看会差一天
+ */
+export function tokenDaysLeft(exp, now = Date.now()) {
+  const ms = Number(exp);
+  return ms > 0 ? Math.round((dayStart(ms) - dayStart(now)) / 864e5) : null;
+}
+/** 已经过了到期那一刻（自己填的日期当天 23:59 以前还能用） */
+export const tokenExpired = (exp, now = Date.now()) => Number(exp) > 0 && Number(exp) <= now;
+/** 该提醒换令牌了吗（不到 14 天到期，或者已经过期） */
+export const tokenWarn = (exp, now = Date.now()) => { const d = tokenDaysLeft(exp, now); return d != null && d < TOKEN_WARN_DAYS; };
+/**
+ * 同步状态的样子（侧栏的小标签、设置里「同步」那一行、同步页共用）：
+ * 没开 off → 出错 err → 同步中 running → 离线 offline → 令牌快到期 token → 有改动没传 pending → 已同步 ok。
+ * 出错排在最前（真出了错要先看到错）；令牌快到期排在「待同步」前面：两周里天天有改动，排在后面就几乎看不到提醒
+ * @param st { on, err, running, offline, dirty, tokenExpires }（ctx.sync.status() 的样子）
+ */
+export function syncPhase(st, now = Date.now()) {
+  if (!st || !st.on) return 'off';
+  if (st.err) return 'err';
+  if (st.running) return 'running';
+  if (st.offline) return 'offline';
+  if (tokenWarn(st.tokenExpires, now)) return 'token';
+  return st.dirty ? 'pending' : 'ok';
+}
+
 export function bytesToB64(bytes) {
   let bin = '';
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));

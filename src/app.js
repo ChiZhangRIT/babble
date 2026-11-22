@@ -68,8 +68,9 @@
 // 界面
 //   ctx.t(key, vars)、ctx.lang()、ctx.setLang(l)、ctx.setTheme('auto'|'light'|'dark')、ctx.theme()（当前生效的 'light'|'dark'）
 //   ctx.toast(msg, { ms, action: { label, run } })、ctx.sheet(content, opts)、ctx.confirm(opts) → Promise<boolean>（见 ui/dom.js）
-//   ctx.syncBadge()            同步状态小标签（元素，点了去 #/settings/sync）
-//   ctx.on(event, fn)          'change'(info) | 'sync'(status) | 'layout'(layout) | 'theme'(theme)；返回取消函数，页面清理时自动取消
+//   ctx.syncBadge()            同步状态小标签（元素，点了去 #/settings/sync）：样子和设置里「同步」那一行一样（views/settings.js 的 syncState）
+//   ctx.updateReady()          新版本下载好了、等着关掉再打开（设置 → 关于里说一声）；ctx.on('update', fn) 下载好的那一刻
+//   ctx.on(event, fn)          'change'(info) | 'sync'(status) | 'layout'(layout) | 'theme'(theme) | 'update'；返回取消函数，页面清理时自动取消
 //   ctx.onChange(fn)           = ctx.on('change', fn)
 // 录音
 //   ctx.audio                  src/core/audioStore.js 整个模块（putClip、getClip、hasClip…）
@@ -115,10 +116,11 @@
 //   ctx.isNight()              现在是不是夜间时段（按设置）
 import * as state from './core/state.js';
 import { stamp, deletedRecord, restoredRecord, setSetting, live, byNewest, makeEntry, normalizeEntry, clipIndex, newId, goneShas, stubShas, removedClips, trashKeys, isTombstone } from './core/store.js';
-import { isNight, localParts, fmtTime, fmtDate } from './core/dates.js';
+import { isNight, localParts, fmtDate } from './core/dates.js';
 import { debounce, sleep } from './core/util.js';
 import { createPurger, PURGE_ENABLED, shaSig, deviceSeen, deviceReport } from './core/purge.js';
 import { createSync } from './core/sync.js';
+import { createUpdateCheck } from './core/update.js';
 import { journal, createCloudHistory, platformDevice } from './core/history.js';
 import * as audio from './core/audioStore.js';
 import { recoverPending } from './core/recorder.js';
@@ -156,6 +158,8 @@ const L = () => state.getLocal();
 const bus = new Map();
 function on(ev, fn) { if (!bus.has(ev)) bus.set(ev, new Set()); bus.get(ev).add(fn); return () => bus.get(ev).delete(fn); }
 function emit(ev, arg) { for (const fn of [...(bus.get(ev) || [])]) { try { fn(arg); } catch (e) { console.error(e); } } }
+// 新版本（core/update.js）：启动后、切回前台时最多半小时看一次；下载好了 → 'update'
+const updater = createUpdateCheck({ onReady: () => emit('update', true) });
 
 // ---------- 路由 ----------
 const dec = s => { try { return decodeURIComponent(s); } catch (e) { return s; } };   // 截断的链接（%E0）不要让整个 app 白屏
@@ -521,6 +525,7 @@ const ctx = {
   night: nightStore,
   nightRecovered: null,
   get build() { return window.__babbleBuild || null; },
+  updateReady: () => updater.ready(),
 
   sync: syncApi,
   history: {
@@ -639,16 +644,14 @@ function registerDevice() {
 }
 
 // ---------- 外壳 ----------
+// 和设置里「同步」那一行同一套（core/sync.js 的 syncPhase）：出错红、令牌快到期黄、其余灰 / 绿。
+// 不显示「同步中…」：每分钟查一次别的设备有没有改过，侧栏不要跟着闪
 function syncBadge() {
   const s = L().sync;
-  let cls = 'off', text = t('sync.off');
-  if (s) {
-    if (s.err) { cls = 'err'; text = t('sync.error'); }
-    else if (s.offline) { cls = 'wait'; text = t('sync.offline'); }
-    else if (s.dirty) { cls = 'wait'; text = t('sync.pending'); }
-    else { const p = s.at ? localParts(s.at) : null; cls = 'ok'; text = p ? t('sync.ok', { time: fmtTime(p.time, getLang()) }) : t('sync.ok0'); }
-  }
-  return h('a.sync-badge.' + cls, { href: '#/settings/sync', title: s && s.err ? t('syncErr.' + s.err.code, s.err.vars) : null }, h('span.dot', { 'aria-hidden': 'true' }), text);
+  const st = s ? { on: true, err: s.err || null, offline: !!s.offline, dirty: !!s.dirty, at: s.at || null, tokenExpires: s.tokenExp || null } : null;
+  const v = settings.syncState(st, getLang());
+  const title = v.phase === 'err' ? t('syncErr.' + s.err.code, s.err.vars) : v.phase === 'token' ? settings.tokenNote(s.tokenExp) : null;
+  return h('a.sync-badge.' + v.cls, { href: '#/settings/sync', title }, h('span.dot', { 'aria-hidden': 'true' }), v.text);
 }
 function renderSyncBadges() {
   for (const el of document.querySelectorAll('.sync-badge')) el.replaceWith(syncBadge());
@@ -974,6 +977,7 @@ document.addEventListener('visibilitychange', () => {
       render();
     }
     syncIfStale();
+    updater.check();
   } else {
     hiddenAt = Date.now();
     if (L().sync && L().sync.dirty && !held()) { syncSoon.cancel(); autoSync(); }      // 切走前把改动传上去（暂停着就不传）
@@ -1000,4 +1004,5 @@ ctx.nightRecovered = state.storageIssue() ? Promise.resolve() : bootNight();    
 if (!state.storageIssue()) bootPurge();
 render();
 autoSync();
+updater.check();
 window.__babble = { state, ctx, mounted, get S() { return S(); } };   // 方便在浏览器控制台里查看

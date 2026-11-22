@@ -214,23 +214,30 @@ export function sheet(content, { title = '', foot = null, wide = false, cls = ''
 /** house-ledger 的写法：openSheet({ title, body, foot, wide, onClose, beforeClose }) */
 export const openSheet = (o = {}) => sheet(o.body, o);
 
+let confirmSeq = 0;
 /**
  * 确认框 → Promise<boolean>
  * confirmDialog('确定删除？') 或 confirmDialog({ title, message, confirmLabel, cancelLabel, danger })
+ * 读屏打开时要听得到问的是什么：有标题时标题是名字、那句话是说明（aria-describedby）；只有一句话时那句话就是名字（aria-labelledby）。
+ * 焦点先给确认按钮；会删东西、放弃修改的（danger）先给「取消」：连按两下回车不会直接删掉（和 PickNest 等几个 App 一样）
  */
 export function confirmDialog(opts) {
   const o = typeof opts === 'string' ? { message: opts } : (opts || {});
   return new Promise(resolve => {
     let answer = false;
-    const s = sheet(o.message ? h('p.confirm-msg', null, o.message) : null, {
+    const msgId = 'confirm-msg-' + (++confirmSeq);
+    const cancel = h('button.btn', { type: 'button', onclick: () => s.close() }, o.cancelLabel || t('common.cancel'));
+    const ok = h('button.btn' + (o.danger ? '.danger-fill' : '.primary'), { type: 'button', onclick: () => { answer = true; s.close(); } }, o.confirmLabel || t('common.confirm'));
+    const s = sheet(o.message ? h('p.confirm-msg', { id: msgId }, o.message) : null, {
       title: o.title || '', cls: 'confirm',
       onClose: () => resolve(answer),
-      foot: [
-        h('button.btn', { type: 'button', onclick: () => s.close() }, o.cancelLabel || t('common.cancel')),
-        h('button.btn' + (o.danger ? '.danger-fill' : '.primary'), { type: 'button', onclick: () => { answer = true; s.close(); } }, o.confirmLabel || t('common.confirm')),
-      ],
+      foot: [cancel, ok],
     });
-    s.el.querySelector('.sheet-foot .btn:last-child').focus();
+    if (o.message) {
+      if (o.title) s.el.setAttribute('aria-describedby', msgId);
+      else { s.el.removeAttribute('aria-label'); s.el.setAttribute('aria-labelledby', msgId); }
+    }
+    (o.danger ? cancel : ok).focus();
   });
 }
 

@@ -10,7 +10,7 @@
 //   停止同步、换到别的仓库时还有没从仓库删掉的录音：确认框里说一声（不受开关影响）。
 import { h, icon, copyText, download } from '../ui/dom.js';
 import { LANGS, LANG_LABELS, t } from '../i18n.js';
-import { SyncError, syncCode, parseSyncCode } from '../core/sync.js';
+import { SyncError, syncCode, parseSyncCode, syncPhase, tokenWarn, tokenExpired, tokenDaysLeft } from '../core/sync.js';
 import { buildBackup, readBackup, restoreBackup, restorePlan, backupFileName } from '../core/backup.js';
 import { ARCHIVE_PREFIX } from '../core/persistence.js';
 import { PURGE_ENABLED } from '../core/purge.js';
@@ -46,7 +46,8 @@ function archiveKeys() {
 }
 
 // ---------- 小部件 ----------
-const LANG_ROW = '语言 / Language';
+// 语言那一行的标题中英文都写（不管现在是哪种语言都认得出），自己的语言写在前面（和 PickNest 等几个 App 一样）
+const LANG_ROW = { 'zh-Hans': '语言 / Language', 'zh-Hant-TW': '語言 / Language', en: 'Language / 语言' };
 const sec = (id, title, kids, foot) => h('section.set-sec', { id: id ? 'set-' + id : null },
   title ? h('h2.group-h', null, title) : null, h('div.group', null, kids), foot ? h('div.group-foot', null, foot) : null);
 // 只有一个输入框 / 开关时整行是 <label>（点哪里都行）；分段按钮之类用 <div>，免得点文字误按第一个按钮
@@ -56,15 +57,22 @@ const toggleRow = (label, checked, onchange, help) => row(label, h('input.toggle
 const linkRow = (href, ic, label, value, help) => h('a.group-row.set-link', { href }, ic ? icon(ic) : null,
   help ? h('span.set-label', null, label, h('small', null, help)) : h('span', null, label), h('span.sp'), value != null ? h('span.value', null, value) : null);
 
-/** 同步状态的一句话和颜色（ok / wait / err / off） */
-export function syncState(st, lang) {
-  if (!st || !st.on) return { cls: 'off', text: t('sync.off') };
-  if (st.err) return { cls: 'err', text: t('sync.error') };
-  if (st.running) return { cls: 'wait', text: t('sync.syncing') };
-  if (st.offline) return { cls: 'wait', text: t('sync.offline') };
-  if (st.dirty) return { cls: 'wait', text: t('sync.pending') };
+// 同步状态 → 圆点的样子：ok 绿、wait 灰（同步中、离线、待同步）、warn 黄（令牌快到期）、err 红、off 空心
+const PHASE_CLS = { off: 'off', err: 'err', running: 'wait', offline: 'wait', token: 'warn', pending: 'wait', ok: 'ok' };
+const PHASE_TEXT = { off: 'sync.off', err: 'sync.error', running: 'sync.syncing', offline: 'sync.offline', token: 'sync.tokenSoon', pending: 'sync.pending' };
+/** 同步状态的一句话和颜色（ok / wait / warn / err / off）；怎么排在 core/sync.js 的 syncPhase（侧栏的小标签 app.js 也用这个） */
+export function syncState(st, lang, now = Date.now()) {
+  const phase = syncPhase(st, now);
+  if (phase !== 'ok') return { cls: PHASE_CLS[phase], text: t(PHASE_TEXT[phase]), phase };
   const p = st.at ? localParts(st.at) : null;
-  return { cls: 'ok', text: p ? t('sync.ok', { time: fmtTime(p.time, lang) }) : t('sync.ok0') };
+  return { cls: 'ok', text: p ? t('sync.ok', { time: fmtTime(p.time, lang) }) : t('sync.ok0'), phase };
+}
+/** 令牌快到期 / 已经过期时那一句（怎么换）；还早、没填 → null。同步页和侧栏小标签的提示（鼠标停上去）用 */
+export function tokenNote(exp, now = Date.now()) {
+  if (!tokenWarn(exp, now)) return null;
+  if (tokenExpired(exp, now)) return t('set.tokenExpired');
+  const n = tokenDaysLeft(exp, now);
+  return n <= 0 ? t('set.tokenToday') : t('set.tokenSoon', { n });
 }
 const stateDot = (s) => h('span.set-state.' + s.cls, null, h('span.dot', { 'aria-hidden': 'true' }), s.text);
 
@@ -88,11 +96,14 @@ function quietRedraw(main, draw) {
 // 设置
 // ======================================================================
 function mainPage(main, params, ctx, purgeOn) {
-  const lang = ctx.lang();
+  const lang = ctx.lang(), langRow = LANG_ROW[lang] || LANG_ROW['zh-Hans'];
   const page = h('div.page.set');
   main.append(h('header.page-head', null, h('h1.lt', null, t('nav.settings'))), page);
   let storageInfo = null;
   const bbox = backupBox(ctx, { onSaved: () => redraw.soon() });     // 跨重画保留：打包好的备份不会因为同步一下就没了
+  // 「关于」里的「新版本已经下载好了」：跨重画是同一个元素（role=status），下载好的那一刻读屏才念得出来
+  const updateLine = h('p.small.set-update', { role: 'status' }, t('set.updateReady'));
+  const paintUpdate = () => { updateLine.hidden = !(ctx.updateReady && ctx.updateReady()); };
 
   function draw() {
     const S = ctx.state.settings, L = ctx.local;
@@ -101,7 +112,7 @@ function mainPage(main, params, ctx, purgeOn) {
     const pend = [st.pendingUp ? t('sync.audioUp', { n: st.pendingUp }) : null, st.pendingDown ? t('sync.audioDown', { n: st.pendingDown }) : null].filter(Boolean).join(' · ');
     fill(page,
       // 语言放最上面，标题三种语言都写：不管现在是哪种语言都找得到
-      sec('lang', null, [row(LANG_ROW, h('select.set-in.set-select', { 'aria-label': LANG_ROW, onchange: (e) => ctx.setLang(e.target.value) },
+      sec('lang', null, [row(langRow, h('select.set-in.set-select', { 'aria-label': langRow, onchange: (e) => ctx.setLang(e.target.value) },
         LANGS.map(l => h('option', { value: l, selected: l === lang }, LANG_LABELS[l]))))]),
       sec('sync', t('set.syncH'), [h('a.group-row.set-link', { href: '#/settings/sync' }, icon('share'), h('span', null, t('set.sync')), h('span.sp'), stateDot(syncState(st, lang)))],
         st.on ? (pend || (st.repo ? t('set.syncRepo', { repo: st.repo }) : null)) : t('set.syncOffFoot')),
@@ -252,13 +263,17 @@ function mainPage(main, params, ctx, purgeOn) {
     return h('section.set-sec#set-about', null, h('h2.group-h', null, t('set.aboutH')),
       h('div.card.set-about', null,
         h('div.set-about-top', null, h('img', { src: 'icons/icon-180-v4.png', alt: '', width: 48, height: 48, onerror: (e) => e.target.remove() }),
-          h('div', null, h('b.kai', null, t('common.appName')), h('p.small.muted', null, t('set.aboutLine')))),
-        h('ul.small', null, ['about1', 'about2', 'about3'].map(k => h('li', null, t('set.' + k))))));
+          h('div', null, h('b.kai', null, t('common.appName')), h('p.small.muted', null, t('set.aboutLine')),
+            ctx.build ? h('p.small.muted.set-version', null, t('set.version', { v: ctx.build })) : null)),
+        h('ul.small', null, ['about1', 'about2', 'about3'].map(k => h('li', null, t('set.' + k)))),
+        updateLine));
   }
 
   const redraw = quietRedraw(main, draw);
+  paintUpdate();
   draw();
   ctx.on('sync', () => redraw.soon());
+  ctx.on('update', paintUpdate);          // 新版本在后台装好了（core/update.js，app.js 发 'update'）：只改这一行，不重画
   return { onChange: () => redraw.soon(), cleanup: () => redraw.off() };
 }
 
@@ -370,8 +385,7 @@ function syncPage(main, params, ctx, purgeOn) {
   function onView(st) {
     const cfg = ctx.local.sync || {};
     const s = syncState(st, lang);
-    const exp = st.tokenExpires || cfg.tokenExp || null;
-    const left = exp ? Math.floor((exp - Date.now()) / DAY) : null;
+    const exp = st.tokenExpires || cfg.tokenExp || null, note = exp ? tokenNote(exp) : null;
     const pend = [st.pendingUp ? t('sync.audioUp', { n: st.pendingUp }) : null, st.pendingDown ? t('sync.audioDown', { n: st.pendingDown }) : null,
       st.pendingPurge ? t('sync.audioDel', { n: st.pendingPurge }) : null].filter(Boolean);
     const nn = ctx.state.settings.speakers.nn.name || 'NN', old = purgeOn ? oldDevices(ctx) : '';
@@ -384,8 +398,8 @@ function syncPage(main, params, ctx, purgeOn) {
         pend.length ? h('p.small', null, pend.join(' · '), st.uploading || st.downloading ? h('span.muted', null, ' · ', t('sync.syncing')) : null) : null,
         st.lastError ? h('p.small.set-warn', null, t('syncErr.' + st.lastError.code, st.lastError.vars || {})) : null,
         old ? h('p.small.set-warn', null, t('sync.oldDevices', { devices: old })) : null,
-        exp ? h('p.small' + (left != null && left <= 14 ? '.set-warn' : '.muted'), null, t('set.tokenExp', { date: fmtDate(localParts(exp).date, lang) }),
-          left != null && left <= 14 ? h('span', null, lang === 'en' ? ' ' : '', left < 0 ? t('set.tokenExpired') : t('set.tokenSoon', { n: Math.max(0, left) })) : null) : null,
+        exp ? h('p.small' + (note ? '.set-warn' : '.muted'), null, t('set.tokenExp', { date: fmtDate(localParts(exp).date, lang) }),
+          note ? h('span', null, lang === 'en' ? ' ' : '', note) : null) : null,
         // 没填过到期日：在这里补上（改的是同一个设置对象，正在跑的同步不受影响）
         exp ? null : h('label.set-exp-row.small.muted', null, h('span', null, t('set.tokenExpLabel')),
           expInput('', (v) => { const c = ctx.local.sync; if (c && expMs(v)) { c.tokenExp = expMs(v); ctx.setLocal({ sync: c }); draw(); } })),
