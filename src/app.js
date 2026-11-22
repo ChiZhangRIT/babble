@@ -43,16 +43,16 @@
 //   ctx.setLocal(patch)        改本机设置（不重画页面）
 //   ctx.editVersion            本机修改计数
 //   ctx.saveOk()               最近一次数据写入是否成功；编辑页确认成功后才清草稿、离开
-// 永久删除（core/purge.js）。PURGE_ENABLED 关着（第一阶段）：页面不显示这些按钮，这里也什么都不删，返回 { done: [], changed: [], skipped: true }
+// 永久删除（core/purge.js）。PURGE_ENABLED 现在开着（第二阶段）；关着时（第一阶段）页面不显示这些按钮，这里也什么都不删，返回 { done: [], changed: [], skipped: true }
 //   ctx.purge(list)            永久删除「最近删除」里的条目：list = [{ id, at: 画出来时的 updatedAt }]；开着同步先同步一次（最多等 10 秒）
 //                              → Promise<{ done: [id], changed: [id] }>（changed：期间在别的设备上改过 / 恢复了，没删；页面重画、提示 deleted.changedElsewhere）
 //   ctx.purgeClips(list)       永久删除移除的录音：[{ id, sha256, removedAt }] → 同上（done / changed 里是 { id, sha256 }）
 //   ctx.purgeAll({ entries, clips })  「全部永久删除」：传画出来的那份清单（同上两种），一次删完 → 同上（两种混在一起）
 //   ctx.purgeOrphans(list)     没有条目在用的录音 [{ sha256, mime }] → Promise<{ done: [sha], changed: [sha] }>（写一个孤儿墓碑）
 //                              以上几个：开着同步时页面接着调 ctx.sync.now()（不等防抖），没同步成功就提示 common.purgedOffline；没有撤销
-//   ctx.restoreClip(id, sha)   「移除的录音」放回那条 → 存好的条目 | null（第一阶段也能用；提示由页面弹）
+//   ctx.restoreClip(id, sha)   「移除的录音」放回那条 → 存好的条目 | null（开关关着也能用；提示由页面弹）
 //   ctx.localOrphans()         → Promise<[{ sha256, mime, bytes, addedAt, uploaded }]>：这台设备上没有条目在用的录音（一小时内的、草稿里的不算）
-//   ctx.trashInfo(key)         「最近删除」里一项的日期 → { shownAt }（这天以后才会被自动永久删除；还没开放永久删除 → null）
+//   ctx.trashInfo(key)         「最近删除」里一项的日期 → { shownAt }（这天以后才会被自动永久删除；开着同步、开放以后还没同步成功过 → null）
 //                              key：'e:'+条目 id | 'c:'+条目 id+':'+sha（store.js trashKeys）
 // 导航
 //   ctx.navigate(path, { replace })  path 如 '/e/abc'、'/rec?attach=abc'（前面的 # 可有可无）；同一地址 = 重画
@@ -115,7 +115,7 @@
 //   ctx.isNight()              现在是不是夜间时段（按设置）
 import * as state from './core/state.js';
 import { stamp, deletedRecord, restoredRecord, setSetting, live, byNewest, makeEntry, normalizeEntry, clipIndex, newId, goneShas, stubShas, removedClips, trashKeys, isTombstone } from './core/store.js';
-import { isNight, localParts, fmtTime } from './core/dates.js';
+import { isNight, localParts, fmtTime, fmtDate } from './core/dates.js';
 import { debounce, sleep } from './core/util.js';
 import { createPurger, PURGE_ENABLED, shaSig, deviceSeen, deviceReport } from './core/purge.js';
 import { createSync } from './core/sync.js';
@@ -538,8 +538,10 @@ const ctx = {
 // 录音只在「确实没了」时删：开着同步要云端确认过（confirmedGone），没开同步要墓碑已经存进本机。什么时候清理：
 //   数据变了（本机、撤销、导入、别的标签页、同步合并）而「没了的录音」变了，或者有条目刚被永久删除 → sweepSoon；
 //   每一轮同步做完，云端确认的变了 → sweepSoon；这次打开后第一次确认过云端 → 整个清理一遍（full）；
-//   启动时（找回录音、床头模式收尾之后）没开同步 → 整个清理一遍。别的设备来的墓碑照样清理（第一阶段也是）。
-// 30 天到期（PURGE_ENABLED 打开以后）：启动时、每一轮同步以后（成没成功都算）、开着的时候每小时，本机数据有问题时不做。
+//   启动时（找回录音、床头模式收尾之后）没开同步 → 整个清理一遍。别的设备来的墓碑照样清理（开关关着也是）。
+// 30 天到期：启动时、每一轮同步以后（成没成功都算）、开着的时候每小时，本机数据有问题时不做（开关关着时都不做）。
+//   从这台设备第一次看到算（babble.trash，启动时、数据变了 1 秒后记下），也不早于 trashSince：开放以后第一次打开时已经在「最近删除」里的，从那一刻起算满 30 天。
+//   trashSince 不晚于服务器的时间（syncer.serverNow：这次打开提交过以后才知道；时钟快的设备写下的，知道以后挪回去）。
 const purger = createPurger({
   getState: S, mutate: (fn, opts) => state.mutate(fn, opts), audio, night: nightStore, journal,
   saveOk: state.saveOk, syncOn: () => !!L().sync, storageOk: () => !state.storageIssue(),
@@ -548,7 +550,7 @@ const purger = createPurger({
   cloudHistory: ctx.history.cloud, getLocal: L, setLocal: state.setLocal, gone: goneNow,
 });
 let goneSeen = shaSig(goneNow()), confirmedSeen = null, cloudResetSeen = S().settings.cloudResetAt || null;
-let firstRound = true, firstConfirmed = true, squashing = false;
+let firstConfirmed = true, squashing = false;
 const noteTrashSoon = debounce(() => purger.noteTrash(), 1000);
 const SQUASH_GRACE = 2 * 60e3;       // 别的标签页正在清理：记号刚写下的先不补（强制更新、核对要几个来回）
 
@@ -565,7 +567,8 @@ function purgeWatch(info) {
   if (purger.enabled) noteTrashSoon();
 }
 /** 每一轮同步做完：补写清理云端历史的记号；第一次确认过云端 → 整个清理一遍，云端确认的变了 → 清理；
- *  成功的话：这次打开后第一次 → 写 trashSince（这时才知道云端有没有别的设备写过；开关关着不写）、报到；到期的自动永久删除（同步成没成功都做） */
+ *  成功的话：还没有 trashSince → 写下（这时才知道云端有没有别的设备写过；开关关着不写），比服务器的时间还晚（写的设备时钟快了）→ 改早；
+ *  报到；第一次打开新版、还没说过 30 天的规矩 → 说一声（这时才知道日期）。到期的自动永久删除（同步成没成功都做） */
 function afterRound(r) {
   try {
     if (state.storageIssue()) return;
@@ -574,10 +577,11 @@ function afterRound(r) {
     if (C && firstConfirmed) { firstConfirmed = false; confirmedSeen = shaSig(C); purger.sweep({ full: true }); }
     else if (C && shaSig(C) !== confirmedSeen) { confirmedSeen = shaSig(C); purger.sweepSoon(); }
     if (r && r.ok && !r.skipped) {
-      if (firstRound) { firstRound = false; purger.ensureTrashSince(); }
+      purger.ensureTrashSince(syncer.serverNow());
       registerDevice();
     }
     purger.autoPurge();
+    if (r && r.ok && !r.skipped) policyNote();
   } catch (e) { console.warn('purge', e); }
 }
 /** 启动（和修好数据以后）：等找回录音、床头模式收尾做完再动 babble-audio / babble-night。没开同步 → 写 trashSince、整个清理一遍；
@@ -591,12 +595,25 @@ function bootPurge() {
     policyNote();
   }).catch(e => console.warn('purge', e));
 }
-/** 开放永久删除以后第一次打开：「最近删除」里有东西就说一声 30 天的规矩（只说一次；已经在里面的从今天算） */
+/** 开放永久删除以后第一次打开（每台设备一次，babble.local.purgeNoticeAt）：「最近删除」里有东西就说一声 30 天的规矩。
+ *  按每一项写着的日期（trashInfo）说：最早的那项还有满 30 天 →「从今天开始算 30 天」（第一台打开新版的设备）；
+ *  不到 30 天（别的设备先开放了，从那时起算；之后才删的照样各算各的）→「最早 {date} 永久删除」。
+ *  还不知道日期（开着同步、开放以后还没同步成功过）→ 先不说，同步成功以后再说（afterRound）。
+ *  正好有别的提示条（找回的录音之类，可能带按钮）→ 等它收起再说（最多等半分钟），不盖掉它 */
+let noteWait = 0;
 function policyNote() {
-  if (!purger.enabled || L().purgeNoticeAt) return;
+  if (!purger.enabled || L().purgeNoticeAt || state.storageIssue()) return;
+  const ids = new Set(deleted.deletedEntries(S()).map(e => e.id));     // 录音页丢掉的空条目「最近删除」里不列
+  const keys = [...trashKeys(S())].filter(([k, v]) => v.kind !== 'entry' || ids.has(v.id)).map(([k]) => k);
+  if (!keys.length) { state.setLocal({ purgeNoticeAt: Date.now() }); return; }
+  const at = keys.map(k => purger.trashInfo(k).shownAt).filter(x => x > 0);
+  if (!at.length) return;
+  const el = $('#toast');
+  if (el && el.classList.contains('on') && noteWait < 10) { noteWait++; setTimeout(policyNote, 3000); return; }
   state.setLocal({ purgeNoticeAt: Date.now() });
-  const E = S().data.entries, shown = [...trashKeys(S()).values()].some(v => !(v.kind === 'entry' && E[v.id] && E[v.id].discarded));   // 录音页丢掉的那种不显示
-  if (shown) toast(t('deleted.policyNote'), { ms: 10000 });
+  const first = Math.min(...at), p = localParts(first);
+  const msg = deleted.daysLeft(first) >= 30 || !p ? t('deleted.policyNote') : t('deleted.policyNoteAt', { date: fmtDate(p.date, getLang(), { year: false }) });
+  toast(msg, { ms: 10000 });
 }
 /** 清理云端历史成功（或强制更新以后核对没通过：可能已经换了）：写同步的 cloudResetAt，别的设备看到就把录音和仓库对一遍；
  *  这台设备的云端历史缓存由 purgeWatch 看到 cloudResetAt 变了重来 */
@@ -610,7 +627,7 @@ function replaySquash() {
   if (m && !squashing && !state.storageIssue() && !(Date.now() - (Number(m.at) || 0) < SQUASH_GRACE)) markCloudReset();
 }
 
-// ---------- 报到：这台设备已经是这一版（两步上线：「设置 → 同步」列出更新了的设备和还没报到的） ----------
+// ---------- 报到：这台设备已经是这一版（「设置 → 同步」列出更新了的设备和还没报到的；两步上线时靠它看每台设备是不是都更新了） ----------
 // 记在同步的数据里（data.devices，按这台设备的 id；旧版本 App 会原样保留不认识的集合），每轮同步成功后：名字、谁在用、版本变了，
 // 或者上次报到超过 3 天才写（每次写都要再推一次）。设备 id 存在 babble.local.deviceId（设备名可以改、两台可以同名，id 不变）
 function registerDevice() {

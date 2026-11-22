@@ -201,7 +201,7 @@ export async function readBackup(blob) {
  * 恢复备份、修复数据前挑录音：按合并以后的样子算（本机 + 备份；本机已知的、同步来的永久删除照样算）
  * @param {object|null} current  本机现在的数据  @param {{state, clips}} backup  readBackup 的结果（或 { state, clips: [] }）
  * @returns {{ keep: object[], skipped: object[] }}  keep：没永久删除的都存（合并后没有条目在用的也存：比如旧版本移除时没留记录、
- *          较新的那份里已经没有了——备份可能是它唯一的一份；存进来成了这台设备上没有条目在用的录音，不上传，开放永久删除以后能找到、删掉）；
+ *          较新的那份里已经没有了——备份可能是它唯一的一份；存进来成了这台设备上没有条目在用的录音，不上传，在「最近删除 → 没有梦话在用的录音」里找得到、能永久删除）；
  *          skipped：永久删除了的
  */
 export function restorePlan(current, backup) {

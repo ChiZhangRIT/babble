@@ -164,7 +164,7 @@ function mockGitHub({ big = Infinity } = {}) {
       const bytes = b64ToBytes(body.content);
       gh.putFile(name, bytes, body.message);
       gh.puts++;
-      return res(file ? 200 : 201, { content: { sha: gh.files.get(name).sha, size: bytes.length }, commit: { sha: gh.head } });
+      return res(file ? 200 : 201, { content: { sha: gh.files.get(name).sha, size: bytes.length }, commit: { sha: gh.head, committer: { date: gh.objs.get(gh.head).date } } });
     }
     if (method === 'DELETE') {
       if (!file) return res(404, { message: 'Not Found' });
@@ -270,6 +270,23 @@ test('base64、同步码、git blob sha、令牌到期时间', async () => {
   assert.equal(parseTokenExpiry('soon'), null);
   assert.equal(audioPath('a'.repeat(64), 'audio/x-m4a'), `audio/${'a'.repeat(64)}.m4a`);
   assert.equal(audioPath('a'.repeat(64), 'audio/webm;codecs=opus'), `audio/${'a'.repeat(64)}.webm`);
+});
+
+test('服务器的时间（serverNow）：这次打开还没提交过 → null；提交 babble.json、传录音以后按回应里提交的时刻（commit.committer.date）往后推；这台设备的时钟快了也照样是服务器的', async () => {
+  const gh = mockGitHub(), A = device(gh, 'NN 的 iPhone');
+  gh.at = () => Date.now() - 2 * 864e5;                  // 这台设备的时钟比服务器快两天
+  try {
+    assert.equal(A.sync.serverNow(), null);
+    await A.run();                                        // 云端什么都没有：新建 babble.json（提交了）
+    const s1 = A.sync.serverNow(), want = Date.now() - 2 * 864e5;
+    assert.ok(s1 <= want && s1 > want - 5000, '服务器的时间（秒以下舍掉，只会早一点）');
+    const B = device(gh, 'iPhone');
+    await B.run();                                        // 只拉，没提交
+    assert.equal(B.sync.serverNow(), null, '没提交过：不知道');
+    await B.record('编的一段');
+    await B.run();                                        // 传录音、babble.json
+    assert.ok(Math.abs(B.sync.serverNow() - (Date.now() - 2 * 864e5)) < 5000);
+  } finally { gh.at = null; }
 });
 
 test('第一次同步：云端没有 babble.json（404）→ 新建，内容是 { app, v, device, savedAt, state }', async () => {

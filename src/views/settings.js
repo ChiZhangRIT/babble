@@ -4,8 +4,8 @@
 // 「最近删除」后面的数 = 删除的梦话 + 移除的录音。存储：这台设备上已经永久删除、等同步确认才删的录音有几段。
 // 从备份恢复：开着同步先同步一次（别的设备刚永久删除的也算上），永久删除了的录音不存回来（确认框、完成后都说几段）。
 // 同步页「已更新到新版的设备」：每台用上这一版的设备在同步的数据里报到（data.devices，app.js 写），这里列出报到过的、
-//   最近改过梦话（修改记录的签名）或还在用旧版本推送、却还没报到的设备名——两步上线：都报到了，下一版才开放永久删除。
-// 开放永久删除以后（core/purge.js 的 PURGE_ENABLED，deps.purgeEnabled 测试用）才有：存储里「其中 n 段没有条目在用」「删除修复存档」，
+//   最近改过梦话（修改记录的签名）或还在用旧版本推送、却还没报到的设备名（两步上线时靠它看每台设备是不是都更新了）。
+// 开关 core/purge.js 的 PURGE_ENABLED 开着时（现在开着；deps.purgeEnabled 测试用）才有：存储里「其中 n 段没有条目在用」「删除修复存档」，
 //   同步页的「清理云端历史」（先确认：说清楚留下什么、旧版本的设备、备份、别的分支；成功后给 Mac 上换文件夹的步骤）、旧版本设备的提醒。
 //   停止同步、换到别的仓库时还有没从仓库删掉的录音：确认框里说一声（不受开关影响）。
 import { h, icon, copyText, download } from '../ui/dom.js';
@@ -17,7 +17,7 @@ import { PURGE_ENABLED } from '../core/purge.js';
 import { isTime, localParts, fmtTime, fmtDate, fmtInstant, daysAgo } from '../core/dates.js';
 import { fmtBytes, uniq } from '../core/util.js';
 import { deviceSec, byLabel } from './device.js';
-import { trashCount, deletedEntries, removedList, oldDevices, foundInRepo } from './deleted.js';
+import { trashCount, deletedEntries, removedList, oldDevices, foundInRepo, orphansShown } from './deleted.js';
 import { fmtAgo } from './history.js';
 import { sttSettings } from '../ui/stt.js';
 /** replaceChildren，但跳过 null / false（DOM 会把 null 写成文字「null」） */
@@ -210,7 +210,8 @@ function mainPage(main, params, ctx, purgeOn) {
       h('div.group-row.set-row', null, h('span.set-label', null, t('set.used')), usage),
       h('div.group-row.set-row', null, h('span.set-label', null, t('set.clips'),
         I.pending ? h('small.set-warn', null, t('set.clipsPending', { n: I.pending })) : null), clips),
-      I.unused ? linkRow('#/deleted', null, t('set.clipsUnused', { n: I.unused })) : null,
+      // 点了直接到「最近删除 → 没有梦话在用的录音」；那一节不显示的时候（这次打开修过数据、从备份恢复过……）这一行也不显示
+      I.unused && orphansShown(ctx, purgeOn) ? linkRow('#/deleted?focus=orphans', null, t('set.clipsUnused', { n: I.unused })) : null,
       h('div.group-row.set-row', null, h('span.set-label', null, t('set.persisted'), h('small', null, t('set.persistHelp'))), h('span.set-persist', null, pers, ask)),
       archives.length ? h('div.group-row.set-row', null, h('span.set-label', null, t('set.archives', { n: archives.length })),
         h('button.btn.small.danger', { type: 'button', onclick: () => dropArchives() }, t('set.archivesDel'))) : null,
@@ -262,7 +263,7 @@ function mainPage(main, params, ctx, purgeOn) {
 }
 
 /** 从备份恢复：先读、核对 sha256，告诉用户里面有什么，确认后再合并（较新的为准，不删本机的）。
- *  开着同步先同步一次（尽力，最多等 10 秒；开关关着也同步：别的设备可能已经是开放永久删除的版本）：别的设备刚永久删除的也算上，
+ *  开着同步先同步一次（尽力，最多等 10 秒；开关关着也同步：别的设备可能已经开着永久删除）：别的设备刚永久删除的也算上，
  *  那些录音不存回来。同步慢的话提示条说一声「正在同步」，不让人干等 */
 async function restoreFrom(ctx, file, purgeOn = false) {
   let r;
@@ -345,8 +346,9 @@ export function backupBox(ctx, { onSaved = null } = {}) {
 // 同步
 // ======================================================================
 /** 清理云端历史以后，在 Mac 的终端里换 babble-data 文件夹：先看有没有自己的改动、没推上去的提交，再在旁边克隆一份新的（不删、不覆盖旧的） */
+// 新文件夹从旧文件夹记着的地址克隆（https 还是 ssh、登录方式都和原来一样）；repo 只在旧文件夹没有 origin 时兜底
 export const macCommands = (repo) => ['cd ~/Documents/Repositories/babble-data', 'git status --short', 'git log --oneline @{u}..HEAD', 'cd ..',
-  `git clone https://github.com/${repo}.git babble-data-new`].join('\n');
+  `git clone "$(git -C babble-data remote get-url origin || echo https://github.com/${repo}.git)" babble-data-new`].join('\n');
 
 function syncPage(main, params, ctx, purgeOn) {
   const lang = ctx.lang();
@@ -403,7 +405,7 @@ function syncPage(main, params, ctx, purgeOn) {
     ];
   }
 
-  // ---------- 已更新到新版的设备（两步上线：都报到了，下一版才开放永久删除） ----------
+  // ---------- 已更新到新版的设备（两步上线时用来看每台设备是不是都更新了；开放以后照样列出还没更新的） ----------
   // ctx.sync.devices()：报到过的（data.devices，app.js 每轮同步成功后写）和还没报到的（最近改过梦话、或还在用旧版本推送的设备名）。
   // 这台设备一定是新版：还没报到（第一轮同步还没成功）也列上，只是没有报到时间
   function devicesSec() {
@@ -423,7 +425,7 @@ function syncPage(main, params, ctx, purgeOn) {
         h('p.f-help', null, t('sync.devicesFoot'))));
   }
 
-  // ---------- 清理云端历史（开放永久删除以后） ----------
+  // ---------- 清理云端历史（开关开着时） ----------
   function squashSec(st) {
     const wait = busy || squashing || st.running || st.offline || !!st.err || !!st.pendingUp || !!st.pendingPurge;
     const last = Number(ctx.local.lastBackupAt) || 0, stale = !last || Date.now() - last > DAY;

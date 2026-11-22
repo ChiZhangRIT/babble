@@ -1,6 +1,6 @@
 // 最近删除（#/deleted）和详情页里已删除的那条：最小 DOM + 真的 state.js、memoryStore（录音库）、真的 core/purge.js（createPurger）。
-// 分两步上线：PURGE_ENABLED 关着（默认）只能恢复——删除的梦话、「移除的录音」；页面和 purger 都传开关打开（purgeEnabled / enabled: true），
-// 测开放以后的永久删除、全部永久删除（按显示的那份删，期间变了的不删）、还剩几天、别的梦话也在用、没有条目在用的录音、旧版本设备的提醒。
+// 分两步上线：PURGE_ENABLED 现在开着（第二阶段）。setup 默认传开关关着（purgeEnabled / enabled: false，第一阶段的样子：只能恢复——删除的梦话、「移除的录音」），
+// purge: true 测开着时的永久删除、全部永久删除（按显示的那份删，期间变了的不删）、还剩几天、别的梦话也在用、没有条目在用的录音、旧版本设备的提醒。
 // 梦话、录音都是编的（仓库是公开的）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -62,6 +62,7 @@ async function setup({ purge = false, seed = null, sync = null, purgerNow = null
   };
   env.main = new Element('main');
   const player = (o) => { const el = document.createElement('div'); el.setAttribute('class', 'player compact'); el.opts = o; el.destroy = () => { el.destroyed = true; }; env.players.push(el); return el; };
+  env.player = player;
   env.handle = render(env.main, { name: 'deleted' }, ctx, { purgeEnabled: purge, player });
   const off = state.subscribe((s, info) => queueMicrotask(() => { if (env.handle) env.handle.onChange(info); }));
   Object.assign(env, {
@@ -130,7 +131,7 @@ test('第一阶段（开关关着）：删除的梦话、移除的录音各一�
   } finally { env.done(); }
 });
 
-test('第一阶段：移除的录音没起名字叫「移除的录音」（不和条目里剩下的「录音 1」撞）；按钮的读屏名字带上是哪一项；删除了的梦话里移除过的录音说一声（列表、详情页）', async () => {
+test('第一阶段（开关关着）：移除的录音没起名字叫「移除的录音」（不和条目里剩下的「录音 1」撞）；按钮的读屏名字带上是哪一项；删除了的梦话里移除过的录音说一声（列表、详情页）', async () => {
   const env = await setup({ seed: seedTrash });
   try {
     const clipRow = env.rows().find(r => cls(r, 'del-clip'));
@@ -148,8 +149,12 @@ test('第一阶段：移除的录音没起名字叫「移除的录音」（不�
     assert.ok(row.textContent.includes(t('deleted.hasRemovedKeep', { n: 1 })), row.textContent);
     assert.equal(byCls(env.main, 'del-left'), undefined);
     const main = new Element('main');
-    renderEntry(main, { name: 'entry', id: 'a' }, env.ctx);
+    renderEntry(main, { name: 'entry', id: 'a' }, env.ctx, { purgeEnabled: false, player: env.player });
     assert.ok(byCls(main, 'e-banner').textContent.includes(t('deleted.hasRemovedKeep', { n: 1 })));
+    // 开关开着（默认）：详情页说「会一起删掉」
+    const main2 = new Element('main');
+    renderEntry(main2, { name: 'entry', id: 'a' }, env.ctx, { player: env.player });
+    assert.ok(byCls(main2, 'e-banner').textContent.includes(t('deleted.hasRemoved', { n: 1 })));
   } finally { env.done(); }
 });
 
@@ -295,7 +300,8 @@ test('开放以后：没有条目在用的录音——点「查找」才查，�
     env.handle.onChange({});
     assert.equal(allCls(byCls(env.main, 'del-orphans'), 'del-row').length, 1, '找到的记着，重画还在');
     await env.click(btns(rows[0], t('common.purge'))[0]);
-    assert.deepEqual([env.confirms[0].title, env.confirms[0].message], [t('deleted.orphansT', { n: 1 }), [t('deleted.orphansMsgLocal'), t('deleted.orphansOnlyHereMsg')].join('\n')]);
+    assert.deepEqual([env.confirms[0].title, env.confirms[0].message], [t('deleted.orphansT', { n: 1 }), [t('deleted.orphansMsgLocal', { n: 1 }), t('deleted.orphansOnlyHereMsg')].join('\n')]);
+    assert.ok(env.confirms[0].message.startsWith('没有哪条梦话在用它。'), '一段：「它」，不是「它们」');
     const tomb = Object.values(env.ctx.state.data.entries).find(x => x.id.startsWith('o_'));
     assert.ok(tomb && isTombstone(tomb));
     assert.deepEqual(tomb.gone.map(g => g.sha256), [env.O1.sha256]);
@@ -321,13 +327,31 @@ test('详情页里已删除的那条：第一阶段只有「恢复」；开放�
     try {
       const main = new Element('main');
       if (purge) state.mutate(s => { setSetting(s, 'trashSince', Date.now() - DAY); });
-      const page = renderEntry(main, { name: 'entry', id: 'b' }, env.ctx, { purgeEnabled: purge });
+      const page = renderEntry(main, { name: 'entry', id: 'b' }, env.ctx, { purgeEnabled: purge, player: env.player });
       const banner = byCls(main, 'e-banner');
+      // 录音也能听（永久删除前听一下误录的是什么）：画了播放器，拿的是这条的录音
+      const pl = env.players.at(-1);
+      assert.ok(main.contains(pl), '已删除的那条也画了播放器');
+      assert.equal(await pl.opts.getBlob().then(b => b && b.size), env.B1.bytes);
+      assert.equal(byCls(main, 'e-clip-cap').textContent, t('clip.fallback', { n: 1 }));
       assert.ok(banner.textContent.startsWith(t('entry.deleted')));
       assert.deepEqual(allCls(banner, 'e-banner-by').map(x => x.textContent).filter(x => x.includes('永久删除')), purge ? [t('deleted.left', { n: 30 })] : []);
       assert.deepEqual(all(banner, el => el.tag === 'button').map(b => b.textContent), purge ? [t('common.restore'), t('common.purge')] : [t('common.restore')]);
       if (purge) {
-        await env.click(btns(banner, t('common.purge'))[0]);
+        // 点了确认、还在删（开着同步时要先同步一次，最多 10 秒）：按钮写「正在永久删除…」，恢复和永久删除都不能点，再点也不会再问一次
+        let go = null;
+        const real = env.ctx.purgeAll;
+        env.ctx.purgeAll = (l) => new Promise(res => { go = () => res(real(l)); });
+        const p = btns(byCls(main, 'e-banner'), t('common.purge'))[0].fire('click');
+        await settle();
+        const busyBanner = byCls(main, 'e-banner');
+        assert.deepEqual(all(busyBanner, el => el.tag === 'button').map(b => [b.textContent, !!b.disabled]),
+          [[t('common.restore'), true], [t('deleted.purging'), true]]);
+        await all(busyBanner, el => el.tag === 'button')[1].fire('click');
+        await settle();
+        assert.equal(env.confirms.length, 1, '删的时候再点不会再问一次');
+        go(); await p; await settle();
+        env.ctx.purgeAll = real;
         assert.equal(env.confirms[0].message, t('deleted.purgeMsgLocal'));
         assert.equal(isTombstone(raw('b')), true);
         assert.deepEqual(env.navs, ['back:/deleted']);
@@ -367,4 +391,123 @@ test('开放以后、开着同步：「查找」先同步一轮再看仓库；�
     assert.deepEqual(allCls(byCls(env.main, 'del-orphans'), 'del-row').map(r => byCls(r, 'del-name').textContent), [t('deleted.orphansHere')]);
     assert.equal(env.syncs, 1, '删完马上同步一次');
   } finally { env.done(); }
+});
+
+/** 一条还在的梦话 live 用着录音 X；删除的 dup（重复导入的那种）也只有 X；删除的 rec 是一段 11 秒的误录 Y（只它在用） */
+async function seedShared(env) {
+  const X = await clip(env.audio, 'x'), Y = await clip(env.audio, 'y', { durationSec: 11 });
+  state.mutate(s => {
+    s.data.entries.live = makeEntry({ id: 'live', date: '2026-11-10', text: `${NN}“编的原来那条”`, audio: [X] });
+    s.data.entries.dup = makeEntry({ id: 'dup', date: '2026-11-10', text: `${NN}“编的原来那条”`, audio: [X] });
+    s.data.entries.rec = makeEntry({ id: 'rec', date: '2026-11-17', audio: [Y] });
+  });
+  state.mutate(s => { s.data.entries.dup = deletedRecord(s.data.entries.dup); });
+  state.mutate(s => { s.data.entries.rec = deletedRecord(s.data.entries.rec); });
+  Object.assign(env, { X, Y });
+}
+
+test('开放以后、开着同步：删的梦话的录音别的梦话也在用 → 确认框说「其中 n 段」留着，一段录音也不删时不说「录音文件马上从仓库删掉」；全部永久删除也说；每行写着几段录音、多长', async () => {
+  const env = await setup({ purge: true, sync: true, seed: seedShared });
+  try {
+    const row = (id) => env.rows().find(r => find(r, el => el.tag === 'a').attrs.href === '#/e/' + id);
+    assert.equal(byCls(row('rec'), 'del-audio').textContent, t('deleted.hasAudio', { n: 1, dur: '0:11' }));
+    assert.equal(byCls(row('rec'), 'del-audio').textContent, '1 段录音 · 0:11');
+    assert.equal(byCls(row('dup'), 'del-audio').textContent, '1 段录音 · 0:04');
+    env.answer = false;
+    await env.click(btns(row('dup'), t('common.purge'))[0]);
+    assert.equal(env.confirms[0].message, [t('deleted.purgeMsg'), t('deleted.sharedSome', { n: 1 }), t('deleted.historyNote')].join('\n'));
+    await env.click(btns(row('rec'), t('common.purge'))[0]);
+    assert.equal(env.confirms[1].message, [t('deleted.purgeMsg'), t('deleted.graceNote'), t('deleted.historyNote')].join('\n'), '只它在用：照常说');
+    await env.click(byCls(env.main, 'del-all'));
+    assert.equal(env.confirms[2].message, [t('deleted.purgeAllMsg', { n: 2, clips: 0 }), t('deleted.sharedSome', { n: 1 }), t('deleted.graceNote'), t('deleted.historyNote')].join('\n'));
+    assert.equal(env.syncs, 0, '都取消了');
+    // 真删 dup：X 留着（live 还在用），录音库里也还在
+    env.answer = true;
+    await env.click(btns(row('dup'), t('common.purge'))[0]);
+    assert.equal(isTombstone(raw('dup')), true);
+    assert.ok(!goneShas(state.getState()).has(env.X.sha256));
+    assert.ok(await env.audio.getClip(env.X.sha256));
+  } finally { env.done(); }
+});
+
+test('开放以后：删一行时只那一行写「正在永久删除…」（底下的「全部永久删除」不变），别的按钮都先不能点；删完恢复', async () => {
+  const env = await setup({ purge: true, seed: seedShared });
+  try {
+    let go = null;
+    const real = env.ctx.purgeAll;
+    env.ctx.purgeAll = (l) => new Promise(res => { go = () => res(real(l)); });
+    const row = (id) => env.rows().find(r => find(r, el => el.tag === 'a').attrs.href === '#/e/' + id);
+    const p = btns(row('rec'), t('common.purge'))[0].fire('click');
+    await settle();
+    const label = (r) => find(r, el => el.tag === 'button' && cls(el, 'del-purge'));
+    assert.deepEqual([label(row('rec')).textContent, !!label(row('rec')).disabled], [t('deleted.purging'), true]);
+    assert.deepEqual([label(row('dup')).textContent, !!label(row('dup')).disabled], [t('common.purge'), true]);
+    const all1 = byCls(env.main, 'del-all');
+    assert.deepEqual([all1.textContent, !!all1.disabled], [t('deleted.purgeAll'), true]);
+    go(); await p; await settle();
+    env.ctx.purgeAll = real;
+    assert.equal(isTombstone(raw('rec')), true);
+    assert.deepEqual([label(row('dup')).textContent, !!label(row('dup')).disabled], [t('common.purge'), false]);
+    // 「全部永久删除」：写在它自己上面
+    env.ctx.purgeAll = (l) => new Promise(res => { go = () => res(real(l)); });
+    const q = byCls(env.main, 'del-all').fire('click');
+    await settle();
+    assert.equal(byCls(env.main, 'del-all').textContent, t('deleted.purging'));
+    assert.equal(label(row('dup')).textContent, t('common.purge'));
+    go(); await q; await settle();
+    env.ctx.purgeAll = real;
+  } finally { env.done(); }
+});
+
+test('开放以后：页面开着的时候才知道日期（第一次同步成功写下 trashSince）→「n 天后永久删除」马上画出来，不用离开再回来', async () => {
+  const env = await setup({ purge: true, seed: seedShared });
+  try {
+    assert.equal(byCls(env.main, 'del-left'), undefined, '还不知道日期：不写');
+    env.purger.noteTrash();
+    state.mutate(s => { setSetting(s, 'trashSince', Date.now()); });
+    await settle();
+    assert.deepEqual(allCls(env.main, 'del-left').map(x => x.textContent), [t('deleted.left', { n: 30 }), t('deleted.left', { n: 30 })]);
+  } finally { env.done(); }
+});
+
+test('没有梦话在用的录音：几段一起删说「它们」；只在这台设备上的（开着同步）按这台设备说，不说仓库、7 天、提交历史；又在用了的说「又在用了」不说「别的设备上改过」', async () => {
+  const now = Date.now();
+  const env = await setup({ purge: true, sync: true, seed: async (e) => {
+    await seedTrash(e);
+    e.O1 = await clip(e.audio, '孤儿一'); e.O2 = await clip(e.audio, '孤儿二'); e.O3 = await clip(e.audio, '只在这里');
+    for (const c of [e.O1, e.O2, e.O3]) { const r = e.audio.clips ? e.audio.clips.get(c.sha256) : null; if (r) r.addedAt = r.touchedAt = now - 2 * 36e5; }
+  } });
+  try {
+    // 这台设备上的三段（两段上传过），仓库里也有那两段
+    env.ctx.localOrphans = async () => [env.O1, env.O2, env.O3].map((c, i) => ({ sha256: c.sha256, mime: 'audio/mp4', bytes: 9, addedAt: now - 2 * 36e5, uploaded: i < 2 }));
+    env.remote = { ok: true, files: [env.O1, env.O2].map(c => ({ sha256: c.sha256, path: 'audio/' + c.sha256 + '.m4a', ext: 'm4a', size: 9, at: now - 3 * 864e5, mime: 'audio/mp4' })), recent: 0, more: false };
+    env.handle.onChange({});
+    await env.click(byCls(env.main, 'del-find'));
+    env.answer = false;
+    await env.click(find(env.main, el => el.tag === 'button' && el.textContent === t('deleted.orphansPurgeAll')));
+    assert.equal(env.confirms[0].message, [t('deleted.orphansMsg', { n: 2 }), t('deleted.graceNote'), t('deleted.historyNote')].join('\n'));
+    assert.ok(env.confirms[0].message.startsWith('没有哪条梦话在用它们。'));
+    const onlyRow = allCls(env.main, 'del-row').find(r => byCls(r, 'del-warn'));
+    await env.click(btns(onlyRow, t('common.purge'))[0]);
+    assert.equal(env.confirms[1].message, [t('deleted.orphansMsgLocal', { n: 1 }), t('deleted.orphansOnlyHereMsg')].join('\n'), '只在这台设备上：不说所有设备、仓库、7 天');
+    // 点确认的那一刻又被梦话用上了：说「又在用了」
+    env.answer = true;
+    env.onConfirm = () => state.mutate(s => { s.data.entries.a = { ...s.data.entries.a, audio: [...s.data.entries.a.audio, env.O3] }; });
+    await env.click(btns(onlyRow, t('common.purge'))[0]);
+    env.onConfirm = null;
+    assert.equal(env.toasts.at(-1).msg, t('deleted.orphansChanged', { n: 1 }));
+  } finally { env.done(); }
+});
+
+test('从「设置 → 存储」点进来（#/deleted?focus=orphans）：滚到「没有梦话在用的录音」那一节', async () => {
+  const env = await setup({ purge: true, seed: seedTrash });
+  const scrolled = [];
+  Element.prototype.scrollIntoView = function (o) { scrolled.push([this.id, o]); };
+  try {
+    const main = new Element('main'), params = { name: 'deleted', query: { focus: 'orphans' } };
+    const page = render(main, params, env.ctx, { purgeEnabled: true, player: env.player });
+    assert.deepEqual(scrolled, [['orphans', { block: 'start' }]]);
+    assert.equal(params.query.focus, null, '只滚一次（重画、回来不再滚）');
+    page.cleanup();
+  } finally { delete Element.prototype.scrollIntoView; env.done(); }
 });

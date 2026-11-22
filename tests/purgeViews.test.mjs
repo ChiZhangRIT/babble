@@ -2,7 +2,8 @@
 //   修改记录：「恢复这个版本」录音只多不少（现在的都留着；移除的放回来；找得到的补上；永久删除了的不放回、说一声），看一版时永久删除了的不给播放器；墓碑只说一句
 //   录音页：要接的那条永久删除了——预填的旧原话不再存，只把新写的连同录音存成新的一条
 //   从备忘录迁移：以前永久删除过的（固定 id）算已存在、不再导入，完成页说几条
-//   设置 → 同步：「已更新到新版的设备」（core/purge.js 的 deviceReport）；「清理云端历史」开关关着不显示；停止同步时还有没从仓库删掉的录音说一声
+//   设置 → 同步：「已更新到新版的设备」（core/purge.js 的 deviceReport）；「清理云端历史」开关关着不显示；停止同步时还有没从仓库删掉的录音说一声；Mac 上换文件夹的说明
+//   设置 → 存储：「其中 n 段没有梦话在用」跟着「最近删除」那一节显示不显示，点了直接到那一节
 // 梦话、录音都是编的（仓库是公开的）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -368,4 +369,52 @@ test('提示条：toast 返回的 close 只关自己那条——之后弹了别�
     d.close();                                           // 收掉计时器（下面换回没有 DOM 的环境）
     assert.ok(!on());
   } finally { dom.restore(); }
+});
+
+test('设置 → 存储：「其中 n 段没有梦话在用」点了直接到「最近删除 → 没有梦话在用的录音」；那一节不显示的时候（这次打开从备份恢复过、修过数据）这一行也不显示', async () => {
+  for (const repaired of [false, true]) {
+    const d = dom({ localStorage: fakeStorage(), matchMedia: () => ({ matches: false, addEventListener() {} }) });
+    setLang('zh-Hans');
+    state.load({ storage: fakeStorage(), locks: null });
+    const bootAt = Date.now() - 1000;
+    state.setLocal({ device: 'iPhone', who: 'me', whoAsked: true, ...(repaired ? { repairedAt: Date.now() } : {}) });
+    state.mutate(s => { s.data.entries.a = makeEntry({ id: 'a', date: '2026-11-04', text: '编的' }); });
+    const env = { toasts: [], confirms: [], navs: [], answer: true };
+    const audio = memoryStore();
+    const ctx = Object.assign(baseCtx(env), {
+      device: 'iPhone', bootAt, storageIssue: () => null, isNight: () => false, removedClips: () => [],
+      audio: Object.assign(audio, { estimate: async () => ({ usage: 1000, quota: 1e9 }), persisted: async () => true, persist: async () => true }),
+      localOrphans: async () => [{ sha256: sha('e'), mime: 'audio/mp4', bytes: 9, addedAt: 1, uploaded: false }, { sha256: sha('f'), mime: 'audio/mp4', bytes: 9, addedAt: 1, uploaded: true }],
+      sync: { status: () => ({ on: false, running: false, pendingUp: 0, pendingDown: 0, pendingPurge: 0, oldDevices: [] }) },
+      setLang() {}, setTheme() {}, setSetting: () => {},
+    });
+    const main = new Element('main');
+    let h = null;
+    try {
+      h = renderSettings(main, { name: 'settings', sub: null, query: {} }, ctx, { purgeEnabled: true });
+      await settle();
+      const link = find(main, el => el.tag === 'a' && el.textContent.includes(t('set.clipsUnused', { n: 2 })));
+      if (repaired) assert.equal(link, undefined, '从备份恢复过：「最近删除」里那一节不显示，这一行也不显示');
+      else assert.equal(link && link.attrs.href, '#/deleted?focus=orphans');
+    } finally { if (h) h.cleanup(); d.restore(); }
+  }
+});
+
+test('设置 → 同步：清理完的提示不说「只有 1 个提交」（清理以后马上还会有一个记下清理时刻的提交）；Mac 上换文件夹的步骤说的是 git status、git log 那两行，已经 git pull 过的怎么看；设备一览说 v28 也认得永久删除', async () => {
+  for (const lang of ['zh-Hans', 'zh-Hant-TW', 'en']) {
+    setLang(lang);
+    assert.ok(!/\d/.test(t('sync.squashDone')), t('sync.squashDone'));
+    const mac = t('sync.macText');
+    assert.ok(mac.includes('git status') && mac.includes('git log') && mac.includes("git log --oneline '@{u}@{1}..HEAD'"), mac);
+    assert.ok(!/前兩行|前两行|first two/.test(mac), mac);
+    assert.ok(t('sync.devicesLeadPurge').includes('v28'), '「已更新到新版的设备」说清楚 v28 也认得永久删除');
+  }
+  setLang('zh-Hans');
+  const env = syncSetup({ purge: true, local: { squashNote: { at: Date.now(), branch: 'main' } } });
+  try {
+    await settle();
+    const card = byCls(env.main, 'set-mac');
+    assert.ok(card.textContent.includes(t('sync.macText')));
+    assert.ok(card.textContent.includes('git log --oneline @{u}..HEAD'));
+  } finally { env.close(); }
 });

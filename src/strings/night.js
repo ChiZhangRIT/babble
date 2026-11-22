@@ -1,7 +1,7 @@
 // 文案（床头模式、昨夜）：bed.* 床头那一页和录音页的入口、night.* 昨夜的记录和整理、night.why.* 没在听的原因、night.rep.* 复制出去的摘要。
 // 繁體（台灣）用台灣用語（螢幕、麥克風、裝置、儲存、設定、刪除、還原…）；{nn} 是设置里 TA 的称呼，用户写的字不转换。
 // {time} {from} {to} 是 fmtTime（凌晨2:13 / 2:13 AM），{date} 是不带年份的 fmtDate，{dur} 是 nightReport 的 fmtSpan（night.hm / m / s）。
-// 英文单复数：en(一个, 多个)，变量都会替换（没给的换成空）。night.syncNotePurge 是开放永久删除（core/purge.js 的 PURGE_ENABLED）以后的说法。
+// 英文单复数：en(一个, 多个)，变量都会替换（没给的换成空）。night.syncNotePurge 是永久删除的开关（core/purge.js 的 PURGE_ENABLED）开着时（现在开着）的说法，night.syncNote 是关着时的。
 const en = (one, many) => (v) => (Number(v.n) === 1 ? one : many).replace(/\{(\w+)\}/g, (m, k) => (v[k] != null ? String(v[k]) : ''));
 
 export const STRINGS = {

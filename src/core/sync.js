@@ -130,7 +130,9 @@ const bothIn = (raw) => Object.entries(isObj(raw.data) && isObj(raw.data.entries
  *             squash(): Promise<{ ok, already?, commit?, branch?, missing?, error?, skipped? }>,
  *             orphans(): Promise<{ ok, files?: Array<{ sha256, path, ext, size, at, mime }>, recent?, more?, error?, skipped? }>,
  *             historyInfo(): Promise<{ commits: number|null, branch: string|null, others: string[] }|null>,
- *             confirmedGone(): Set<string>|null }}
+ *             confirmedGone(): Set<string>|null,
+ *             serverNow(): number|null }}
+ *   serverNow：服务器上大概几点（这次打开往仓库提交过以后才知道）
  */
 export function createSync(o) {
   const doFetch = o.fetch || ((...a) => fetch(...a));
@@ -203,6 +205,15 @@ export function createSync(o) {
     p.sha = sha; p.gone = keysOf(goneShas(state)).sort();
     saveP();
   }
+  // 服务器的时间：GitHub 回应里提交的时刻（commit.committer.date，精确到秒；浏览器里读不到 Date 响应头）和收到回应时本机的时刻。
+  // 只用来不让这台设备的时钟快了把同步的设置写到将来（app.js：trashSince）。这次打开还没提交过 → null
+  let clock = null;
+  function noteClock(j) {
+    const c = j && j.commit, at = Date.parse((c && c.committer && c.committer.date) || '');
+    if (at > 0) clock = { server: at, local: Date.now() };
+  }
+  /** 现在服务器上大概是几点（按上次提交的回应往后推；只会比真的早一点：秒以下舍掉了、加上路上的时间）；不知道 → null */
+  const serverNow = () => (clock ? clock.server + Math.max(0, Date.now() - clock.local) : null);
   /** 云端确认过的永久删除了的录音（Set）；没开同步、这台设备还没确认过现在的云端版本 → null（本机的录音先别删） */
   function confirmedGone() {
     const cfg = o.getConfig();
@@ -388,6 +399,7 @@ export function createSync(o) {
       const r = await gh(cfg, 'PUT', contents(cfg, SYNC_FILE), { body, timeout: 60000 });
       if (r.ok) {
         const j = await r.json();
+        noteClock(j);
         cfg.sha = j.content.sha;
         cfg.etag = null;
         cfg.dirty = o.editVersion() !== version;      // 上传期间又改过：留到下一次
@@ -435,6 +447,7 @@ export function createSync(o) {
       const p = await gh(cfg, 'PUT', path, { body, timeout: 60000 + Math.round(content.length / 20) });   // 按 20KB/s 估上传时间
       if (p.ok) {
         const j = await p.json().catch(() => null);
+        noteClock(j);
         if (j && same(j.content)) { await store.markUploaded(sha, true); return; }
         continue;                                    // 回应对不上：再 GET 一次确认
       }
@@ -975,5 +988,5 @@ export function createSync(o) {
     return d && d.app === 'babble' && d.state && typeof d.state === 'object' ? d : null;
   }
 
-  return { syncNow, checkRepo, getAudio, status, idle, commits, fileAt, squash, orphans, historyInfo, confirmedGone };
+  return { syncNow, checkRepo, getAudio, status, idle, commits, fileAt, squash, orphans, historyInfo, confirmedGone, serverNow };
 }

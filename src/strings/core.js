@@ -1,7 +1,7 @@
 // 公共文案：common.* 通用按钮和提示、nav.* 导航、player.* 播放器、sync.* / syncErr.* 同步。
 // 繁體（台灣）用台灣用語（設定、儲存庫、存取權杖、匯入…）；动态字段 {x} 三种语言一致（测试会查）。
 // 英文单复数：en(一个, 多个)；两个数的（{n} 条梦话、{clips} 段录音）单独写函数。
-// 键名以 Purge 结尾的是开放永久删除（core/purge.js 的 PURGE_ENABLED）以后用的说法，没有 Purge 的是现在的说法。
+// 键名以 Purge 结尾的是永久删除的开关（core/purge.js 的 PURGE_ENABLED）开着时的说法（现在开着）；同名没有 Purge 的是关着时（第一阶段）的说法，测试里关着时还用。
 const en = (one, many) => (v) => (Number(v.n) === 1 ? one : many).replace('{n}', v.n);
 const pl = (n, one, many) => `${n ?? 0} ${Number(n) === 1 ? one : many}`;
 /** 两个数的说法里只说不是 0 的那几样（「1 条梦话、2 段录音」「2 段录音」） */
@@ -20,7 +20,7 @@ export const STRINGS = {
     'common.exportRaw': '导出数据（JSON）', 'common.notFound': '找不到这条梦话，可能已经删除了。', 'common.pickEntry': '选一条梦话看看',
     'common.recovered': '找回 {n} 段上次没保存完的录音，放在「待整理」里。', 'common.recoverFail': '有录音没能找回：{msg}',
     'common.dropHint': '松开以导入录音',
-    // 永久删除（开放以后才用得到）
+    // 永久删除
     'common.purge': '永久删除', 'common.purged': '已永久删除', 'common.purgedN': '已永久删除 {n} 项',
     'common.purgedOffline': '已经永久删除。联网同步以后，同步仓库里的录音文件才会删掉；各台设备上的录音文件同步到以后才删，最早在 7 天以后。',
 
@@ -64,15 +64,15 @@ export const STRINGS = {
     'sync.stopPending': '还有 {n} 段录音没从仓库删掉；停止同步（或换到别的仓库）以后，它们会一直留在这个仓库里。',
     'sync.audioDel': '{n} 段待从仓库删除',
     'sync.oldDevices': '「{devices}」上的牙牙呓语还是旧版本：关掉那台设备上所有牙牙呓语窗口再打开，就会更新。',
-    // 已更新到新版的设备（分两步上线：每台设备都报到以后，下一版才开放永久删除）
+    // 已更新到新版的设备（分两步上线时用来看每台设备是不是都更新了；sync.devicesLead 是关着时的说法）
     'sync.devicesH': '已更新到新版的设备',
     'sync.devicesLead': '每台设备打开新版以后会在这里报到。等你们俩用的每台设备都报到了，下一版才会开放「永久删除」。',
-    'sync.devicesLeadPurge': '每台设备打开新版以后会在这里报到。还是旧版本的设备，可能把已经永久删除的内容暂时传回仓库。',
+    'sync.devicesLeadPurge': '每台设备打开新版以后会在这里报到。列在这里的（v28 起）都认得永久删除；没列出来、或者在「还没报到的设备」下面的，可能还是旧版本，可能把已经永久删除的内容暂时传回仓库。',
     'sync.deviceThis': '这台设备', 'sync.deviceSeen': '最近一次报到：{time}', 'sync.deviceSoon': '同步成功一次以后报到',
     'sync.devicesWaitH': '还没报到的设备', 'sync.deviceEdited': '改过梦话 · {time}', 'sync.deviceBuild': '版本 {v}', 'sync.deviceOld': '最近同步时还是旧版本',
     'sync.devicesAll': '最近改过梦话的设备都报到了。',
     'sync.devicesFoot': '按设备名认：两台设备名字一样（比如都叫 iPhone）时分不清，可以在各自的「设置 → 这台设备」里起个名字。没更新的设备，关掉它上面所有牙牙呓语的窗口再打开就会更新。',
-    // 清理云端历史（开放永久删除以后才显示）
+    // 清理云端历史（永久删除的开关开着时才显示）
     'sync.squashH': '清理云端历史', 'sync.squashLead': '仓库的提交历史里还留着以前每一版的原话和删掉的录音。清理以后只留现在的内容。',
     'sync.squashBtn': '清理云端历史…', 'sync.squashWait': '先等同步完成（录音都传上去、该删的都删掉）再清理。',
     'sync.squashCount': '仓库现在有 {n} 个提交。', 'sync.lastBackup': '这台设备上次导出备份：{time}', 'sync.noBackup': '这台设备还没导出过备份。',
@@ -84,10 +84,10 @@ export const STRINGS = {
     'sync.squashNoBackup': '这台设备 24 小时内没有导出过备份。云端历史是最后一道保险，建议先在「设置 → 备份」导出一份。',
     'sync.squashExtra': '仓库里还有别的分支或标签（{names}），它们的历史不会清理。',
     'sync.squashPoints': '· 「从云端历史找更早的版本」以后只找得到清理之后的；每台设备自己记的修改记录不受影响\n· 其他设备不用做什么，下次同步时会自己检查一遍录音\n· Mac 上的 babble-data 文件夹要换成新的（步骤见清理后的说明），不要 git pull，千万不要从旧文件夹 git push --force\n· GitHub 还可能把旧的提交缓存一段时间；导出过的备份 zip 里也还有，要自己删掉\n\n这一步不能撤销。',
-    'sync.squashGo': '清理', 'sync.squashing': '正在清理…', 'sync.squashDone': '云端历史已经清理，现在只有 1 个提交。',
-    'sync.squashAlready': '云端历史只有 1 个提交，不用清理。', 'sync.squashMissing': '仓库里少了 {n} 段条目在用的录音，有它的设备同步时会传上来。',
+    'sync.squashGo': '清理', 'sync.squashing': '正在清理…', 'sync.squashDone': '云端历史已经清理。',
+    'sync.squashAlready': '云端历史只有 1 个提交，不用清理。', 'sync.squashMissing': '仓库里少了 {n} 段梦话在用的录音，有它的设备同步时会传上来。',
     'sync.macH': 'Mac 上的 babble-data 文件夹',
-    'sync.macText': '清理以后，Mac 上的那个文件夹还留着旧的历史，git pull 也会失败。在终端里按下面的步骤换成新的；前两行有输出的话，先把那些改动另存一份。',
+    'sync.macText': "清理以后，Mac 上的那个文件夹还留着旧的历史：git pull 会失败，或者看着成功了、旧的历史其实还在里面。不要在里面 git pull，在终端里按下面的步骤换成新的。git status、git log 那两行有输出的话（自己改过的文件、没推上去的提交），先把那些改动另存一份。已经 git pull 过的话，git log 那行会列出一长串以前的提交：改用 git log --oneline '@{u}@{1}..HEAD' 看。",
     'sync.macAfter': '确认 babble-data-new 里的东西都在以后，把旧的 babble-data 文件夹拖到废纸篓，再把 babble-data-new 改名成 babble-data。不要在旧文件夹里 git pull，千万不要从旧文件夹 git push --force（会把旧的历史推回 GitHub）。',
     'sync.macCopy': '复制命令', 'sync.macDone': '知道了',
 
@@ -159,7 +159,7 @@ export const STRINGS = {
     'sync.oldDevices': '「{devices}」上的牙牙囈語還是舊版本：關掉那臺裝置上所有牙牙囈語視窗再打開，就會更新。',
     'sync.devicesH': '已更新到新版的裝置',
     'sync.devicesLead': '每臺裝置打開新版之後會在這裡報到。等你們倆用的每臺裝置都報到了，下一版才會開放「永久刪除」。',
-    'sync.devicesLeadPurge': '每臺裝置打開新版之後會在這裡報到。還是舊版本的裝置，可能把已經永久刪除的內容暫時傳回儲存庫。',
+    'sync.devicesLeadPurge': '每臺裝置打開新版之後會在這裡報到。列在這裡的（v28 起）都認得永久刪除；沒列出來、或者在「還沒報到的裝置」下面的，可能還是舊版本，可能把已經永久刪除的內容暫時傳回儲存庫。',
     'sync.deviceThis': '這臺裝置', 'sync.deviceSeen': '最近一次報到：{time}', 'sync.deviceSoon': '同步成功一次之後報到',
     'sync.devicesWaitH': '還沒報到的裝置', 'sync.deviceEdited': '改過夢話 · {time}', 'sync.deviceBuild': '版本 {v}', 'sync.deviceOld': '最近同步時還是舊版本',
     'sync.devicesAll': '最近改過夢話的裝置都報到了。',
@@ -175,10 +175,10 @@ export const STRINGS = {
     'sync.squashNoBackup': '這臺裝置 24 小時內沒有匯出過備份。雲端歷史是最後一道保險，建議先在「設定 → 備份」匯出一份。',
     'sync.squashExtra': '儲存庫裡還有別的分支或標籤（{names}），它們的歷史不會清理。',
     'sync.squashPoints': '· 「從雲端歷史找更早的版本」以後只找得到清理之後的；每臺裝置自己記的修改紀錄不受影響\n· 其他裝置不用做什麼，下次同步時會自己檢查一遍錄音\n· Mac 上的 babble-data 資料夾要換成新的（步驟見清理後的說明），不要 git pull，千萬不要從舊資料夾 git push --force\n· GitHub 可能還會把舊的提交快取一段時間；匯出過的備份 zip 裡也還有，要自己刪掉\n\n這一步無法復原。',
-    'sync.squashGo': '清理', 'sync.squashing': '正在清理…', 'sync.squashDone': '雲端歷史已經清理，現在只有 1 個提交。',
+    'sync.squashGo': '清理', 'sync.squashing': '正在清理…', 'sync.squashDone': '雲端歷史已經清理。',
     'sync.squashAlready': '雲端歷史只有 1 個提交，不用清理。', 'sync.squashMissing': '儲存庫裡少了 {n} 段夢話在用的錄音，有它的裝置同步時會上傳。',
     'sync.macH': 'Mac 上的 babble-data 資料夾',
-    'sync.macText': '清理之後，Mac 上的那個資料夾還留著舊的歷史，git pull 也會失敗。在終端機裡照下面的步驟換成新的；前兩行有輸出的話，先把那些改動另存一份。',
+    'sync.macText': "清理之後，Mac 上的那個資料夾還留著舊的歷史：git pull 會失敗，或者看起來成功了、舊的歷史其實還在裡面。不要在裡面 git pull，在終端機裡照下面的步驟換成新的。git status、git log 那兩行有輸出的話（自己改過的檔案、沒推上去的提交），先把那些改動另存一份。已經 git pull 過的話，git log 那行會列出一長串以前的提交：改用 git log --oneline '@{u}@{1}..HEAD' 看。",
     'sync.macAfter': '確認 babble-data-new 裡的東西都在之後，把舊的 babble-data 資料夾拖到垃圾桶，再把 babble-data-new 改名成 babble-data。不要在舊資料夾裡 git pull，千萬不要從舊資料夾 git push --force（會把舊的歷史推回 GitHub）。',
     'sync.macCopy': '複製指令', 'sync.macDone': '知道了',
 
@@ -251,7 +251,7 @@ export const STRINGS = {
     'sync.oldDevices': 'Babble on "{devices}" is an older version. Close every Babble window on that device and open it again to update.',
     'sync.devicesH': 'Devices on the new version',
     'sync.devicesLead': 'Each device checks in here once it opens the new version. Permanent deletion opens in a later version, after every device you both use has checked in.',
-    'sync.devicesLeadPurge': 'Each device checks in here once it opens the new version. A device still on an older version may briefly put permanently deleted items back in the repository.',
+    'sync.devicesLeadPurge': 'Each device checks in here once it opens the new version. Every device listed here (v28 or later) understands permanent deletion. A device that isn\'t listed, or is under "Not checked in yet", may still be on an older version and may briefly put permanently deleted items back in the repository.',
     'sync.deviceThis': 'This device', 'sync.deviceSeen': 'Last checked in {time}', 'sync.deviceSoon': 'Checks in after the next successful sync',
     'sync.devicesWaitH': 'Not checked in yet', 'sync.deviceEdited': 'Edited an entry · {time}', 'sync.deviceBuild': 'version {v}', 'sync.deviceOld': 'Still syncing with an older version',
     'sync.devicesAll': 'Every device that edited entries lately has checked in.',
@@ -267,11 +267,11 @@ export const STRINGS = {
     'sync.squashNoBackup': "This device hasn't exported a backup in the last 24 hours. Cloud history is the last safety net, so export one in Settings → Backup first.",
     'sync.squashExtra': 'Other branches or tags ({names}) keep their history.',
     'sync.squashPoints': '· "Find older versions in cloud history" will only find versions after the cleanup; each device\'s own edit history is not affected\n· Other devices need nothing; they re-check their recordings at the next sync\n· Replace the babble-data folder on your Mac (steps shown after the cleanup). Don\'t git pull, and never git push --force from the old folder\n· GitHub may cache old commits for a while; exported backup zips still contain them, so delete those yourself\n\nThis can\'t be undone.',
-    'sync.squashGo': 'Clean up', 'sync.squashing': 'Cleaning up…', 'sync.squashDone': 'Cloud history cleaned up; 1 commit left.',
+    'sync.squashGo': 'Clean up', 'sync.squashing': 'Cleaning up…', 'sync.squashDone': 'Cloud history cleaned up.',
     'sync.squashAlready': 'Cloud history already has a single commit.',
     'sync.squashMissing': en('{n} recording in use is missing from the repository; the device that has it uploads it at its next sync.', '{n} recordings in use are missing from the repository; the device that has them uploads them at its next sync.'),
     'sync.macH': 'The babble-data folder on your Mac',
-    'sync.macText': "Your Mac's folder still has the old history, and git pull will fail. Replace it with these steps in Terminal. If the first two commands print anything, save those changes somewhere first.",
+    'sync.macText': "Your Mac's folder still has the old history: git pull will fail, or seem to work while the old history stays in the folder. Don't git pull there; replace the folder with these steps in Terminal. If git status or git log prints anything (files you changed, commits you never pushed), save those somewhere first. If you already ran git pull, git log lists a long run of old commits: use git log --oneline '@{u}@{1}..HEAD' instead.",
     'sync.macAfter': "Once babble-data-new looks right, drag the old babble-data folder to the Trash and rename babble-data-new to babble-data. Don't git pull in the old folder, and never git push --force from it (that puts the old history back on GitHub).",
     'sync.macCopy': 'Copy commands', 'sync.macDone': 'Got it',
 

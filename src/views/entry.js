@@ -4,8 +4,9 @@
 // 「👰🏻‍♀️：」后面跟着录音的地方画成「🎙 录音」小标签，点了滚到播放器。
 // 每段录音上面是它的名字（clips.js 的显示名），点了改名（renameClipSheet，编辑页也用）。
 // 自己管更新（返回 onChange）：数据变了原地重画、保留滚动；删除后正在离开时不重画。
-// 已删除的（从「最近删除」点进来）只读地看一眼，能恢复；开放永久删除以后（core/purge.js 的 PURGE_ENABLED，deps.purgeEnabled 测试用）
+// 已删除的（从「最近删除」点进来）只读地看一眼原话、听一下录音，能恢复；core/purge.js 的 PURGE_ENABLED 开着时（现在开着；deps.purgeEnabled 测试用）
 // 还能在这里永久删除（同「最近删除」的确认框，删了回「最近删除」）、看到还剩几天。永久删除了的（墓碑）只说一句「已经永久删除」。
+// deps.player（测试用）换掉已删除那条的播放器。
 // 也导出给别的页面用的：readClipFiles（选来的录音文件 → 存进本机录音库）、chatView、sayNodes、clipCaption、renameClipSheet。
 // #/e/<id>/history（params.sub === 'history'）是修改记录页，在 views/history.js。
 import { h, icon, copyText, download } from '../ui/dom.js';
@@ -209,8 +210,8 @@ function weekday(date, lang) {
 export function render(main, params, ctx, deps = {}) {
   if (params.sub === 'history') return renderHistory(main, params, ctx);
   const id = params.id;
-  const purgeOn = deps.purgeEnabled ?? PURGE_ENABLED;
-  let players = [], leaving = false, share = { key: null, ready: null };
+  const purgeOn = deps.purgeEnabled ?? PURGE_ENABLED, player = deps.player || audioPlayer;
+  let players = [], leaving = false, purging = false, share = { key: null, ready: null };
   const sp = () => ctx.state.settings.speakers;
   const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
   const fileInput = h('input', { type: 'file', accept: AUDIO_ACCEPT, multiple: true, hidden: true,
@@ -227,17 +228,24 @@ export function render(main, params, ctx, deps = {}) {
       return [navbar(), h('div.page', null, h('p.empty', null, t(purged ? 'entry.purgedNote' : 'common.notFound')))];
     }
     if (e.deleted) {
-      // 已删除（从「最近删除」点进来）：只读地看一眼原话，决定要不要恢复（开放以后也能在这里永久删除）
+      // 已删除（从「最近删除」点进来）：只读地看一眼原话、听一下录音，决定要不要恢复（开关开着时也能在这里永久删除）。
+      // 录音只能听（不能改名、转文字）；正在永久删除（等先同步的那一下）时两个按钮都先不能点
       const by = byLabel(deletionBy(e), sp()), left = leftText(ctx, 'e:' + id, purgeOn), nRm = (e.removedAudio || []).length;
+      const clips = (e.audio || []).map((c, i) => {
+        const p = player({ getBlob: () => ctx.clipBlob(c.sha256, c.mime), durationSec: c.durationSec, key: c.sha256 });
+        players.push(p);
+        return h('div.e-clip', null, h('p.e-clip-cap', null, clipLabel(c, i, fallbackName)), p);
+      });
       return [navbar(), h('article.page.entry.e-gone', null,
         h('div.e-banner', { role: 'status' }, h('span', null, t('entry.deleted'), by ? h('small.e-banner-by', null, t('hist.deletedBy', { by, when: fmtAgo(e.deletedAt, ctx.lang()) })) : null,
           left ? h('small.e-banner-by', null, left) : null,
           nRm ? h('small.e-banner-by', null, t(purgeOn ? 'deleted.hasRemoved' : 'deleted.hasRemovedKeep', { n: nRm })) : null),
           h('span.e-banner-acts', null,
-            h('button.btn.small.soft', { type: 'button', onclick: () => ctx.restore(id) }, t('common.restore')),
-            purgeOn ? h('button.btn.small.danger', { type: 'button', onclick: () => purge(e) }, t('common.purge')) : null)),
+            h('button.btn.small.soft', { type: 'button', disabled: purging, onclick: () => ctx.restore(id) }, t('common.restore')),
+            purgeOn ? h('button.btn.small.danger', { type: 'button', disabled: purging, onclick: () => purge(e) }, purging ? t('deleted.purging') : t('common.purge')) : null)),
         h('header.e-head', null, h('h1.e-big', null, fmtEntryDate(e, ctx.lang(), { sep: daySep(ctx.lang()) }))),
-        e.text.trim() ? chatView(e.text, sp()) : null,
+        clips.length ? h('div.e-audio', null, clips) : null,
+        e.text.trim() ? chatView(e.text, sp(), { hasAudio: clips.length > 0, onCue: toPlayer }) : null,
         h('p.e-foot.e-by', null, h('a', { href: '#/e/' + enc(id) + '/history' }, t('hist.title'))))];
     }
     const lang = ctx.lang();
@@ -348,9 +356,13 @@ export function render(main, params, ctx, deps = {}) {
     if (params.pane === 'detail') ctx.navigate(ctx.home(), { replace: true }); else ctx.back('/');     // 双栏：回到列表或日历（看用户上次选的）
     ctx.remove(id);
   }
-  /** 已删除的这条永久删除（同「最近删除」的确认框）：删掉了 → 回「最近删除」；期间在别的设备上改过、没删 → 留在这页重画 */
+  /** 已删除的这条永久删除（同「最近删除」的确认框）：删掉了 → 回「最近删除」；期间在别的设备上改过、没删 → 留在这页重画。
+   *  点了确认以后（开着同步要先同步一次，最多 10 秒）按钮写「正在永久删除…」、恢复和永久删除都不能点，也不跟着数据重画 */
   async function purge(e) {
-    const r = await askPurge(ctx, { entries: [{ id, at: e.updatedAt }] }, { onGo: () => { leaving = true; } });
+    if (purging) return;
+    let r = null;
+    try { r = await askPurge(ctx, { entries: [{ id, at: e.updatedAt }] }, { onGo: () => { leaving = true; purging = true; draw(); } }); }
+    finally { purging = false; }
     if (r && (r.done || []).includes(id)) { ctx.back('/deleted'); return; }
     leaving = false; draw();
   }

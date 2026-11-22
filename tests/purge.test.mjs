@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createPurger, PURGE_ENABLED, PURGE_GRACE_MS, TRASH_KEY, shaSig, deviceSeen, deviceReport, DEVICE_EVERY } from '../src/core/purge.js';
+import { createPurger, PURGE_ENABLED, PURGE_GRACE_MS, TRASH_KEY, CLOCK_SLACK_MS, shaSig, deviceSeen, deviceReport, DEVICE_EVERY } from '../src/core/purge.js';
 import { blankState, makeEntry, normalizeEntry, normalizeState, deletedRecord, goneShas, PURGE_MS, TOUCH_MS } from '../src/core/store.js';
 import { keepClips } from '../src/core/nightKeep.js';
 import { memoryStore } from '../src/core/audioStore.js';
@@ -9,8 +9,8 @@ import { Element, fakeStorage, installDom, find } from './helpers/dom.mjs';
 import { audioPlayer, forgetClip } from '../src/ui/player.js';
 import { setLang, t } from '../src/i18n.js';
 
-// 永久删除的本机这边（core/purge.js）：清理本机、永久删除、30 天、孤儿录音、设备报到。开关在第一阶段是关着的，
-// 这里都传 enabled: true 来测（另有一条专门测关着时什么都不删）。数据、录音全是编的
+// 永久删除的本机这边（core/purge.js）：清理本机、永久删除、30 天、孤儿录音、设备报到。开关现在（第二阶段）开着，
+// 这里都传 enabled: true 来测（另有一条专门测关着时什么都不删）。开放那天冷启动 app.js 的情况见 purgeOpen.test.mjs。数据、录音全是编的
 const T0 = Date.UTC(2026, 10, 20, 12, 0, 0);
 const DAY = 864e5, HOUR = 36e5;
 const blob = (s) => new Blob([new TextEncoder().encode('假录音：' + s)], { type: 'audio/mp4' });
@@ -46,9 +46,10 @@ function env({ enabled = true, sync = false, confirmed = null, saveOk = true, cl
   return { box, audio, night, storage, local, calls, journal, p, put, clip, has: (sha) => audio.clips.has(sha) };
 }
 
-test('开关：第一阶段关着；关着时永久删除、自动永久删除、30 天的记录都不做，别的设备来的墓碑照样清理、移除的录音照样能放回去', async () => {
-  assert.equal(PURGE_ENABLED, false);
-  const E = env({ enabled: null });
+test('开关：现在开着（第二阶段，不传 enabled 就跟着它）；关着时永久删除、自动永久删除、30 天的记录都不做，别的设备来的墓碑照样清理、移除的录音照样能放回去', async () => {
+  assert.equal(PURGE_ENABLED, true);
+  assert.equal(env({ enabled: null }).p.enabled, true, '不传 enabled：跟着 PURGE_ENABLED');
+  const E = env({ enabled: false });
   const A = await E.clip('一'), B = await E.clip('二');
   E.put(deleted('e_del', [item(A)]));
   E.put(normalizeEntry({ ...live('e_rm'), removedAudio: [item(B, { removedAt: 4000 })] }, 'e_rm'));
@@ -420,6 +421,56 @@ test('30 天：trashSince 晚于第一次看到 → 从 trashSince 算；删了�
   assert.ok(E.box.S.data.entries.e_1.purged);
 });
 
+test('trashSince 不晚于服务器的时间：时钟快两天的设备先开放——写下的改成服务器的时间（比原来的修改时间新，合并时盖过）；时钟准的设备上写着的日期不晚于它真删的；差几分钟、比服务器早的不改', async () => {
+  const REAL = T0, FAST = 2 * DAY;
+  // NN 的 iPhone 时钟快两天：第一轮同步时还没提交过（不知道服务器几点）→ 先按自己的钟写下
+  const clock = { t: REAL + FAST };
+  const B = env({ clock, sync: true });
+  B.put(deleted('e_old', [], T0 - 10 * DAY));            // 开放以前就在「最近删除」里的误录
+  B.p.noteTrash();
+  assert.equal(B.p.ensureTrashSince(null), true);
+  assert.equal(B.box.S.settings.trashSince, REAL + FAST);
+  const at1 = B.box.S.settingsAt.trashSince;
+  // 下一轮提交以后知道了服务器的时间（GitHub 回应里提交的时刻）：快了两天 → 挪成写下那一刻服务器的时间，修改时间往后
+  clock.t = REAL + FAST + 5000;
+  assert.equal(B.p.ensureTrashSince(REAL + 5000), true);
+  assert.equal(B.box.S.settings.trashSince, REAL, '写下那一刻（真的时间），不是改的这一刻');
+  assert.ok(B.box.S.settingsAt.trashSince > at1, '比原来那次写的新：合并时盖过');
+  assert.equal(B.p.ensureTrashSince(REAL + 6000), false, '改过以后不再改');
+  // 它自己还是要从自己第一次看到（按它的钟）算满 30 天才删：改早了 trashSince 也不会让它早删
+  clock.t = REAL + FAST + PURGE_MS - HOUR;
+  assert.deepEqual(B.p.autoPurge(), { n: 0 });
+  clock.t = REAL + FAST + PURGE_MS + 1;
+  assert.deepEqual(B.p.autoPurge(), { n: 1 }, '真的时间：开放那一刻 + 30 天');
+  // 时钟准的 iPhone 同步到改过的 trashSince：写着的日期 = 开放那一刻 + 30 天，不晚于 NN 的 iPhone 真删的（真的时间 REAL + 30 天）
+  const A = env({ clock: { t: REAL + HOUR } });
+  A.put(deleted('e_old', [], T0 - 10 * DAY));
+  A.box.S.settings.trashSince = B.box.S.settings.trashSince; A.box.S.settingsAt.trashSince = B.box.S.settingsAt.trashSince;
+  A.p.noteTrash();
+  assert.equal(A.p.trashInfo('e:e_old').shownAt, REAL + PURGE_MS, '= NN 的 iPhone 真删的时刻（真的时间）');
+  // 别的设备按快的钟写的、同步过来还在服务器的将来（它自己没来得及改）：时钟准的这台知道服务器几点以后改成服务器现在
+  A.box.S.settings.trashSince = REAL + FAST;
+  assert.equal(A.p.ensureTrashSince(REAL + HOUR), true);
+  assert.equal(A.box.S.settings.trashSince, REAL + HOUR);
+  // 一开始就知道服务器的时间：直接写服务器的时间；自己的钟比服务器慢：按自己的（只会更早，写着的日期只会更早）
+  const C = env({ clock: { t: REAL + FAST } });
+  assert.equal(C.p.ensureTrashSince(REAL), true);
+  assert.equal(C.box.S.settings.trashSince, REAL);
+  const D = env({ clock: { t: REAL - HOUR } });
+  assert.equal(D.p.ensureTrashSince(REAL), true);
+  assert.equal(D.box.S.settings.trashSince, REAL - HOUR);
+  // 已经写好的只比服务器晚几分钟（秒以下舍掉了、路上的时间）、或者比服务器早：不改，不多推一次
+  const E = env({ clock: { t: REAL } });
+  E.box.S.settings.trashSince = REAL + CLOCK_SLACK_MS - 1;
+  assert.equal(E.p.ensureTrashSince(REAL), false);
+  E.box.S.settings.trashSince = REAL - DAY;
+  assert.equal(E.p.ensureTrashSince(REAL), false);
+  assert.equal(E.box.S.settings.trashSince, REAL - DAY);
+  assert.equal(E.calls.mutate.length, 0);
+  // 开关关着、本机数据有问题：都不写
+  assert.equal(env({ enabled: false, clock: { t: REAL } }).p.ensureTrashSince(REAL), false);
+});
+
 test('babble.trash：几个标签页一起写取较早的；不在「最近删除」里的去掉；记在将来的（时钟错过）改成现在；本机数据有问题时不自动删', async () => {
   const clock = { t: T0 };
   const E = env({ clock });
@@ -510,7 +561,7 @@ test('shaSig：和顺序无关；Set、Map 都行；没有 → none', () => {
   assert.equal(TOUCH_MS, HOUR);
 });
 
-test('app.js：墓碑对页面不可见、写不进去；永久删除了的录音不给（不碰本机录音库）；开关关着时永久删除、清理云端历史什么都不做；移除的录音照样放回去', async () => {
+test('app.js：墓碑对页面不可见、写不进去；永久删除了的录音不给（不碰本机录音库）；开关开着（默认）、没开同步：启动就写 trashSince、记下「最近删除」里的（早就删了的也从今天算 30 天，不当场删）、说一声；永久删除、没有条目在用的录音照常删，清理云端历史要开着同步；移除的录音照样放回去', async () => {
   const A = 'a'.repeat(64), B = 'b'.repeat(64), G = 'c'.repeat(64);
   const st = blankState();
   st.data.entries.e_live = normalizeEntry({ ...live('e_live', [item(A)]), updatedBy: { who: 'nn', device: 'iPhone', at: Date.now() } }, 'e_live');
@@ -531,15 +582,27 @@ test('app.js：墓碑对页面不可见、写不进去；永久删除了的录�
       });
       return request;
     } },
+    MutationObserver: class { observe() {} disconnect() {} }, getComputedStyle: () => ({ bottom: '24px' }), requestAnimationFrame: () => 0,   // 提示条
     setInterval: () => 0, setTimeout: () => 0 });
+  const flush = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setImmediate(r)); };
   try {
     const shell = new Element('div'); shell.className = 'app';
     for (const id of ['side', 'main']) { const el = new Element('div'); el.id = id; shell.append(el); }
     const tabs = new Element('nav'); tabs.id = 'tabs';
     dom.doc.body.append(shell, tabs);
+    const t0 = Date.now();
     await import('../src/app.js?test=purge-wiring');
     const { ctx, state } = window.__babble;
     await ctx.recovered; await ctx.nightRecovered;
+    await flush();                                      // 启动时的清理、30 天检查都做完（下面数录音库的事务）
+    // 开关开着、没开同步：启动时就写 trashSince、记下「最近删除」里的两项；1970 年删的也不当场删，从今天起 30 天；说一声 30 天的规矩
+    const since = state.getState().settings.trashSince;
+    assert.ok(since >= t0 && since <= Date.now());
+    assert.deepEqual(Object.keys(JSON.parse(storage.getItem(TRASH_KEY))).map(k => k.split('|')[0]).sort(), ['c:e_rm:' + B, 'e:e_del']);
+    assert.ok(!state.getState().data.entries.e_del.purged && state.getState().data.entries.e_rm.removedAudio.length === 1);
+    assert.equal(ctx.trashInfo('e:e_del').shownAt, since + PURGE_MS);
+    assert.equal(dom.doc.querySelector('#toast').textContent, t('deleted.policyNote'));
+    assert.ok(state.getLocal().purgeNoticeAt >= t0);
     assert.equal(ctx.entry('t_gone'), null);
     assert.ok(ctx.tombstone('t_gone').purged);
     assert.equal(ctx.tombstone('e_live'), null);
@@ -555,18 +618,21 @@ test('app.js：墓碑对页面不可见、写不进去；永久删除了的录�
     assert.deepEqual(ctx.removedClips().map(x => [x.entryId, x.item.sha256]), [['e_rm', B]]);
     assert.ok(ctx.restoreClip('e_rm', B).audio.some(a => a.sha256 === B));
     assert.deepEqual(ctx.removedClips(), []);
-    const saved = JSON.stringify(state.getState().data.entries);
-    assert.equal((await ctx.purge([{ id: 'e_del', at: ctx.entry('e_del').updatedAt }])).skipped, true);
-    assert.equal((await ctx.purgeAll({ entries: [{ id: 'e_del', at: ctx.entry('e_del').updatedAt }], clips: [] })).skipped, true);
-    assert.equal((await ctx.purgeOrphans([{ sha256: 'd'.repeat(64) }])).skipped, true);
-    assert.deepEqual(await ctx.sync.squash(), { ok: false, skipped: true });
-    assert.equal(JSON.stringify(state.getState().data.entries), saved);
-    assert.equal(state.getState().settings.trashSince, undefined, '开关关着：不写 trashSince');
-    assert.equal(storage.getItem(TRASH_KEY), null);
+    // 永久删除（没开同步：不先同步，马上删）；按画出来的那一版删，变了的不删
+    assert.deepEqual(await ctx.purge([{ id: 'e_del', at: ctx.entry('e_del').updatedAt - 1 }]), { done: [], changed: ['e_del'] });
+    assert.deepEqual(await ctx.purge([{ id: 'e_del', at: ctx.entry('e_del').updatedAt }]), { done: ['e_del'], changed: [] });
+    assert.equal(ctx.entry('e_del'), null);
+    assert.ok(ctx.tombstone('e_del').purged);
     assert.deepEqual(ctx.trashInfo('e:e_del'), { shownAt: null });
+    const D = 'd'.repeat(64);
+    assert.deepEqual(await ctx.purgeOrphans([{ sha256: D, mime: 'audio/mp4' }]), { done: [D], changed: [] });
+    assert.ok(ctx.goneShas().has(D));
+    assert.deepEqual(await ctx.purgeOrphans([{ sha256: A, mime: 'audio/mp4' }]), { done: [], changed: [A] }, '有条目在用的不删');
+    assert.deepEqual(await ctx.sync.squash(), { ok: false, skipped: true }, '没开同步：清理云端历史什么都不做');
     const stt = ctx.sync.status();
     assert.deepEqual([stt.pendingPurge, stt.purging, stt.oldDevices], [0, false, []]);
     assert.deepEqual(ctx.sync.devices().waiting.map(w => [w.name, w.who]), [['iPhone', 'nn']]);
+    await flush();
     state.setJournal(null);
   } finally { dom.restore(); }
 });

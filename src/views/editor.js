@@ -266,7 +266,7 @@ export function render(main, params, ctx, deps = {}) {
     });
   }
   async function removeClip(c) {
-    // 条目里原有的 → 保存以后进「最近删除」；这次刚加、还没存进条目的 → 只是不要了（开放永久删除以后在「没有条目在用的录音」里）
+    // 条目里原有的 → 保存以后进「最近删除」；这次刚加、还没存进条目的 → 只是不要了（开关开着时在「没有条目在用的录音」里找得到、能永久删除）
     const msg = addedSha.has(c.sha256) ? (purgeOn ? 'edit.removeConfirmNewPurge' : 'edit.removeConfirmNew') : (purgeOn ? 'edit.removeConfirmPurge' : 'edit.removeConfirm');
     if (!(await ctx.confirm({ message: t(msg), confirmLabel: t('edit.removeClip'), danger: true }))) return;
     w.audio = w.audio.filter(a => a.sha256 !== c.sha256);

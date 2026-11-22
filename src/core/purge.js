@@ -12,21 +12,27 @@
 //      草稿本身从不删（编辑页、录音页、启动时的 applyRecovery 各自处理）。
 //   3. 30 天：每台设备从自己第一次看到它在「最近删除」里算起（babble.trash，只在本机），也不早于同步的设置 trashSince（开放永久删除的时刻）。
 //      显示的日期 shownAt 用同步的时间算，不会晚于任何一台设备真的删的时候。
-//   4. 报到（两步上线用）：这台设备用上了这一版，记进同步的 data.devices；「设置 → 同步」据此列出更新了的设备、还没报到的设备。
-// 分两步上线：PURGE_ENABLED = false 时页面不显示永久删除的按钮（页面自己看这个开关），这里的永久删除也什么都不做（这台设备不产生墓碑）、
-// 不自动永久删除、不记 babble.trash、不写 trashSince；别的设备（新版）来的墓碑照样合并、照样清理本机（sweep 不受开关影响），
-// 移除的录音照样能放回去。测试传 enabled: true。
+//      第一阶段从来不写 babble.trash、trashSince：开放以后每台设备第一次打开新版时，已经在「最近删除」里的每一项从这一刻起才开始算，
+//      至少再等满 30 天。trashSince 是开放以后第一次同步成功的那台设备写下的时刻（没开同步的设备：开放以后第一次打开），只会让它更晚。
+//      开着同步时 trashSince 不晚于服务器的时间（GitHub 回应里提交的时刻）：写的那台设备时钟快了也不会让别的设备上写着的日期比真删的晚。
+//   4. 报到：这台设备用上了这一版，记进同步的 data.devices；「设置 → 同步」据此列出更新了的设备、还没报到的设备
+//      （两步上线时用来看每台设备是不是都更新了；开放以后照样报到，还在用旧版本的设备照样列出来）。
+// 分两步上线，现在是第二阶段：PURGE_ENABLED = true（第一阶段 babble-v28 是 false）。设成 false 时页面不显示永久删除的按钮（页面自己看这个开关），
+// 这里的永久删除也什么都不做（这台设备不产生墓碑）、不自动永久删除、不记 babble.trash、不写 trashSince；别的设备来的墓碑照样合并、
+// 照样清理本机（sweep 不受开关影响），移除的录音照样能放回去。测试传 enabled: false（页面传 purgeEnabled: false）测关着的那部分。
 // 依赖都由调用方传进来（app.js），Node 里能测；import 时什么都不做。
 import { goneShas, claimShas, stubShas, purgedRecord, purgeRemovedRecord, restoreRemovedRecord, orphanTombstone, trashKeys, isTombstone, setSetting, PURGE_MS, TOUCH_MS } from './store.js';
 import { EDIT_PREFIX } from './drafts.js';
 import { FEATURES } from './sync.js';
 import { debounce, isObj, str } from './util.js';
 
-/** 第一阶段关着：打开以后才有「永久删除」「全部永久删除」「清理云端历史」，30 天自动永久删除才开始计时 */
-export const PURGE_ENABLED = false;
+/** 开着（第二阶段）：有「永久删除」「全部永久删除」「没有梦话在用的录音」「清理云端历史」，30 天自动永久删除开始计时。第一阶段是 false */
+export const PURGE_ENABLED = true;
 export const TRASH_KEY = 'babble.trash';           // 本机：{ '<trashKey>|<since>': 这台设备第一次看到的时刻 }
 /** 开着同步时，永久删除了的录音在各台设备上再留几天才删（见上面 2.）；没开同步不会有别的设备来作废，马上删 */
 export const PURGE_GRACE_MS = 7 * 864e5;
+/** trashSince 比服务器的时间晚这么多以上才改（服务器的时间只精确到秒，再加上路上的时间；差几分钟在「n 天后」上看不出来） */
+export const CLOCK_SLACK_MS = 10 * 6e4;
 const SHA = /^[0-9a-f]{64}$/;
 
 /** 一组 sha（Set，或以 sha 为键的 Map）的指纹：个数 + 与顺序无关的和。判断「没了的录音」变了没有，变了才去清理；null → 'none' */
@@ -37,7 +43,7 @@ export function shaSig(set) {
   return set.size + ':' + h;
 }
 
-// ---------- 报到（两步上线：开放永久删除前看看是不是每台设备都更新了） ----------
+// ---------- 报到（两步上线时用来看是不是每台设备都更新了；开放以后照样报到，「设置 → 同步」照样列出还没更新的设备） ----------
 // data.devices[设备 id] = { id, updatedAt, seenAt, since, whoAt, name, aka?, who, build, features }：updatedAt = seenAt = 最后一次报到（合并按它取新的）；
 // since：第一次报到（从这时起它就是新版本了：之后同名的旧版本推送一定是别的设备）；whoAt：「谁在用」最后一次改的时刻（在这之后它不会再签没写谁的名）；
 // aka：这台设备以前用过的名字（改过名，旧签名照样对得上）；features 和写进 babble.json 的一样（sync.js 的 FEATURES）。旧版本 App 不认识这个集合，原样保留
@@ -122,7 +128,7 @@ export function deviceReport(state, { me = null, self = null, oldDevices = [], n
  * @param {object} [o.cloudHistory]                  createCloudHistory 的结果（forget）
  * @param {() => object} [o.getLocal]  @param {(patch) => void} [o.setLocal]   babble.local（sttRun）
  * @param {() => Set<string>} [o.gone]               goneShas(getState()) 的缓存版（app.js 数据变了就清）
- * @param {boolean} [o.enabled]                      默认 PURGE_ENABLED（测试传 true）
+ * @param {boolean} [o.enabled]                      默认 PURGE_ENABLED（现在开着；测试传 false 测关着的那部分）
  * @param {() => number} [o.now]
  */
 export function createPurger(o) {
@@ -330,7 +336,7 @@ export function createPurger(o) {
     return res;
   }
 
-  /** 「移除的录音」放回那条（第一阶段也能用）→ 存好的条目 | null（那段已经不在「移除的录音」里了）。提示由页面弹 */
+  /** 「移除的录音」放回那条（开关关着也能用）→ 存好的条目 | null（那段已经不在「移除的录音」里了）。提示由页面弹 */
   function restoreClip(id, sha) {
     const ok = mutate(s => {
       const cur = s.data.entries[id];
@@ -342,6 +348,7 @@ export function createPurger(o) {
   }
 
   // ---------- 30 天 ----------
+  let wrote = null;                  // 这次打开按自己的钟写下的 trashSince（还不知道服务器几点的时候）
   const trashId = (k, v) => k + '|' + (Number(v && v.since) || 0);    // 同一项删了、恢复、又删：since 变了，重新算 30 天
   function readTrash() {
     try { const st = store(), v = JSON.parse((st && st.getItem(TRASH_KEY)) || 'null'); return isObj(v) ? v : {}; } catch (e) { return {}; }
@@ -356,14 +363,27 @@ export function createPurger(o) {
     if (keys.length === Object.keys(disk).length && keys.every(k => Number(disk[k]) === next[k])) return;
     try { st.setItem(TRASH_KEY, JSON.stringify(next)); } catch (e) { /* 存不下：下次再记，只会更晚删 */ }
   }
-  /** 开放永久删除的时刻（同步的设置，只写一次）。开着同步时等这次打开后第一次同步成功再调，不盖掉别的设备早写好的。→ 写了没有 */
-  function ensureTrashSince() {
-    if (!enabled || !storageOk() || getState().settings.trashSince) return false;
-    const t = now();
-    mutate(s => setSetting(s, 'trashSince', t, t));
+  /**
+   * 开放永久删除的时刻（同步的设置，只写一次）：没开同步时启动时调；开着同步时每一轮同步成功以后调（第一轮以前不调：不盖掉别的设备早写好的）。
+   * serverNow：服务器上现在几点（sync 的 serverNow；这次打开还没提交过 → null）。写的时候不晚于它。
+   * 写的那台设备时钟快了（比如快两天）、写的时候还不知道服务器几点 → 知道以后改：这次打开自己写下的，按时钟快了多少往前挪（= 写下那一刻服务器的时间）；
+   * 别的设备写的、比服务器现在还晚 CLOCK_SLACK_MS 以上 → 改成服务器现在。不改的话，时钟准的设备上写着的日期比时钟快的那台真删的晚
+   * （它按自己的钟、从自己第一次看到算满 30 天）。改早了不会让哪台设备删得更早：每台设备还要从自己第一次看到算满 30 天。→ 写了没有
+   */
+  function ensureTrashSince(serverNow = null) {
+    if (!enabled || !storageOk()) return false;
+    const cur = Number(getState().settings.trashSince) || 0, srv = Number(serverNow) > 0 ? Number(serverNow) : null, t = now();
+    let v;
+    if (!cur) v = srv ? Math.min(t, srv) : t;
+    else if (srv) {
+      v = cur === wrote ? Math.min(cur, cur - (t - srv)) : srv;
+      if (!(cur > v + CLOCK_SLACK_MS)) return false;
+    } else return false;
+    mutate(s => setSetting(s, 'trashSince', v, t));
+    wrote = srv ? null : v;                       // 按自己的钟写的：知道服务器几点以后可能还要挪
     return true;
   }
-  /** 「最近删除」里一项（trashKeys 的键）的日期：shownAt = max(trashSince, min(删除时刻, 这台设备第一次看到)) + 30 天；还没开放（没有 trashSince）→ null */
+  /** 「最近删除」里一项（trashKeys 的键）的日期：shownAt = max(trashSince, min(删除时刻, 这台设备第一次看到)) + 30 天；还没有 trashSince（开着同步、开放以后还没同步成功过，云端也没有别的设备写的）→ null */
   function trashInfo(key) {
     const S = getState(), since = Number(S.settings.trashSince) || 0, v = trashKeys(S).get(key);
     if (!since || !v) return { shownAt: null };

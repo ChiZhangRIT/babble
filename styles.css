@@ -431,10 +431,11 @@ mark { padding: 0 1px; border-radius: 3px; background: rgba(214, 120, 60, .22); 
 .e-clip-cap b { font-weight: 600; color: var(--ink-2); }
 .player.flash { animation: e-flash 1.4s ease-out; }
 @keyframes e-flash { 0%, 30% { box-shadow: 0 0 0 3px var(--accent-line), var(--shadow-card); } 100% { box-shadow: var(--shadow-card); } }
-.e-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; padding: 10px 10px 10px 14px; border-radius: var(--radius);
+.e-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 12px; margin-bottom: 18px; padding: 10px 10px 10px 14px; border-radius: var(--radius);
   background: var(--amber-soft); color: var(--amber); font-size: 14px; }
+.e-banner > span:first-child { flex: 1 1 120px; min-width: 0; }   /* 字至少留 120px：按钮放不下（英文、正在永久删除…）就换到下一行，不把字挤成一列 */
 .e-gone .chat { opacity: .85; }
-.e-banner-acts { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }   /* 恢复、永久删除（开放以后） */
+.e-banner-acts { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }   /* 恢复、永久删除 */
 
 /* 还没写原话：一个虚线框，点了去编辑 */
 .e-write { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 22px; padding: 18px 16px; border: 1.5px dashed var(--accent-line);
@@ -625,7 +626,7 @@ textarea.ed-note { min-height: 56px; overflow-y: hidden; resize: none; }
 .del-prev.ph { color: var(--faint); }
 .del-at { margin-top: 2px; font-size: 12px; color: var(--faint); }
 .del-restore { flex: none; }
-.del-acts { display: flex; flex: none; flex-direction: column; align-items: stretch; gap: 12px; }   /* 恢复；开放以后下面多一个永久删除。12px：两个按钮各往外扩 6px 的点按区域正好在中间接上 */
+.del-acts { display: flex; flex: none; flex-direction: column; align-items: stretch; gap: 12px; }   /* 恢复，下面是永久删除（开关关着时没有）。12px：两个按钮各往外扩 6px 的点按区域正好在中间接上 */
 .del-left { margin-top: 2px; font-size: 12px; color: var(--amber); }      /* 几天后永久删除、另有几段移除的录音 */
 .del-clip { gap: 12px; }                                                  /* 移除的录音、没有条目在用的录音：左边小播放钮 */
 .del-clip > .player.compact { flex: none; }
@@ -1172,7 +1173,7 @@ textarea.im-paths { min-height: 92px; font: 13px/1.5 ui-monospace, SFMono-Regula
 .set-notes { margin-top: 12px; }
 .set-notes p + p { margin-top: 6px; }
 .set-stop { display: flex; justify-content: center; margin-top: 22px; }
-/* 已更新到新版的设备（两步上线）：报到过的、还没报到的 */
+/* 已更新到新版的设备：报到过的、还没报到的 */
 .set-dev-list { margin: 10px 0 0; padding: 0; list-style: none; }
 .set-dev-list li { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; padding: 7px 0; font-size: 14px; }
 .set-dev-list li + li { border-top: 1px solid var(--line); }
@@ -1184,7 +1185,7 @@ textarea.im-paths { min-height: 92px; font: 13px/1.5 ui-monospace, SFMono-Regula
 .set-dev-ok { display: flex; align-items: center; gap: 6px; margin-top: 12px; color: var(--good); }
 .set-dev-ok .ic { width: 16px; height: 16px; stroke-width: 2.4; }
 .set-devices .f-help { margin-left: 0; }
-/* 清理云端历史（开放永久删除以后）、清理以后 Mac 上换文件夹的步骤 */
+/* 清理云端历史、清理以后 Mac 上换文件夹的步骤 */
 .set-squash .card > p + p { margin-top: 6px; }
 .set-squash .f-help { margin-left: 0; }
 .set-mac { margin-top: 12px; box-shadow: 0 0 0 1.5px var(--amber-line), var(--shadow-card); }

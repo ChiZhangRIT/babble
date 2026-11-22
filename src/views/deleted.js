@@ -1,15 +1,17 @@
 // 最近删除（#/deleted）：删除的梦话（新删的在前）和从梦话里移除的录音（新移除的在前），都能逐条恢复。
-// 点一条梦话先看看原话（详情页只读显示，也能恢复）；移除的录音就地能听，点文字那一栏（名字、「来自 …」）去那条。恢复后其他设备同步时也会一起恢复。
+// 点一条梦话先看看原话、听一下录音（详情页只读显示，也能恢复）；有录音的那一行写着几段、多长。
+// 移除的录音就地能听，点文字那一栏（名字、「来自 …」）去那条。恢复后其他设备同步时也会一起恢复。
 // 删除时签了名（deletedBy）的显示是谁、用哪台设备删的。
 // 不放进来的：录音页「放弃这段录音」整条丢掉的（discarded，没有字也没有录音了：恢复了也只是一条空的）、永久删除过的（墓碑）。
 // 已删除的梦话里移除过的录音跟着那条走（不单列，那一行说一声有几段）：一起恢复，一起永久删除。
-// 分两步上线（core/purge.js 的 PURGE_ENABLED）。打开以后才有：每一项的「永久删除」和还剩几天、
-//   下面的「全部永久删除」、「没有条目在用的录音」一节、还在用旧版本的设备的提醒。关着时只能恢复，这些都不显示。
-// 永久删除：先确认（说清楚删掉什么、哪里还留着），按显示的这一版删（梦话的 updatedAt、录音的 removedAt：这期间别的设备改过的不删，说一声）；
-//   开着同步马上同步一次，同步不上就说「联网同步以后才删录音文件」。没有撤销。
+// 开关是 core/purge.js 的 PURGE_ENABLED（现在开着）。开着时有：每一项的「永久删除」和还剩几天、
+//   下面的「全部永久删除」、「没有条目在用的录音」一节、还在用旧版本的设备的提醒。关着时（第一阶段）只能恢复，这些都不显示。
+// 永久删除：先确认（说清楚删掉什么、哪里还留着：别的梦话也在用的录音留着），按显示的这一版删（梦话的 updatedAt、录音的 removedAt：这期间别的设备改过的不删，说一声）；
+//   点了确认以后点的那个按钮写「正在永久删除…」，别的按钮先不能点；开着同步马上同步一次，同步不上就说「联网同步以后才删录音文件」。没有撤销。
 // 「没有条目在用的录音」点「查找」才查：开着同步先同步一轮再看仓库（ctx.sync.orphans），这台设备上的也看（ctx.localOrphans）；
 //   找到的记在模块里，重画、回来都还在（每次画都去掉又有条目在用、已经没了的）。只在这台设备上、没上传过的只能一段段删。
-//   这次打开修过数据、数据有问题、一条梦话都没有（还没同步下来）时不显示：那时什么都像是没人用。
+//   这次打开修过数据、数据有问题、一条梦话都没有（还没同步下来）时不显示：那时什么都像是没人用（orphansShown，「设置 → 存储」也按它）。
+//   #/deleted?focus=orphans（「设置 → 存储」的「其中 n 段没有梦话在用」）：打开就滚到这一节。
 // 自己管更新（返回 onChange）：列的东西变了才重画（正在放的录音不断）。
 // deps（测试用）：purgeEnabled 换掉开关，player 换掉播放器。
 import { h, icon } from '../ui/dom.js';
@@ -43,9 +45,9 @@ export function deletedEntries(state) {
 export const removedList = (ctx) => (ctx.removedClips ? ctx.removedClips() || [] : []);
 /** 最近删除里一共几项（设置页「最近删除」后面的数） */
 export const trashCount = (ctx) => deletedEntries(ctx.state).length + removedList(ctx).length;
-/** 还剩几天永久删除（trashInfo 的 shownAt；还没开放、不知道 → null）。不到一天算 1 天，过了算 0（「今天」） */
+/** 还剩几天永久删除（trashInfo 的 shownAt；还不知道（开着同步、开放以后还没同步成功过）→ null）。不到一天算 1 天，过了算 0（「今天」） */
 export const daysLeft = (shownAt, now = Date.now()) => (shownAt ? Math.max(0, Math.ceil((shownAt - now) / DAY)) : null);
-/** 「n 天后永久删除」：key 是 trashKeys 的键（'e:<id>'、'c:<id>:<sha>'）；没开放、没有 ctx.trashInfo → null */
+/** 「n 天后永久删除」：key 是 trashKeys 的键（'e:<id>'、'c:<id>:<sha>'）；开关关着、没有 ctx.trashInfo、还不知道日期 → null */
 export function leftText(ctx, key, on) {
   if (!on || !ctx.trashInfo) return null;
   const n = daysLeft((ctx.trashInfo(key) || {}).shownAt);
@@ -62,6 +64,23 @@ export function sharedCount(state, id, sha) {
   return Object.values((state && state.data && state.data.entries) || {}).filter(e => e.id !== id && !e.purged
     && [...(e.audio || []), ...(e.removedAudio || [])].some(a => a.sha256 === sha)).length;
 }
+/** 这次要永久删除的（entries [{ id }]、clips [{ id, sha256 }]）里的录音 shas，和删完以后还有梦话在用的录音 kept（不在这次里、没永久删除的梦话的 audio、removedAudio） */
+function purgeShas(state, entries = [], clips = []) {
+  const E = (state && state.data && state.data.entries) || {}, ids = new Set(entries.map(x => x.id));
+  const own = new Set(clips.map(c => c.id + '|' + c.sha256)), shas = new Set(clips.map(c => c.sha256)), kept = new Set();
+  for (const { id } of entries) for (const a of [...((E[id] || {}).audio || []), ...((E[id] || {}).removedAudio || [])]) shas.add(a.sha256);
+  for (const e of Object.values(E)) {
+    if (!e || e.purged || ids.has(e.id)) continue;
+    for (const a of e.audio || []) kept.add(a.sha256);
+    for (const a of e.removedAudio || []) if (!own.has(e.id + '|' + a.sha256)) kept.add(a.sha256);
+  }
+  return { shas, kept };
+}
+/** 确认框用：shared = 别的梦话还在用、所以不删的录音有几段；goes = 真的会删掉的有几段（录音文件从仓库删、各台设备上再留 7 天）。按 sha 数，同一段只算一次 */
+export function purgeShaCounts(state, entries = [], clips = []) {
+  const { shas, kept } = purgeShas(state, entries, clips), shared = [...shas].filter(x => kept.has(x)).length;
+  return { shared, goes: shas.size - shared };
+}
 /** 草稿改过、里面还有这段录音转出的文字：永久删除录音时这些字留着（用户写的不删），确认框里说一声 */
 export function draftKeeps(e, sha) {
   const d = e && e.draft, parts = d && Array.isArray(d.parts) ? d.parts : null;
@@ -74,24 +93,18 @@ export function draftKeeps(e, sha) {
  *  还有别的梦话在用的录音不算（那时不删）；没有 ctx.night、读不出来 → 0 */
 export async function nightPending(ctx, entries = [], clips = []) {
   if (!ctx.night || !ctx.night.listCands) return 0;
-  const E = (ctx.state && ctx.state.data && ctx.state.data.entries) || {}, ids = new Set(entries.map(x => x.id));
-  const own = new Set(clips.map(c => c.id + '|' + c.sha256)), shas = new Set(clips.map(c => c.sha256)), kept = new Set();
-  for (const { id } of entries) for (const a of [...((E[id] || {}).audio || []), ...((E[id] || {}).removedAudio || [])]) shas.add(a.sha256);
-  for (const e of Object.values(E)) {
-    if (!e || e.purged || ids.has(e.id)) continue;
-    for (const a of e.audio || []) kept.add(a.sha256);
-    for (const a of e.removedAudio || []) if (!own.has(e.id + '|' + a.sha256)) kept.add(a.sha256);
-  }
+  const { shas, kept } = purgeShas(ctx.state, entries, clips);
   if (![...shas].some(s => !kept.has(s))) return 0;
   try { return ((await ctx.night.listCands()) || []).filter(c => c && !c.gone && !c.entryId && c.sha256 && shas.has(c.sha256) && !kept.has(c.sha256)).length; }
   catch (e) { return 0; }
 }
 
-/** 永久删除以后：提示删了几项、几项刚在别处改过没删；开着同步马上同步一次，同步不上说一声（录音文件等同步以后才删） */
-async function afterPurge(ctx, r, on) {
+/** 永久删除以后：提示删了几项、几项刚在别处改过没删（没有梦话在用的录音：又有梦话、草稿在用了，changedKey）；
+ *  开着同步马上同步一次，同步不上说一声（录音文件等同步以后才删） */
+async function afterPurge(ctx, r, on, changedKey = 'deleted.changedElsewhere') {
   const done = r.done || [], changed = r.changed || [];
   const msg = [done.length ? (done.length === 1 ? t('common.purged') : t('common.purgedN', { n: done.length })) : null,
-    changed.length ? t('deleted.changedElsewhere', { n: changed.length }) : null].filter(Boolean).join('\n');
+    changed.length ? t(changedKey, { n: changed.length }) : null].filter(Boolean).join('\n');
   if (msg) ctx.toast(msg, { ms: changed.length ? 8000 : 4000 });
   if (!on || !done.length) return;
   const s = await Promise.resolve(ctx.sync.now()).catch(() => null);
@@ -100,7 +113,8 @@ async function afterPurge(ctx, r, on) {
 
 /**
  * 永久删除「最近删除」里的几项（这一页和详情页共用）：先确认，再 ctx.purgeAll（开着同步时它先同步一次，变了的不删）。没有撤销。
- *   确认框还说：「昨夜」里还没整理、声音就是这些录音的片段会一起删掉；开着同步时各台设备上的录音文件再留 7 天才删（core/purge.js）。
+ *   确认框还说：别的梦话也在用的录音留着（只删一段录音时说几条梦话在用，删梦话、全部删时说其中几段）；
+ *   「昨夜」里还没整理、声音就是这些录音的片段会一起删掉；开着同步、真有录音要删时，仓库里的马上删、各台设备上的再留 7 天才删（core/purge.js）。
  * @param {object} ctx
  * @param {{ entries?: Array<{id, at}>, clips?: Array<{id, sha256, removedAt}>, all?: boolean, shared?: number, draftKept?: boolean }} what
  *   显示给用户的那几项（at = 显示的那一版的 updatedAt，removedAt = 显示的移除时刻）；all：「全部永久删除」；
@@ -117,12 +131,13 @@ export async function askPurge(ctx, { entries = [], clips = [], all = false, sha
     draftKept = draftKeeps(ctx.entry ? ctx.entry(clips[0].id) : null, clips[0].sha256);
   }
   const title = !one ? t('deleted.confirmAllT') : entries.length ? t('deleted.confirmT') : t('deleted.confirmClipT');
-  const lines = !one ? [t('deleted.purgeAllMsg', { n: entries.length, clips: clips.length })]
-    : entries.length ? [t(on ? 'deleted.purgeMsg' : 'deleted.purgeMsgLocal')]
+  const n = purgeShaCounts(ctx.state, entries, clips), kept = n.shared ? t('deleted.sharedSome', { n: n.shared }) : null;
+  const lines = !one ? [t('deleted.purgeAllMsg', { n: entries.length, clips: clips.length }), kept]
+    : entries.length ? [t(on ? 'deleted.purgeMsg' : 'deleted.purgeMsgLocal'), kept]
     : [t(on ? 'deleted.purgeClipMsg' : 'deleted.purgeClipMsgLocal'), shared ? t('deleted.shared', { n: shared }) : null, draftKept ? t('deleted.draftKept') : null];
   const night = await nightPending(ctx, entries, clips);
   if (night) lines.push(t('deleted.nightPending', { n: night }));
-  if (on) lines.push(t('deleted.graceNote'), t('deleted.historyNote'));
+  if (on) lines.push(n.goes ? t('deleted.graceNote') : null, t('deleted.historyNote'));
   if (old) lines.push(t('deleted.oldDevices', { devices: old }));
   if (!(await ctx.confirm({ title, message: lines.filter(Boolean).join('\n'), confirmLabel: t('common.purge'), danger: true }))) return null;
   if (onGo) onGo();
@@ -142,13 +157,19 @@ function knownOrphans(ctx) {
   const claimed = claimShas(ctx.state), gone = ctx.goneShas ? ctx.goneShas() : new Set();
   return found.rows.filter(r => !claimed.has(r.sha256) && !gone.has(r.sha256));
 }
+/** 「没有梦话在用的录音」这一节显示不显示（「设置 → 存储」的「其中 n 段没有梦话在用」也按这个）：开关开着、本机数据没问题、
+ *  这次打开没修过数据 / 没从备份恢复过、至少有一条梦话（还没同步下来时什么都像是没人用） */
+export const orphansShown = (ctx, on = PURGE_ENABLED) => !!on && !(ctx.storageIssue && ctx.storageIssue())
+  && !(Number(ctx.local.repairedAt) >= (ctx.bootAt || Infinity))
+  && Object.values(ctx.state.data.entries || {}).some(e => !e.purged);
 /** 上次「查找」找到的、还在同步仓库里的有几段（清理云端历史的确认框说「也会留下」；没查过 → 0） */
 export const foundInRepo = (ctx) => (knownOrphans(ctx) || []).filter(r => r.repo).length;
 
 export function render(main, params, ctx, { purgeEnabled: purgeOn = PURGE_ENABLED, player = audioPlayer } = {}) {
   const lang = ctx.lang();
   const sp = () => ctx.state.settings.speakers;
-  let players = [], busy = false, finding = false, sig = null;
+  // busy：正在永久删除的是哪一项（'e:<id>'、'c:<id>:<sha>'、'o:<sha>'、全部 'all'、没有梦话在用的全部 'orphans'）；那一项的按钮写「正在永久删除…」，别的都先不能点
+  let players = [], busy = null, finding = false, sig = null;
 
   const navbar = () => h('header.navbar', null,
     h('button.back', { type: 'button', onclick: () => ctx.back('/settings') }, icon('back'), t('nav.settings')),
@@ -156,24 +177,28 @@ export function render(main, params, ctx, { purgeEnabled: purgeOn = PURGE_ENABLE
     h('span'));
   // 读屏念按钮时连同是哪一项（「恢复：11月4日 凌晨2:58 · …」）
   const act = (key, what) => (what ? t('deleted.actLabel', { act: t(key), what }) : t(key));
-  const restoreBtn = (fn, what) => h('button.btn.small.soft.del-restore', { type: 'button', disabled: busy, onclick: fn, 'aria-label': act('common.restore', what) }, t('common.restore'));
-  const purgeBtn = (fn, what) => (purgeOn ? h('button.btn.small.danger.del-purge', { type: 'button', disabled: busy, onclick: fn, 'aria-label': act('common.purge', what) }, t('common.purge')) : null);
+  const restoreBtn = (fn, what) => h('button.btn.small.soft.del-restore', { type: 'button', disabled: !!busy, onclick: fn, 'aria-label': act('common.restore', what) }, t('common.restore'));
+  const purgeBtn = (fn, what, key) => (purgeOn ? h('button.btn.small.danger.del-purge', { type: 'button', disabled: !!busy, onclick: fn, 'aria-label': act('common.purge', what) },
+    busy === key ? t('deleted.purging') : t('common.purge')) : null);
 
   // 日期时间 + 第一句原话（条目没有标题）；什么都没写 →「还没写原话」
   const entryRow = (e) => {
     const line = previewLines(e.text, sp(), 1)[0], by = byLabel(deletionBy(e), sp());
-    const n = (e.removedAudio || []).length, what = entryLabel(e, sp(), lang);
-    // 里面移除过的录音跟着这条走（不在「移除的录音」里单列）：说一声，开放以后是「会一起删掉」，现在是「恢复以后回到移除的录音」
+    const n = (e.removedAudio || []).length, what = entryLabel(e, sp(), lang), clips = e.audio || [];
+    // 有录音的（多半是误录的、还没写原话）：写着几段、多长，点进去能听（永久删除前听一下）
+    const secs = clips.reduce((x, c) => x + (Number(c.durationSec) || 0), 0), dur = secs > 0 ? fmtDuration(secs) : '';
+    // 里面移除过的录音跟着这条走（不在「移除的录音」里单列）：说一声，开关开着是「会一起删掉」，关着是「恢复以后回到移除的录音」
     const more = [leftText(ctx, 'e:' + e.id, purgeOn), n ? t(purgeOn ? 'deleted.hasRemoved' : 'deleted.hasRemovedKeep', { n }) : null].filter(Boolean);
     return h('div.group-row.del-row', null,
       h('a.del-body', { href: '#/e/' + enc(e.id) },
         h('span.del-date', null, fmtEntryDate(e, lang, { sep: daySep(lang) })),
         line ? h('span.del-prev' + (line.type === 'line' ? '.kai' : ''), null, line.who ? sp()[line.who].emoji + ' ' : '', sayNodes(line.content))
           : h('span.del-prev.ph', null, t('list.noText')),
+        clips.length ? h('span.del-at.del-audio', null, t('deleted.hasAudio', { n: clips.length, dur })) : null,
         h('span.del-at', null, t('deleted.at', { time: fmtInstant(e.deletedAt, lang) }), by ? ' · ' + by : ''),
         more.length ? h(purgeOn ? 'span.del-left' : 'span.del-at', null, more.join(' · ')) : null),
       h('span.del-acts', null, restoreBtn(() => ctx.restore(e.id), what),
-        purgeBtn(() => run({ entries: [{ id: e.id, at: e.updatedAt }] }), what)));
+        purgeBtn(() => run({ entries: [{ id: e.id, at: e.updatedAt }] }, 'e:' + e.id), what, 'e:' + e.id)));
   };
 
   // 移除的录音：小播放钮、名字 · 时长、来自哪条、几时移除的（点文字那一栏去那条）。
@@ -191,7 +216,8 @@ export function render(main, params, ctx, { purgeEnabled: purgeOn = PURGE_ENABLE
     return h('div.group-row.del-row.del-clip', null, p,
       e ? h('a.del-body', { href: '#/e/' + enc(entryId) }, ...body) : h('div.del-body', null, ...body),
       h('span.del-acts', null, restoreBtn(() => restoreClip(entryId, sha), what),
-        purgeBtn(() => run({ clips: [{ id: entryId, sha256: sha, removedAt: item.removedAt }], shared: sharedCount(ctx.state, entryId, sha), draftKept: draftKeeps(e, sha) }), what)));
+        purgeBtn(() => run({ clips: [{ id: entryId, sha256: sha, removedAt: item.removedAt }], shared: sharedCount(ctx.state, entryId, sha), draftKept: draftKeeps(e, sha) }, 'c:' + entryId + ':' + sha),
+          what, 'c:' + entryId + ':' + sha)));
   };
   function restoreClip(id, sha) {
     const r = ctx.restoreClip ? ctx.restoreClip(id, sha) : null;
@@ -199,16 +225,14 @@ export function render(main, params, ctx, { purgeEnabled: purgeOn = PURGE_ENABLE
   }
 
   // ---------- 永久删除 ----------
-  async function run(what) {
+  async function run(what, key) {
     if (busy) return;
-    try { await askPurge(ctx, what, { onGo: () => { busy = true; draw(); } }); }
-    finally { if (busy) { busy = false; draw(); } }
+    try { await askPurge(ctx, what, { onGo: () => { busy = key; draw(); } }); }
+    finally { if (busy) { busy = null; draw(); } }
   }
 
   // ---------- 没有条目在用的录音 ----------
-  const orphansAllowed = () => purgeOn && !(ctx.storageIssue && ctx.storageIssue())
-    && !(Number(ctx.local.repairedAt) >= (ctx.bootAt || Infinity))
-    && Object.values(ctx.state.data.entries || {}).some(e => !e.purged);
+  const orphansAllowed = () => orphansShown(ctx, purgeOn);
   async function findOrphans() {
     if (finding) return;
     finding = true; draw();
@@ -231,20 +255,21 @@ export function render(main, params, ctx, { purgeEnabled: purgeOn = PURGE_ENABLE
     found = next; finding = false;
     if (main.isConnected) draw();
   }
-  async function purgeOrphans(rows) {
+  // 只在这台设备上、没上传过的（只能一段段删）：别的设备、仓库里都没有，按「只在这台设备上」说，不说仓库、7 天、提交历史、旧版本的设备
+  async function purgeOrphans(rows, key) {
     if (busy || !rows.length) return;
     const on = !!ctx.sync.status().on, old = oldDevices(ctx);
-    const onlyHere = rows.some(r => r.here && !r.repo && !r.uploaded);
-    const lines = [t(on ? 'deleted.orphansMsg' : 'deleted.orphansMsgLocal'), onlyHere ? t('deleted.orphansOnlyHereMsg') : null,
-      on ? t('deleted.graceNote') : null, on ? t('deleted.historyNote') : null, old ? t('deleted.oldDevices', { devices: old }) : null];
+    const onlyHere = (r) => r.here && !r.repo && !r.uploaded, here = rows.every(onlyHere), wide = on && !here;
+    const lines = [t(wide ? 'deleted.orphansMsg' : 'deleted.orphansMsgLocal', { n: rows.length }), rows.some(onlyHere) ? t('deleted.orphansOnlyHereMsg') : null,
+      wide ? t('deleted.graceNote') : null, wide ? t('deleted.historyNote') : null, old && !here ? t('deleted.oldDevices', { devices: old }) : null];
     if (!(await ctx.confirm({ title: t('deleted.orphansT', { n: rows.length }), message: lines.filter(Boolean).join('\n'), confirmLabel: t('common.purge'), danger: true }))) return;
-    busy = true; draw();
+    busy = key; draw();
     try {
       const r = (await ctx.purgeOrphans(rows.map(x => ({ sha256: x.sha256, mime: x.mime })))) || { done: [], changed: [] };
       if (found) found.rows = found.rows.filter(x => !(r.done || []).includes(x.sha256));
-      afterPurge(ctx, r, on);
+      afterPurge(ctx, r, on, 'deleted.orphansChanged');
     } catch (e) { ctx.toast(t('common.renderError') + ((e && e.message) || String(e)), { ms: 8000 }); }
-    finally { busy = false; draw(); }
+    finally { busy = null; draw(); }
   }
   const orphanRow = (r) => {
     const p = player({ getBlob: () => ctx.clipBlob(r.sha256, r.mime), compact: true, key: r.sha256 });
@@ -256,19 +281,20 @@ export function render(main, params, ctx, { purgeEnabled: purgeOn = PURGE_ENABLE
         h('span.del-name', null, t(where)),
         r.here && !r.repo && !r.uploaded ? h('span.del-warn', null, t('deleted.orphansOnlyHere')) : null,
         meta ? h('span.del-at', null, meta) : null),
-      h('span.del-acts', null, h('button.btn.small.danger.del-purge', { type: 'button', disabled: busy, onclick: () => purgeOrphans([r]),
-        'aria-label': t('deleted.actLabel', { act: t('common.purge'), what: [t(where), meta].filter(Boolean).join(' · ') }) }, t('common.purge'))));
+      h('span.del-acts', null, h('button.btn.small.danger.del-purge', { type: 'button', disabled: !!busy, onclick: () => purgeOrphans([r], 'o:' + r.sha256),
+        'aria-label': t('deleted.actLabel', { act: t('common.purge'), what: [t(where), meta].filter(Boolean).join(' · ') }) }, busy === 'o:' + r.sha256 ? t('deleted.purging') : t('common.purge'))));
   };
   function orphanSec() {
     const rows = knownOrphans(ctx), shared = rows ? rows.filter(r => r.repo || r.uploaded) : [];
     return h('section.del-orphans#orphans', null,
       h('h2.group-h', null, t('deleted.orphansH')),
       h('p.group-foot.del-help', null, t('deleted.orphansHelp')),
-      h('button.btn.small.del-find', { type: 'button', disabled: finding || busy, onclick: findOrphans }, finding ? t('deleted.orphansFinding') : t('deleted.orphansFind')),
+      h('button.btn.small.del-find', { type: 'button', disabled: finding || !!busy, onclick: findOrphans }, finding ? t('deleted.orphansFinding') : t('deleted.orphansFind')),
       found && found.err && rows ? h('p.err.small', { role: 'alert' }, t('syncErr.' + found.err.code, found.err.vars)) : null,
       rows && !found.err && !rows.length ? h('p.group-foot', { role: 'status' }, t('deleted.orphansNone')) : null,
       rows && rows.length ? h('div.group.del-list', null, rows.map(orphanRow)) : null,
-      shared.length > 1 ? h('button.btn.danger.block.del-all', { type: 'button', disabled: busy, onclick: () => purgeOrphans(shared) }, t('deleted.orphansPurgeAll')) : null,
+      shared.length > 1 ? h('button.btn.danger.block.del-all', { type: 'button', disabled: !!busy, onclick: () => purgeOrphans(shared, 'orphans') },
+        busy === 'orphans' ? t('deleted.purging') : t('deleted.orphansPurgeAll')) : null,
       rows && found.recent ? h('p.group-foot', null, t('deleted.orphansRecent', { n: found.recent })) : null,
       rows && found.more ? h('p.group-foot', null, t('deleted.orphansMore')) : null);
   }
@@ -285,14 +311,16 @@ export function render(main, params, ctx, { purgeEnabled: purgeOn = PURGE_ENABLE
         old ? h('p.group-foot.del-old', { role: 'note' }, t('deleted.oldDevices', { devices: old })) : null,
         list.length ? [h('h2.group-h', null, t('deleted.entriesH')), h('div.group.del-list', null, list.map(entryRow))] : null,
         clips.length ? [h('h2.group-h', null, t('deleted.clipsH')), h('div.group.del-list', null, clips.map(clipRow))] : null,
-        any ? [purgeOn ? h('button.btn.danger.block.del-all', { type: 'button', disabled: busy, onclick: () => run(all) }, busy ? t('deleted.purging') : t('deleted.purgeAll')) : null,
+        any ? [purgeOn ? h('button.btn.danger.block.del-all', { type: 'button', disabled: !!busy, onclick: () => run(all, 'all') }, busy === 'all' ? t('deleted.purging') : t('deleted.purgeAll')) : null,
           h('p.group-foot', null, hint)]
           : h('div.empty.del-empty', null, icon('trash'), h('p', null, t('deleted.empty')), h('p.small', null, hint)),
         orphansAllowed() ? orphanSec() : null)];
   }
-  /** 列的东西（和几个开关、称呼表情）的指纹：没变就不重画 */
-  const sigOf = () => JSON.stringify([busy, finding, oldDevices(ctx), sp(), deletedEntries(ctx.state).map(e => [e.id, e.updatedAt]),
-    removedList(ctx).map(c => [c.entryId, c.item.sha256, c.item.removedAt, c.at]), orphansAllowed() ? (knownOrphans(ctx) || []).map(r => r.sha256) : null]);
+  /** 列的东西（和几个开关、称呼表情、每一项写着的「n 天后永久删除」）的指纹：没变就不重画。
+   *  「n 天后」也算进去：开放以后第一次同步成功才知道日期（trashSince），开着页面跨过一天也要改 */
+  const sigOf = () => JSON.stringify([busy, finding, oldDevices(ctx), sp(), deletedEntries(ctx.state).map(e => [e.id, e.updatedAt, leftText(ctx, 'e:' + e.id, purgeOn)]),
+    removedList(ctx).map(c => [c.entryId, c.item.sha256, c.item.removedAt, c.at, leftText(ctx, 'c:' + c.entryId + ':' + c.item.sha256, purgeOn)]),
+    orphansAllowed() ? (knownOrphans(ctx) || []).map(r => r.sha256) : null]);
   function draw() {
     const sc = ctx.layout && ctx.layout() === 'phone' ? document.scrollingElement : main;
     const top = sc ? sc.scrollTop : 0;
@@ -305,6 +333,12 @@ export function render(main, params, ctx, { purgeEnabled: purgeOn = PURGE_ENABLE
   const redraw = () => { if (sigOf() !== sig) draw(); };
 
   draw();
+  // 「设置 → 存储」里「其中 n 段没有梦话在用」点进来（#/deleted?focus=orphans）：滚到那一节
+  if (params && params.query && params.query.focus === 'orphans') {
+    params.query.focus = null;
+    const el = main.querySelector('#orphans');
+    if (el && el.scrollIntoView) (globalThis.requestAnimationFrame || ((f) => f()))(() => el.scrollIntoView({ block: 'start' }));
+  }
   if (ctx.on) ctx.on('sync', redraw);                 // 旧版本设备的提醒跟着同步状态变
   return {
     onChange: redraw,

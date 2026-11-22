@@ -1,7 +1,7 @@
 // 文案（录音、导入、设置、诊断）：rec.* / imp.* / set.* / diag.*。
 // 繁體（台灣）用台灣用語（錄音、匯入、檔案、設定、儲存、螢幕、麥克風、裝置…）；{nn} 之类的变量是用户写的字，不转换。
 // 英文单复数：en(一个, 多个)，变量都会替换（没给的换成空）。
-// 键名以 Purge 结尾的是开放永久删除（core/purge.js 的 PURGE_ENABLED）以后用的说法，没有 Purge 的是现在的说法。
+// 键名以 Purge 结尾的是永久删除的开关（core/purge.js 的 PURGE_ENABLED）开着时的说法（现在开着）；同名没有 Purge 的是关着时（第一阶段）的说法，测试里关着时还用。
 const en = (one, many) => (v) => (Number(v.n) === 1 ? one : many).replace(/\{(\w+)\}/g, (m, k) => (v[k] != null ? String(v[k]) : ''));
 
 export const STRINGS = {
