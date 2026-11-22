@@ -3,7 +3,9 @@
 // 自己管更新（返回 onChange）：数据变了只重画标题和卡片，搜索框原样留着，不丢输入和光标。
 // 卡片（entryCard）和页头（listHead）日历页（views/calendar.js）也用。
 // 卡片上是整段原话（条目没有标题）：超过 16 行的先显示前 12 行，「展开全部」就地展开，这次打开 App 期间记住。
+// 卡片能左右滑（ui/swipe.js）：往左滑露出「删除」（同详情页的删除：进「最近删除」，10 秒内能撤销），往右滑露出「收藏 / 取消收藏」。
 import { h, icon } from '../ui/dom.js';
+import { createSwipes } from '../ui/swipe.js';
 import { audioPlayer } from '../ui/player.js';
 import { fmtEntryDate, fmtDate, fmtMonth, fmtYear, fmtDuration, monthKey } from '../core/dates.js';
 import { parseDialogue, isDescOnly } from '../core/dialogue.js';
@@ -123,9 +125,10 @@ export function cardExtra(e, q, items) {
 /**
  * 一张条目卡片：日期、录音时长、待整理，下面是整段原话（和详情页一样：引号里说的话楷体，动作 / 旁白普通字体、淡一点）；
  * 长的先折起来（「展开全部（还有 N 行）」，就地展开，不跳页）。整张卡片点了进详情，⭐、▶、展开按钮除外。
- * opts: { q 搜索词（高亮；命中在折起来的那部分时直接展开）, selected 双栏时右栏正在看这条, players 数组（卡片里的播放器放进去，重画前要 destroy） }
+ * opts: { q 搜索词（高亮；命中在折起来的那部分时直接展开）, selected 双栏时右栏正在看这条, players 数组（卡片里的播放器放进去，重画前要 destroy）,
+ *         swipes 这一页的可滑卡片（ui/swipe.js 的 createSwipes；给了就返回包着卡片的 div.swipe：往左滑删除、往右滑收藏） }
  */
-export function entryCard(e, ctx, { q = '', selected = false, players = [] } = {}) {
+export function entryCard(e, ctx, { q = '', selected = false, players = [], swipes = null } = {}) {
   const { t } = ctx;
   const lang = ctx.lang(), sp = ctx.state.settings.speakers;
   const items = cardLines(e.text, sp), extra = cardExtra(e, q, items);
@@ -163,10 +166,11 @@ export function entryCard(e, ctx, { q = '', selected = false, players = [] } = {
   }
   paint();
 
+  const link = h('a.c-link', { href, 'aria-current': selected ? 'page' : null }, fmtEntryDate(e, lang, { year: false, sep: daySep(lang) }));
   const card = h('article.card.ecard' + (e.status === 'inbox' ? '.pending' : '') + (selected ? '.sel' : ''), { dataset: { id: e.id } },
     h('div.c-body', null,
       h('p.c-meta', null,
-        h('a.c-link', { href, 'aria-current': selected ? 'page' : null }, fmtEntryDate(e, lang, { year: false, sep: daySep(lang) })),
+        link,
         e.audio.length ? h('span.c-dur', { title: t('list.hasAudio') }, icon('mic', { label: t('list.hasAudio') }), fmtDuration(dur)) : null,
         e.status === 'inbox' ? h('span.tag', null, t('list.inboxTag')) : null),
       items.length ? linesEl : h('p.c-line.ph.kai', null, t('list.noText')),
@@ -178,7 +182,19 @@ export function entryCard(e, ctx, { q = '', selected = false, players = [] } = {
         onclick: (ev) => { ev.preventDefault(); ev.stopPropagation(); ctx.update(e.id, { fav: !e.fav }); },
       }, icon('star')),
       player));
-  return card;
+  if (!swipes) return card;
+  // 左右滑：收藏改成滑之前看到的那样（期间同步进来已经是了就不再改）；取消收藏弹「撤销」（滑比点 ⭐ 容易误碰，在「收藏」筛选里卡片还会直接不见）。
+  // 删除同详情页：进「最近删除」、10 秒内能撤销；双栏时右栏还看着这条 → 右栏回到提示（动画期间已经点去别处了就不跳）。
+  // 双栏时右栏正在改这条：不给「删除」（编辑页会留着没保存的修改、说成「已在别的设备上删除」，一保存又恢复了）
+  const route = ctx.route, editing = !!route && route.name === 'editor' && route.id === e.id;
+  const showing = () => !ctx.route || (ctx.route.name === 'entry' && ctx.route.id === e.id);
+  return swipes.wrap(card, {
+    id: e.id, focus: link,
+    left: { cls: 'sw-fav', icon: 'star', filled: !e.fav, label: t(e.fav ? 'list.unfav' : 'list.fav'), aria: t(e.fav ? 'list.swUnfav' : 'list.swFav'),
+      run: () => { const cur = ctx.entry(e.id); if (cur && !cur.deleted && !!cur.fav === !!e.fav) ctx.update(e.id, { fav: !e.fav }, e.fav ? { undoLabel: t('list.unfavDone') } : undefined); } },
+    right: editing ? null : { cls: 'sw-del', icon: 'trash', label: t('common.delete'), aria: t('list.swDel'), out: true,
+      run: () => { if (selected && showing()) ctx.navigate(ctx.home(), { replace: true }); ctx.remove(e.id); } },
+  });
 }
 
 /** 「呓语」页头：导入 / 记一条、大标题和「列表 | 日历」切换、条数。mode: 'list' | 'cal' */
@@ -197,9 +213,11 @@ export function listHead(ctx, all, mode) {
 }
 
 // ---------- 页面 ----------
-export function render(main, params, ctx) {
+/** @param {{ swipe?: object }} [deps]  测试用：交给 createSwipes 的 env（时钟、计时器、宽度、减少动态效果） */
+export function render(main, params, ctx, deps = {}) {
   const { t } = ctx;
   let players = [], shown = [];
+  const swipes = createSwipes(deps.swipe);
   const sp = () => ctx.state.settings.speakers;
   const nn = () => sp().nn.name || 'NN';
 
@@ -243,6 +261,7 @@ export function render(main, params, ctx) {
   function drawBody() {
     for (const p of players) p.destroy();
     players = [];
+    swipes.reset();                               // 重画：开着的卡片关上（这一页自己删除 / 收藏引起的重画除外，见 ui/swipe.js）
     const all = ctx.entries();
     tools.hidden = !all.length;
     if (!all.length) { shown = []; body.replaceChildren(emptyState()); return; }
@@ -270,7 +289,7 @@ export function render(main, params, ctx) {
   }
   function clearAll() { Object.assign(ui, { fav: false, audio: false, inbox: false }); setQ(''); drawHead(ctx.entries()); }
 
-  const card = (e) => entryCard(e, ctx, { q: ui.q, selected: !!params.selected && params.selected === e.id, players });
+  const card = (e) => entryCard(e, ctx, { q: ui.q, selected: !!params.selected && params.selected === e.id, players, swipes });
 
   function emptyState() {
     return h('div.empty.list-empty', null,
@@ -318,7 +337,7 @@ export function render(main, params, ctx) {
   ctx.on('layout', () => draw());                 // 换栏（双栏 ↔ 单栏）：选中高亮要跟着变
 
   return {
-    onChange: () => draw(),
-    cleanup: () => { window.removeEventListener('keydown', onKey); for (const p of players) p.destroy(); players = []; },
+    onChange: () => swipes.whenIdle(draw),         // 正在滑（或者卡片在动、删除在等动画）：滑完再重画，手底下的卡片不换掉
+    cleanup: () => { window.removeEventListener('keydown', onKey); swipes.destroy(); for (const p of players) p.destroy(); players = []; },
   };
 }

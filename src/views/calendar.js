@@ -5,7 +5,9 @@
 // 宽屏双栏时在左栏（params.pane === 'list'），点卡片右栏显示条目；看着条目时（地址是 #/e/<id>）日历停在那条的那一天。
 // 翻月、选日子只换地址（ctx.replaceHash，不加历史记录、不整页重画）；自己管更新（返回 onChange）。
 // 页头下面和列表一样放「昨夜」卡片（views/night.js 的 nightBanner；每次打开建一个，重画页头时放回同一个）。
+// 那天的卡片和列表一样能左右滑（往左删除、往右收藏，ui/swipe.js）。
 import { h, icon } from '../ui/dom.js';
+import { createSwipes } from '../ui/swipe.js';
 import { fmtDate, fmtMonth, fmtYear, monthKey, today, isISODate } from '../core/dates.js';
 import { pad2 } from '../core/util.js';
 import { entryCard, listHead } from './list.js';
@@ -98,9 +100,11 @@ const weekdayLong = (iso, lang) => new Intl.DateTimeFormat(LOCALE[lang] || 'zh-C
 const mem = { day: null };
 
 // ---------- 页面 ----------
-export function render(main, params, ctx) {
+/** @param {{ swipe?: object }} [deps]  测试用：交给 createSwipes 的 env */
+export function render(main, params, ctx, deps = {}) {
   const { t } = ctx;
   const own = params.path[0] === 'cal';             // 地址就是日历（不是双栏里看着条目时的左栏）
+  const swipes = createSwipes(deps.swipe);          // 那天的卡片左右滑（一页一组，同一时间只开一张）
   const lang = () => ctx.lang();
   const sep = () => (lang() === 'en' ? ', ' : '，');
   let players = [], view = 'month', year = null, focusDay = null, focusK = null, slide = 0, month;
@@ -158,6 +162,7 @@ export function render(main, params, ctx) {
     focusK = null;
     for (const p of players) p.destroy();
     players = [];
+    swipes.reset();
     const all = ctx.entries(), index = dayIndex(all);
     head.replaceChildren(listHead(ctx, all, 'cal'), nightEl);
     body.replaceChildren(...(view === 'year' ? yearView(index) : monthView(index, all)));
@@ -218,7 +223,7 @@ export function render(main, params, ctx) {
       h('h2.cal-dayh', null,
         h('span', null, fmtDate(d, lng, { year: d.slice(0, 4) !== today().slice(0, 4) }), h('span.cal-wdname', null, weekdayLong(d, lng))),
         items.length ? h('small', null, t('cal.n', { n: items.length })) : null),
-      items.length ? h('div.cal-items', null, items.map(e => entryCard(e, ctx, { selected: !!params.selected && params.selected === e.id, players })))
+      items.length ? h('div.cal-items', null, items.map(e => entryCard(e, ctx, { selected: !!params.selected && params.selected === e.id, players, swipes })))
         : h('div.cal-none', null, h('p', null, t('cal.dayNone')), h('a.btn.small.soft', { href: '#/new?date=' + d }, icon('plus'), t('cal.write'))),
     ];
   }
@@ -262,8 +267,8 @@ export function render(main, params, ctx) {
   ctx.on('layout', () => draw());
 
   return {
-    onChange: () => draw(),
-    cleanup: () => { for (const p of players) p.destroy(); players = []; },
+    onChange: () => swipes.whenIdle(draw),         // 正在滑那天的卡片：滑完再重画
+    cleanup: () => { swipes.destroy(); for (const p of players) p.destroy(); players = []; },
   };
 }
 

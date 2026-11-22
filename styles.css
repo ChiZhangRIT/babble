@@ -393,6 +393,34 @@ body.dragging::before { content: attr(data-drop); position: fixed; inset: 0; z-i
 .fav-btn:hover { opacity: 1; }
 .c-side .player.compact { margin-bottom: 4px; }
 
+/* 卡片左右滑（ui/swipe.js）：卡片下面垫着「收藏」（左边，往右滑露出）和「删除」（右边，往左滑露出），和卡片一样高、一样圆角，
+   和卡片隔开 8px；字和图标贴着卡片那一边（宽 = SWIPE.action − gap = 76px），拉得更开时跟着卡片走。按钮第一次滑开时才建，之后关着时 hidden。
+   卡片滑出去的部分在列表外框（.list-body / .page.cal 的左右留白）以外裁掉，页面不会横着滚 */
+.list-body, .page.cal { overflow-x: clip; }
+.swipe { position: relative; margin: 0 0 10px; touch-action: pan-y pinch-zoom; }
+:root.sw-zoomed .swipe { touch-action: auto; }      /* 捏合放大着：单指横着拖是在移动放大的页面，不滑卡片 */
+.swipe > .ecard { z-index: 1; margin: 0; }
+.swipe.sw-drag > .ecard { will-change: transform; -webkit-user-select: none; user-select: none; }
+.swipe.sw-anim > .ecard { transition: transform .24s cubic-bezier(.2, .8, .2, 1); }
+.swipe.sw-snap > .ecard { transition: transform .12s ease-out; }       /* 拉到「松手直接做」的距离：卡片追上手指 */
+.swipe.sw-out { pointer-events: none; }
+.swipe.sw-gone { overflow: hidden; margin-bottom: 0; opacity: 0; transition: height .2s ease, margin-bottom .2s ease, opacity .2s ease; }
+.sw-btn { position: absolute; top: 0; bottom: 0; z-index: 0; display: flex; align-items: stretch; width: 0; padding: 0; border: 0; border-radius: var(--radius); overflow: hidden;
+  font-size: 13px; font-weight: 600; letter-spacing: .02em; -webkit-touch-callout: none; }
+.sw-btn.sw-l { left: 0; justify-content: flex-end; }
+.sw-btn.sw-r { right: 0; justify-content: flex-start; }
+.swipe.sw-anim > .sw-btn { transition: width .24s cubic-bezier(.2, .8, .2, 1); }
+.swipe.sw-anim .sw-in { transition: opacity .24s; }
+.sw-in { flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; width: 76px; padding: 0 4px; line-height: 1.2; text-align: center; }
+.sw-in .ic { width: 22px; height: 22px; stroke-width: 2; transition: transform .15s ease-out; }
+.sw-in .ic.sw-filled { fill: currentColor; }
+.swipe.sw-armed .sw-in .ic { transform: scale(1.18); }
+.sw-del { background: var(--danger); color: #fff; }
+.sw-fav { background: #e6a84f; color: #2b1d08; }      /* 收藏：琥珀色、深色字（亮色下的 --amber 是给字用的深色，铺满一块发褐） */
+:root[data-theme="dark"] .sw-del { color: #2a0d0a; }
+:root[data-theme="dark"] .sw-fav { background: var(--amber); }
+.sw-btn:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+
 /* 搜索命中 */
 mark { padding: 0 1px; border-radius: 3px; background: rgba(214, 120, 60, .22); color: inherit; }
 :root[data-theme="dark"] mark { background: rgba(240, 170, 90, .28); }
