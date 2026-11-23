@@ -1060,6 +1060,8 @@ body[data-layout="phone"] .im-drop { border-style: solid; }
 .im-src { display: flex; align-items: center; gap: 5px; }
 .im-src .ic { width: 14px; height: 14px; stroke-width: 2; }
 .im-warn { color: var(--amber); }
+.im-meta.im-kept { white-space: normal; color: var(--amber); }   /* 没转成 m4a、按原来的格式存的那一行 */
+.im-meta.im-kept.calm { color: var(--muted); }                   /* 原文件已经够小、不转：不是出了问题 */
 .im-moderow { margin-top: 12px; }
 .im-attach { margin-top: 8px; }
 .im-skip { align-items: flex-start; }

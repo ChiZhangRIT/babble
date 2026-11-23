@@ -1,4 +1,6 @@
 // 床头模式「留下」的录音存成 m4a（AAC-LC，16 kHz 单声道，要的是 32 kbps，说话时实际 40 kbps 左右）：同样 20 秒，WAV 625 KB，m4a 约 100 KB（同步进仓库历史的小六倍）。
+// 导入的录音文件（WAV、MP3…）也转成 m4a（24 kHz 单声道 48 kbps，编不了 24 kHz 时 16 kHz 32 kbps，见 importM4a.js）：采样率、码率都由调用方给，
+// 核对也按那个采样率解码（decodeMono）；不给就是床头模式的 16 kHz、32 kbps。
 //   encodeAac(pcm, o)        WebCodecs AudioEncoder 编码 → 一帧帧 AAC（每帧 1024 个样本）+ AudioSpecificConfig；前面先垫 1024 个 0（见 LEAD）
 //   ascFromDescription(d)    编码器给的 decoderConfig.description → AudioSpecificConfig（ASC）：规范说是裸 ASC，
 //                            WebKit 给的却是整个 ES_Descriptor（03 … 04 … 05 [ASC] 06 …），两种都认（整个 esds 盒子也认）
@@ -10,10 +12,11 @@
 //                            解码出来正好是原来的 PCM（对齐到样本）。不用 elst：实测 WebKit 解码时把 elst 的 media_time 加在它自己默认跳过的
 //                            2112 上，开头的 132 毫秒会被吃掉两遍。mvhd / tkhd 的时长是 PCM 的（readMp4Meta 读出来就对），mdhd 是所有帧的；
 //                            creation_time 是录音开始的时刻
-//   verifyM4a(blob, pcm, o)  解码回来核对（和转文字同一条路：transcribe.js 的 decode16k）：时长差 ≤ 0.15 秒、音量没走样（不是静音的没变成静音、
+//   verifyM4a(blob, pcm, o)  解码回来核对（和转文字同一条路：transcribe.js 的 decodeMono，按 o.sr 解码）：时长差 ≤ 0.15 秒、音量没走样（不是静音的没变成静音、
 //                            丢了 64 毫秒以上也看得出来：很轻的悄悄话也比）、没有错开（最响的那半秒和原来逐个样本对得上）
-//   pcmToM4a(pcm, o)         上面几步连起来 → Blob（audio/mp4）| null。不支持、出错、超时、核对不过都是 null（调用方存 WAV），不会交出坏文件。
+//   pcmToM4a(pcm, o)         上面几步连起来 → Blob（audio/mp4）| null。不支持、出错、超时、核对不过（还有给了 maxBytes 又比它大）都是 null（调用方存 WAV），不会交出坏文件。
 //                            帧数和预热对不上（编码器丢了帧、预热不是 2112 又没标出来）也算不对：拿不准就存 WAV
+//   pickConfig(list, o)      [{ sr, bitrate }, …] 里第一个编码器说支持的（isConfigSupported）| null
 // 实测（Mac 上的 WKWebView）：description 是 ES_Descriptor；帧数 = ⌈(喂进去的样本数 + 2112) / 1024⌉；第一帧时间戳 0、每帧 64 ms，
 // 但每喂进一块（1 秒，不是 1024 的整数倍）它按那块的时间戳重新标，帧和帧之间有时差 104 / 40 ms（偏差总在一帧以内）：时间戳只拿来看预热标没标出来；
 // 同样的 PCM 编出来每次一样（但别的系统、别的版本不一定，调用方别指望重编出同一个 sha256）；5 秒说话约 25 KB（WAV 160 KB），
@@ -22,7 +25,7 @@
 // 页面在后台时计时器会被放慢（实测 setTimeout 等着编 10 分钟要 56 秒），所以等编码器用它的 dequeue 事件，不用计时器（在后台编 10 分钟 1 秒，连核对 3.6 秒）。
 // 依赖都能注入（AudioEncoder、AudioData、decode），Node 里用假编码器测。import 时什么都不做。
 import { readMp4Meta } from './mp4meta.js';
-import { decode16k, nextTask } from './transcribe.js';
+import { decodeMono, nextTask } from './transcribe.js';
 
 export const SR = 16000;
 export const CODEC = 'mp4a.40.2';            // AAC-LC
@@ -42,6 +45,26 @@ const fail = (code, detail) => Object.assign(new Error('m4a: ' + code + (detail 
 export const budgetMs = (sec) => 10000 + Math.max(0, sec) * 200;
 
 // ---------- 编码 ----------
+
+/**
+ * 候选的 { sr, bitrate }（按顺序）里第一个编码器支持的（AAC-LC 单声道）→ 那一项 | null。
+ * 没有 AudioEncoder / AudioData → null；编码器没有 isConfigSupported → 第一项（编的时候不行照样退回）；问的时候出错算不支持
+ * @param {Array<{ sr: number, bitrate: number }>} list
+ * @param {{ AudioEncoder?: any, AudioData?: any }} [o]
+ */
+export async function pickConfig(list, o = {}) {
+  const AE = 'AudioEncoder' in o ? o.AudioEncoder : globalThis.AudioEncoder;
+  const AD = 'AudioData' in o ? o.AudioData : globalThis.AudioData;
+  if (typeof AE !== 'function' || typeof AD !== 'function' || !list || !list.length) return null;
+  if (typeof AE.isConfigSupported !== 'function') return list[0];
+  for (const c of list) {
+    try {
+      const s = await AE.isConfigSupported({ codec: CODEC, sampleRate: c.sr, numberOfChannels: 1, bitrate: c.bitrate });
+      if (s && s.supported) return c;
+    } catch (e) { /* 这个不行，看下一个 */ }
+  }
+  return null;
+}
 
 /**
  * PCM（Int16Array 或 -1…1 的 Float32Array，单声道）→ { frames: Uint8Array[], description, sampleRate, channels, firstTs, lead }
@@ -305,7 +328,7 @@ export function rmsOf(pcm, from = 0, to = pcm.length) {
   return end > from ? Math.sqrt(s / (end - from)) : 0;
 }
 const dbOf = (r) => Math.round(20 * Math.log10(r + 1e-12) * 10) / 10;
-const QUIET = 1e-4;                                   // −80 dBFS 以下算静音
+export const QUIET = 1e-4;                            // −80 dBFS 以下算静音（导入时看多声道抵消也用它，importM4a.js）
 const WIN = 512;                                      // 逐段比：每 512 个样本（32 毫秒）一段：丢了 64 毫秒以上，不管从哪儿开始，总有一整段是空的
                                                       //（一段 64 毫秒的话，丢的正好跨两段时每段只少一半，看不出来；AAC 的帧和这些段正好错开 64 个样本）
 const WIN_FLOOR = 10 ** (-75 / 20), WIN_REL = 0.01;   //   比哪些段：原来 ≥ 最响那段 −40 dB、也 ≥ −75 dBFS 的（很轻的悄悄话也比：只比 −50 dBFS 以上的话，
@@ -346,7 +369,7 @@ export function alignOf(pcm, out, from, to, maxLag = ALIGN.LAG) {
  *   音量只差一点的错开（预热算错了、中间丢了一帧后面全挪了）只有这一步看得出来。
  * decode 出错照样抛
  */
-export async function verifyM4a(blob, pcm, { sr = SR, decode = decode16k, tolSec = TOLERANCE_SEC } = {}) {
+export async function verifyM4a(blob, pcm, { sr = SR, decode = (b) => decodeMono(b, { sr }), tolSec = TOLERANCE_SEC } = {}) {
   const want = pcm.length / sr, src = rmsOf(pcm);
   const res = (ok, why, extra = {}) => ({ ok, why, srcRmsDb: dbOf(src), ...extra });
   const meta = readMp4Meta(new Uint8Array(await blob.arrayBuffer()));
@@ -380,11 +403,12 @@ export async function verifyM4a(blob, pcm, { sr = SR, decode = decode16k, tolSec
 // ---------- 连起来 ----------
 
 /**
- * PCM（16 kHz 单声道）→ 核对过的 m4a（Blob audio/mp4）| null（不支持、出错、超时、核对不过 → null，调用方存 WAV）。
+ * PCM（sr 的单声道，默认 16 kHz）→ 核对过的 m4a（Blob audio/mp4）| null（不支持、出错、超时、核对不过 → null，调用方存 WAV / 原来的文件）。
  * @param {Int16Array|Float32Array} pcm
- * @param {{ sr?: number, createdAt?: number|null, timeoutMs?: number, decode?: Function, AudioEncoder?: any, AudioData?: any,
+ * @param {{ sr?: number, bitrate?: number, createdAt?: number|null, timeoutMs?: number, maxBytes?: number, decode?: Function, AudioEncoder?: any, AudioData?: any,
  *           OfflineAudioContext?: any, onResult?: (r: object) => void }} [o]
- *   没给 decode 时用 decode16k（要 OfflineAudioContext：没有就不做，核对不了的不存）；onResult 收到 { ok, why, … }（诊断、测试用）
+ *   没给 decode 时用 decodeMono 按 sr 解码（要 OfflineAudioContext：没有就不做，核对不了的不存）；onResult 收到 { ok, why, … }（诊断、测试用）；
+ *   maxBytes：编出来比这个大就不要（why 'bigger'，不核对；导入时原文件已经很小的不转，见 importM4a.js），不给就不管多大
  */
 export async function pcmToM4a(pcm, o = {}) {
   const { sr = SR, createdAt = null, onResult = null } = o;
@@ -396,7 +420,7 @@ export async function pcmToM4a(pcm, o = {}) {
   if (!decode) {
     const AC = 'OfflineAudioContext' in o ? o.OfflineAudioContext : (globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext);
     if (!AC) return report({ ok: false, why: 'unsupported' });
-    decode = (b) => decode16k(b, { AC });
+    decode = (b) => decodeMono(b, { AC, sr });
   }
   const ctl = typeof AbortController === 'function' ? new AbortController() : null;
   let timer = null;
@@ -416,6 +440,7 @@ export async function pcmToM4a(pcm, o = {}) {
       const priming = (e.firstTs < 0 ? Math.round(-e.firstTs * sr / 1e6) : PRIMING) + e.lead, want = Math.ceil((priming + n) / fl);
       if (e.frames.length !== want) throw fail('frames', `${e.frames.length} ≠ ${want}`);
       const bytes = muxM4a({ asc, frames: e.frames, samples: n, priming, sampleRate: sr, channels: 1, frameLen: fl, createdAt });
+      if (o.maxBytes > 0 && bytes.length > o.maxBytes) throw fail('bigger', `${bytes.length} > ${o.maxBytes}`);   // 比调用方要的大：不用核对了
       const blob = new Blob([bytes], { type: 'audio/mp4' });
       const v = await verifyM4a(blob, pcm, { sr, decode });
       return { blob, v, frames: e.frames.length, priming };
@@ -428,7 +453,7 @@ export async function pcmToM4a(pcm, o = {}) {
     return blob;
   } catch (e) {
     const why = (e && e.code) || 'error';
-    if (why !== 'unsupported') console.warn('m4a', e);
+    if (why !== 'unsupported' && why !== 'bigger') console.warn('m4a', e);
     return report({ ok: false, why, error: (e && e.message) || String(e), ms: Date.now() - t0 });
   } finally {
     clearTimeout(timer);

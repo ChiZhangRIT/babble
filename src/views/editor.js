@@ -10,10 +10,11 @@
 // 这条在别的设备上永久删除了（打开时、或者开着的时候）：不再另存草稿、不能保存；有没保存的修改（或另存的草稿）就给
 //   「另存为新的一条」（确认以后：正在改的字存成一条待整理，只带这次加的录音、不带永久删除了的）和「丢掉」，没有就只说一句。
 //   这次录的、还没存进条目的录音「丢掉」时也照样单独存成一条（同离开）。
-// deps（测试用）：purgeEnabled 换掉 core/purge.js 的 PURGE_ENABLED（只影响说法：移除的录音 30 天后自动永久删除）。
+// 「添加录音」选的文件要先转成 m4a（几秒到十几秒）：转的时候点保存，等转完一起保存；转的时候离开，先问（确认了就不存这些录音）。
+// deps（测试用）：purgeEnabled 换掉 core/purge.js 的 PURGE_ENABLED（只影响说法：移除的录音 30 天后自动永久删除）；m4a：选来的录音转 m4a 时 importM4a 的选项。
 import { h, icon } from '../ui/dom.js';
 import { audioPlayer, stopAll } from '../ui/player.js';
-import { canon } from '../core/store.js';
+import { canon, clipKeys } from '../core/store.js';
 import { today, nowTime, isISODate, isTime, localParts, systemTz, fmtEntryDate, fmtTimer, fmtDuration } from '../core/dates.js';
 import { createRecorder } from '../core/recorder.js';
 import { EDIT_PREFIX, readDraft, clipOf, recTimeFields } from '../core/drafts.js';
@@ -102,7 +103,11 @@ export function render(main, params, ctx, deps = {}) {
   // 新的一条里在这里录的（sha256 → { startedAt, tz }）：没保存就离开时单独存成一条待整理，不丢（随草稿另存，恢复后也记得）
   const inlineSha = new Map();
   const isDirty = () => !saved && (saveFailed || canon(w) !== base);
-  ctx.guard(isDirty);
+  // 「添加录音」选的文件还在转 m4a（adding > 0）：离开前也问（确认离开 → 转完不存、不加）；保存等它转完一起存（waitAdds）。
+  // waitNotes：保存在等的时候，转完说的那几句（没转成 m4a、已经在这里了）：保存以后的提示里再说一遍，不被「已保存」盖掉
+  let adding = 0, addWaiters = [], waitNotes = null;
+  const addsDone = () => (adding ? new Promise(res => addWaiters.push(res)) : Promise.resolve());
+  ctx.guard(() => isDirty() || adding > 0);
 
   // ---------- 没保存的修改另存一份 ----------
   const draftKey = EDIT_PREFIX + (isNew ? 'new' : id);
@@ -273,12 +278,25 @@ export function render(main, params, ctx, deps = {}) {
     if (addedSha.has(c.sha256)) addedSha.delete(c.sha256); else removedSha.add(c.sha256);
     drawAudio();
   }
+  // 「添加录音」：选来的文件转成 m4a 再存（entry.js readClipFiles）；同一个文件（原文件或者转出来的 m4a 对得上，clipKeys）已经在这里的不转、不再加。
+  // 转的时候点了保存：等转完一起存；确认了离开（gone）：转完的不存、不加
   async function addFiles(fl) {
-    const got = await readClipFiles(fl, ctx);
-    const have = new Set(w.audio.map(a => a.sha256)), notes = [];
+    adding++;
+    try { await addFilesNow(fl); }
+    finally {
+      adding--;
+      if (!adding) { const ws = addWaiters; addWaiters = []; for (const f of ws) f(); }
+    }
+  }
+  async function addFilesNow(fl) {
+    const dups = [], later = [];
+    const got = await readClipFiles(fl, ctx, { have: new Set(w.audio.flatMap(clipKeys)), dups, notes: later, stop: () => gone, m4a: deps.m4a });
+    if (gone) return;
+    const have = new Set(w.audio.flatMap(clipKeys)), notes = dups.map(name => t('entry.audioDup', { name }));
     for (const g of got) {
-      if (have.has(g.clip.sha256)) { notes.push(t('entry.audioDup', { name: g.clip.origName })); continue; }
-      have.add(g.clip.sha256);
+      const keys = clipKeys(g.clip);
+      if (keys.some(k => have.has(k))) { notes.push(t('entry.audioDup', { name: g.clip.origName })); continue; }
+      for (const k of keys) have.add(k);
       w.audio.push(g.clip);
       if (removedSha.has(g.clip.sha256)) removedSha.delete(g.clip.sha256); else addedSha.add(g.clip.sha256);
       // 录音文件里有时间：和现在填的不一样就提示，点了才用
@@ -287,9 +305,20 @@ export function render(main, params, ctx, deps = {}) {
         if (p && (p.date !== w.date || p.time !== w.time)) suggest = { ...p, iso: g.createdAt.toISOString(), tz };
       }
     }
-    if (notes.length) ctx.toast(notes.join('\n'));
+    notes.push(...later);
+    if (notes.length) { ctx.toast(notes.join('\n'), { ms: 9000 }); if (waitNotes) waitNotes.push(...notes); }
     drawAudio(); paintTime();
   }
+  /** 保存前：选的录音还在转 m4a 就等它转完（提示一句「转完就保存」） */
+  async function waitAdds() {
+    if (!adding) return;
+    saving = true; waitNotes = [];
+    const tip = ctx.toast(t('edit.waitConvert'), { ms: 120000 });
+    await addsDone();
+    if (tip && typeof tip.close === 'function') tip.close();
+    saving = false;
+  }
+  const takeWaitNotes = () => { const x = waitNotes || []; waitNotes = null; return x; };
 
   // ---------- 录一段（不离开编辑页） ----------
   // 录到的：已有的条目马上接上（同时列进工作副本、不算没保存的修改）；新的一条放进工作副本（added），草稿另存好了才清恢复记录。
@@ -430,6 +459,8 @@ export function render(main, params, ctx, deps = {}) {
   async function save(markDone = false) {
     if (saving) return;
     if (recBusy()) { saving = true; await stopRec('user'); saving = false; if (gone) return; }       // 正在录：先停下存好，录到的一起保存
+    if (adding) { await waitAdds(); if (gone) return; }                                                // 选的录音还在转 m4a：转完一起保存
+    const later = takeWaitNotes();
     if (!isISODate(w.date)) { dateErr.hidden = false; dateInput.focus(); return; }
     if (purged || (!isNew && tombOf(id))) { toPurged(); return; }               // 永久删除了：存不进去（ctx.update 也不会写）
     if (!isNew && !isDirty() && !markDone) { saved = true; dropDraft(); ctx.back(backTo); return; }
@@ -475,8 +506,8 @@ export function render(main, params, ctx, deps = {}) {
     if (isNew) ctx.navigate('/e/' + enc(targetId), { replace: true });
     else {
       const note = removedN ? t(purgeOn ? 'edit.removedNotePurge' : 'edit.removedNote', { n: removedN }) : null;
-      if (markDone && doneUndoPending) ctx.toast([t('entry.doneToast'), note].filter(Boolean).join('\n'), { ms: 10000, action: { label: t('common.undo'), run: () => ctx.undo() } });
-      else ctx.toast([t('edit.saved'), note].filter(Boolean).join('\n'), { ms: note ? 6000 : 1600 });
+      if (markDone && doneUndoPending) ctx.toast([t('entry.doneToast'), note, ...later].filter(Boolean).join('\n'), { ms: 10000, action: { label: t('common.undo'), run: () => ctx.undo() } });
+      else ctx.toast([t('edit.saved'), note, ...later].filter(Boolean).join('\n'), { ms: later.length ? 9000 : note ? 6000 : 1600 });
       ctx.back(backTo);
     }
   }
@@ -495,6 +526,7 @@ export function render(main, params, ctx, deps = {}) {
   async function saveAsNew() {
     if (saving || !(await ctx.confirm({ message: t('edit.saveAsNewMsg'), confirmLabel: t('edit.saveAsNew') }))) return;
     if (recBusy()) { saving = true; await stopRec('user'); saving = false; }
+    if (adding) { await waitAdds(); takeWaitNotes(); if (gone) return; }
     const tomb = tombOf(id), dead = new Set([...((tomb && tomb.gone) || []).map(g => g.sha256), ...(ctx.goneShas ? ctx.goneShas() : [])]);
     const audio = w.audio.filter(a => addedSha.has(a.sha256) && !dead.has(a.sha256));
     let e = null;

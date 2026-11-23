@@ -3,6 +3,7 @@
 //         元数据里带时区的日期（udta/meta/ilst ©day、QuickTime keys 的 com.apple.quicktime.creationdate、udta/©day）
 //   时长：mvhd duration / timescale → 不是碎片化的再看 mdhd（先看音轨）。碎片化 MP4（moov 里有 mvex、或有 moof，
 //         比如 Safari 边录边切片的文件）duration 是 0：有 mehd 就用它，否则 null（播放器会从 <audio> 读真实时长）。
+// mp4AudioCodec(buf)：音轨是什么编码（导入时已经是 AAC 的 m4a 原样存，别的转成 m4a，见 importM4a.js）。
 
 const MAC_EPOCH = 2082844800;                       // 1904-01-01 到 1970-01-01 的秒数
 const MIN_MS = Date.UTC(2000, 0, 1), MAX_MS = Date.UTC(2100, 0, 1);
@@ -55,6 +56,64 @@ export function readMp4Meta(buf) {
   } catch (e) {
     return out;
   }
+}
+
+/**
+ * 音轨（hdlr soun；没标的话第一条轨）的编码：stsd 第一项的类型。'mp4a' 再看 esds 里的 objectTypeIndication：
+ * 0x40（MPEG-4 音频）、0x66–0x68（MPEG-2 AAC）→ 'aac'，0x69 / 0x6B → 'mp3'，没有 esds（读不到）也按 'aac'（mp4a 几乎都是）；
+ * 别的原样给类型（'alac'、'Opus'、'fLaC'、'ac-3'、'lpcm'…）。不是 mp4、没有音轨、读不到 → null。不抛错
+ * @param {ArrayBuffer|ArrayBufferView} buf
+ * @returns {string|null}
+ */
+export function mp4AudioCodec(buf) {
+  try {
+    const dv = viewOf(buf);
+    if (!dv || dv.byteLength < 8) return null;
+    const moov = boxes(dv, 0, dv.byteLength).find(b => b.type === 'moov');
+    if (!moov) return null;
+    const traks = boxes(dv, moov.body, moov.end).filter(b => b.type === 'trak');
+    const entries = [];
+    for (const tr of traks) {
+      const mdia = boxes(dv, tr.body, tr.end).find(b => b.type === 'mdia');
+      if (!mdia) continue;
+      const kids = boxes(dv, mdia.body, mdia.end), hdlr = kids.find(b => b.type === 'hdlr'), minf = kids.find(b => b.type === 'minf');
+      const stbl = minf && boxes(dv, minf.body, minf.end).find(b => b.type === 'stbl');
+      const stsd = stbl && boxes(dv, stbl.body, stbl.end).find(b => b.type === 'stsd');
+      if (!stsd || stsd.body + 16 > stsd.end) continue;
+      const entry = boxes(dv, stsd.body + 8, stsd.end)[0];              // 版本标志 4 + 条目数 4
+      if (!entry) continue;
+      entries.push({ entry, soun: !!hdlr && hdlr.body + 12 <= hdlr.end && fourcc(dv, hdlr.body + 8) === 'soun' });
+    }
+    const hit = entries.find(x => x.soun) || entries[0];
+    if (!hit) return null;
+    if (hit.entry.type !== 'mp4a') return hit.entry.type;
+    const oti = esdsOti(dv, hit.entry);
+    return oti == null || oti === 0x40 || (oti >= 0x66 && oti <= 0x68) ? 'aac' : oti === 0x69 || oti === 0x6b ? 'mp3' : 'mp4a/' + oti.toString(16);
+  } catch (e) {
+    return null;
+  }
+}
+/** mp4a 里的 esds（QuickTime 的写法可能套在 wave 里、前面还有 v1 / v2 的字段：直接在 mp4a 里找 'esds' 四个字）→ objectTypeIndication | null */
+function esdsOti(dv, entry) {
+  for (let p = entry.body; p + 8 <= entry.end; p++) {
+    if (dv.getUint8(p + 4) !== 0x65 || fourcc(dv, p + 4) !== 'esds') continue;
+    const size = dv.getUint32(p), end = Math.min(entry.end, p + (size >= 12 ? size : entry.end - p));
+    let q = p + 12;                                                    // 盒子头 8 + 版本标志 4
+    const desc = (tag) => {                                            // [tag][长度：每字节 7 位，最多 4 字节] → 内容的开头 | -1
+      if (q >= end || dv.getUint8(q) !== tag) return -1;
+      q++;
+      for (let k = 0; k < 4 && q < end; k++) if (!(dv.getUint8(q++) & 0x80)) return q;
+      return -1;
+    };
+    if (desc(0x03) < 0 || q + 3 > end) return null;
+    const flags = dv.getUint8(q + 2);
+    q += 3;                                                            // ES_ID 2 + 标志 1
+    if (flags & 0x80) q += 2;
+    if (flags & 0x40) q += 1 + (q < end ? dv.getUint8(q) : 0);
+    if (flags & 0x20) q += 2;
+    return desc(0x04) >= 0 && q < end ? dv.getUint8(q) : null;
+  }
+  return null;
 }
 
 function viewOf(buf) {

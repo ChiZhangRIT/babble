@@ -4,7 +4,7 @@
 // 第一次用到时按 release.json 的 vendor 核对 sha256，存进 VENDOR_CACHE，以后先用缓存（之后离线也能用）；
 // 名字带版本号，App 发新版不用重新下载；已有的文件换了版本（或去掉了）才改名字，旧的会被清掉，只是加了文件不改。Whisper 模型文件在 Hugging Face（别的网站），
 // 由 transformers.js 自己存在「transformers-cache」里，这里不碰。
-const CACHE = 'babble-v33';
+const CACHE = 'babble-v34';
 const VENDOR_CACHE = 'babble-vendor-tf432';
 const VENDOR = new URL('./vendor/', location).pathname;
 // 程序文件全部预先缓存（tests/sw.test.mjs 检查这张表和磁盘上的文件、index.html、import 关系一致），第一次打开之后就能离线用
@@ -18,7 +18,7 @@ const CORE = [
   './src/app.js', './src/boot.js', './src/i18n.js',
   './src/start.js', './src/ui/recovery.js', './src/strings/recovery.js',
   './src/core/audioStore.js', './src/core/backup.js', './src/core/clips.js', './src/core/dates.js', './src/core/dialogue.js', './src/core/drafts.js', './src/core/hanzi.js', './src/core/history.js', './src/core/loudness.js',
-  './src/core/mp4meta.js', './src/core/notesImport.js', './src/core/recorder.js', './src/core/search.js', './src/core/sha256.js',
+  './src/core/importM4a.js', './src/core/mp4meta.js', './src/core/notesImport.js', './src/core/recorder.js', './src/core/search.js', './src/core/sha256.js',
   './src/core/state.js', './src/core/store.js', './src/core/sync.js', './src/core/update.js', './src/core/util.js', './src/core/zip.js',
   './src/core/persistence.js',
   './src/strings/cal.js', './src/strings/core.js', './src/strings/history.js', './src/strings/list.js', './src/strings/more.js', './src/strings/stt.js',
@@ -26,7 +26,7 @@ const CORE = [
   './src/ui/dom.js', './src/ui/player.js', './src/ui/stt.js', './src/ui/swipe.js', './src/ui/writer.js',
   './src/views/calendar.js', './src/views/deleted.js', './src/views/device.js', './src/views/diagnostics.js', './src/views/editor.js', './src/views/entry.js', './src/views/history.js', './src/views/import.js',
   './src/views/list.js', './src/views/record.js', './src/views/settings.js',
-  // 床头模式（整夜录音的引擎、采集 worklet、说话识别 worker、昨夜页、「留下」存 m4a）
+  // 床头模式（整夜录音的引擎、采集 worklet、说话识别 worker、昨夜页、「留下」存 m4a；m4a.js 导入转 m4a 也用）
   './src/core/nightDetect.js', './src/core/nightReport.js', './src/core/nightStore.js', './src/core/vad.js', './src/core/bedside.js',
   './src/core/nightKeep.js', './src/core/m4a.js', './src/core/purge.js', './src/worklets/capture.worklet.js', './src/workers/vad.worker.js',
   './src/views/bedside.js', './src/views/night.js', './src/strings/night.js',

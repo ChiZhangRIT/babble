@@ -1,5 +1,5 @@
 // 无依赖启动器：安装完成后才加载 App；当前页面和控制它的 worker 必须属于同一版。
-export const BUILD = 'babble-v33';
+export const BUILD = 'babble-v34';
 
 function within(promise, ms) {
   let timer;

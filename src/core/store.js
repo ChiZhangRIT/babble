@@ -48,10 +48,15 @@ const validItem = a => isObj(a) && SHA.test(a.sha256);
 const lowSha = a => a.sha256.toLowerCase();
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 const bySha = (a, b) => cmp(a.sha256, b.sha256);
-const audioItem = a => ({
-  ...a, sha256: a.sha256.toLowerCase(), mime: str(a.mime) || 'audio/mp4', bytes: numOrNull(a.bytes), durationSec: numOrNull(a.durationSec),
-  origName: str(a.origName), addedAt: Number(a.addedAt) || 0,
-});
+/** srcSha256：导入时转成 m4a 的，原文件的 sha256（只用来认出同一个文件，见 importM4a.js）。有这个键才整理：坏的去掉，好的改小写 */
+const audioItem = a => {
+  const x = {
+    ...a, sha256: a.sha256.toLowerCase(), mime: str(a.mime) || 'audio/mp4', bytes: numOrNull(a.bytes), durationSec: numOrNull(a.durationSec),
+    origName: str(a.origName), addedAt: Number(a.addedAt) || 0,
+  };
+  if ('srcSha256' in x) { if (typeof x.srcSha256 === 'string' && SHA.test(x.srcSha256)) x.srcSha256 = x.srcSha256.toLowerCase(); else delete x.srcSha256; }
+  return x;
+};
 /** 条目里的录音：坏的、重复的去掉。restoredAt（从「移除的录音」放回来的时刻）只留有效的；removedAt 不属于这里 */
 function normAudio(list) {
   const seen = new Set();
@@ -527,12 +532,28 @@ export function byNewest(a, b) {
   return String(b.id).localeCompare(String(a.id), 'en', { numeric: true });
 }
 
-/** sha256 → 引用这段录音的条目 id 列表（导入去重、同步下载用） */
-export function clipIndex(state, { includeDeleted = false } = {}) {
+/**
+ * 一段录音认得出的 sha256：存下的文件的（sha256），导入时转成 m4a 的再加上原文件的（srcSha256）。只用来去重：
+ * 永久删除、清理、同步、「有条目在用」都只认 sha256
+ */
+export const clipKeys = (a) => (a && typeof a.sha256 === 'string' ? [a.sha256, ...(typeof a.srcSha256 === 'string' && a.srcSha256 && a.srcSha256 !== a.sha256 ? [a.srcSha256] : [])] : []);
+/** 两段是同一个录音（clipKeys 有一个对得上）：同一个 WAV 导两次、编出来的 m4a 不一样也认得出 */
+export const sameClip = (a, b) => { const k = clipKeys(b); return clipKeys(a).some(x => k.includes(x)); };
+
+/**
+ * sha256 → 引用这段录音的条目 id 列表（导入去重、同步下载用）。
+ * withSrc：原文件的 sha256（srcSha256）也放进去（导入去重用：选的文件和以前转成 m4a 的是同一个）
+ */
+export function clipIndex(state, { includeDeleted = false, withSrc = false } = {}) {
   const idx = new Map();
   for (const e of Object.values((state && state.data && state.data.entries) || {})) {
     if (e.deleted && !includeDeleted) continue;
-    for (const a of e.audio || []) { if (!idx.has(a.sha256)) idx.set(a.sha256, []); idx.get(a.sha256).push(e.id); }
+    for (const a of e.audio || []) {
+      for (const k of withSrc ? clipKeys(a) : [a.sha256]) {
+        if (!idx.has(k)) idx.set(k, []);
+        if (!idx.get(k).includes(e.id)) idx.get(k).push(e.id);
+      }
+    }
   }
   return idx;
 }

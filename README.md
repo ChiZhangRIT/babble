@@ -13,7 +13,7 @@
 
 ### 记一条
 
-列表上的 ＋「记一条」。日期默认今天（必填），时间可以不填。原话框上面有 `👰🏻‍♀️ NN` 和 `🥷🏻` 两个按钮，点一下就插入一行、光标停在引号中间；下面一排表情（🤯 🫨 😲 🤭 😂 🥲）插入「🥷🏻 + 表情」那一行。也可以在详情页的 `⋯` 里「添加录音（文件）」。
+列表上的 ＋「记一条」。日期默认今天（必填），时间可以不填。原话框上面有 `👰🏻‍♀️ NN` 和 `🥷🏻` 两个按钮，点一下就插入一行、光标停在引号中间；下面一排表情（🤯 🫨 😲 🤭 😂 🥲）插入「🥷🏻 + 表情」那一行。也可以在详情页的 `⋯` 里「添加录音（文件）」（不是 m4a 的录音先转成 m4a 再存，见下面「早上导入」）。
 
 保存失败时会留在编辑页，保留正在写的内容和已有的恢复草稿，显示提示；清理空间后可以直接重试，不用再输入一遍。
 
@@ -188,9 +188,15 @@
 
 - 录音时间从文件内部读出来，读不到才用文件时间，每条都会标明时间来自哪里
 - 录音原来的文件名就是它在 App 里的名字（详情页播放器上面显示，搜索也搜得到，随时可以改），不用另外起标题
-- 同一段录音导入两次会被认出来跳过
+- 同一段录音导入两次会被认出来跳过（在「最近删除」里的也算）
 - 也可以选「加到已有条目」，接到当天已经写好的那条里
-- 只收 `.m4a`。存储时如果选了「可编辑」，会存成 `.qta`，App 读不了，重新存一次、不选它就行
+- **都存成 m4a**：语音备忘录的 `.m4a`（里面是 AAC）原样存，一个字节不动；别的格式（WAV、MP3、CAF、AIFF……）选好以后先在这台设备上转成 m4a（AAC，24 kHz 单声道，说话时每分钟约 0.4 MB：9 秒的 48 kHz 立体声 WAV 1.8 MB 转完 62 KB，128 kbps 的 MP3 150 KB 转完 62 KB），录音不离开设备。上面写着「正在转成 m4a，还有 n 个…」，转完每一行写着转之前、之后多大，才能点「导入」。立体声、多声道的先合成一个声道（取平均）；转完先在这台设备上把 m4a 解码回来，和合成的那份单声道比一遍（时长、音量、前后没错开），对不上就不用转出来的
+- 转成了的：名字还是原来的文件名（带原来的扩展名），时长按解码出来的算；m4a 里的录音时间写的是条目用的那个时间（文件里的录音时间，没有就是文件修改时间）
+- 转不了的（浏览器编不了、文件解不开、超过 30 分钟、文件太大、核对不过，还有两个声道正好反相、合成一个声道就互相抵消没声了的），按原来的格式存原来的文件，名字、时长都和原来一样，那一行上写一句「这段没转成 m4a，按原来的格式存」（超过 30 分钟的写「超过 30 分钟…」）。原文件本来就很小（低码率的 MP3、里面是 AAC 的 CAF…）、转完省不了一成的也不转，写「原文件已经够小…」：再压一遍只会更糊
+- 详情页、编辑页的「添加录音」也一样转（转的时候先说一句「正在转成 m4a…」，没转成的也说一句）。编辑页上转的时候点「保存」，会等转完一起存；转的时候离开会先问，确认离开的话这几段不存
+- 同一个 WAV 再导一次也认得出：转出来的 m4a 不一定每次都一样，所以条目里还记着原文件的指纹（`srcSha256`），两个都比。详情页、编辑页的「添加录音」也一样认。永久删除、同步只看存下来的那份 m4a：永久删除以后再导同一个文件，和再导一段永久删除过的 m4a 一样，当成新的导进来
+- 「从备忘录迁移」和恢复备份不转，原样存
+- 存储时如果选了「可编辑」，会存成 `.qta`，App 读不了，重新存一次、不选它就行
 - Mac 上：把录音文件直接拖进 App 窗口也行
 
 ## 床头模式（整夜放在床头自动录）
@@ -377,6 +383,7 @@ iPhone / iPad 上会弹出分享面板，可以存到「文件」或者隔空投
 - 永久删除时另一台设备正好改过、恢复了这一条，以改过的为准，这次永久删除不算数（App 会说一声，可以再删一次）。录音要是那台设备从来没有、又过了 7 天才联网恢复的，就找不回来了；已经同步到这次永久删除的设备上，那一条的旧版本（修改记录）不会回来
 - 还在用旧版本的设备（比如很久没打开的 iPad）可能把永久删除的内容暂时传回仓库（新版的设备同步时会再删掉）；旧版本的「最近删除」里会多出几行空白的（「还没写原话」，日期是永久删除那天），别在旧版本里恢复它们、往里写字，写的字会丢。连着网打开那台设备，等一会儿（新版在后台下载），关掉它上面所有牙牙呓语的窗口再打开，就是新版了。它用旧版本往仓库传过一次以后，「最近删除」顶上、「设置 → 同步」和永久删除、清理云端历史的确认框里都会写出它的名字；60 天内在它上面改过梦话的话，「设置 → 同步 → 已更新到新版的设备」里它也列在「还没报到的设备」下面。最好等它更新了再「清理云端历史」
 - 永久删除以后，空间不一定马上腾出来：开着同步时，这台设备上的录音要等同步确认、再过 7 天才删，一小时内刚碰过的录音等一等再删
+- 导入时转 m4a 只在 Mac 的 WebKit（WKWebView）里用电脑朗读做的 WAV、MP3、CAF 试过：10 秒的不到 0.2 秒，10 分钟的 48 kHz 立体声 WAV（115 MB → 2.8 MB）3.4 秒，29 分钟的 8 kHz WAV 18 秒。iPhone 上会慢一些、长的文件很占内存（30 分钟立体声解码出来有几百 MB），所以超过 30 分钟的、大于 400 MB 的、读不出多长又大于 16 MB 的、声道多的长 WAV 都不转、按原来的格式存；一次只转一个。iPhone 上到底占多少内存没量过：特别长的文件要是让 App 闪退，就在 Mac 上导入。以前导入的 WAV、MP3 原样不动，不会改存成 m4a
 
 ## 录音诊断
 
@@ -410,6 +417,7 @@ python3 -m http.server 8791 --bind 127.0.0.1
 - 程序整版下载并校验通过才会安装；缺文件、校验不符或断网时继续保留旧版。已打开的页面始终使用它所属的版本，不会强制重载正在录音或编辑的页面。发布后关闭所有「牙牙呓语」页面，再重新打开即可启用新版本。首次安装需要联网，之后可离线打开。
 - 「转成文字」用的第三方文件在 `vendor/transformers/`（transformers.js 4.3.2 和 onnxruntime-web 的 wasm，原样拷贝，版本、来源、许可见那里的 README）。它们不进 `CORE`（几十 MB），第一次用到时按 `release.json` 的 `vendor` 清单核对，存进 `sw.js` 的 `VENDOR_CACHE`；清单里已有的文件改了或去掉了，`prepare-release` 会自动给这个缓存改名（旧的会被清掉，用过的设备要重新下载一次约 14 MB）；只是加了文件（比如说话识别的模型）不改名，已经下载的照样能离线用。模型由 transformers.js 自己存在 `transformers-cache` 里，`sw.js` 不碰。识别在 `src/workers/transcribe.worker.js`（模块 worker）里跑，页面这边是 `src/core/transcribe.js`，界面在 `src/ui/stt.js`。识别前先找说话的地方：`transcribe.js` 的 `findSpeech`（先按几个频带的能量跳过静音，剩下的交给床头模式那个说话识别 `src/core/vad.js`，它的 worker 在 Whisper 的 worker 开之前关掉）；说话识别用不了时用 `speechSegments`（只按能量）
 - 网页的 CSP 为此多了 `'wasm-unsafe-eval'` 和 `https://huggingface.co https://*.hf.co`（下载模型）；本地预览时模型照样从 Hugging Face 下载
-- 床头模式：引擎是 `src/core/bedside.js`（开始、采集、找片段、断了怎么接着听、写进本机，下次启动时收尾和清理也在这里），纯计算在 `nightDetect.js`（全部参数 `P`、能量门限、片段的状态机、WAV）和 `nightReport.js`（一晚的记录、「昨夜」卡片、清理计划、摘要），本机存储是 `nightStore.js`（IndexedDB `babble-night`，和录音的 `babble-audio` 分开），「留下」是 `nightKeep.js`（存 m4a 用 `m4a.js`：WebCodecs `AudioEncoder` 编 AAC-LC、自己拼成 m4a、用 `transcribe.js` 的 `decode16k` 解码回来核对，编不了或核对不过就存 WAV）。采集在 AudioWorklet `src/worklets/capture.worklet.js` 里（48 kHz 降到 16 kHz；不能有 `import`），说话识别在模块 worker `src/workers/vad.worker.js` 里（页面这边是 `src/core/vad.js`）。界面：`src/views/bedside.js`（`#/rec?bed=1`，`record.js` 第一行交过去）、`src/views/night.js`（`#/night`，还有列表、日历上的「昨夜」卡片）
+- 导入的录音转 m4a 在 `src/core/importM4a.js`：导入页（`views/import.js` 的 `prepareImport`）、详情页和编辑页的「添加录音」（`views/entry.js` 的 `readClipFiles`）都走它。已经是 AAC 的 m4a 看 `mp4meta.js` 的 `mp4AudioCodec`；解码用 `transcribe.js` 的 `decodeMono`（按 24 kHz），编码、拼文件、核对用 `m4a.js`（和床头模式同一套，采样率、码率由调用方给）。原文件的 sha256 记在条目录音的 `srcSha256`，去重用 `store.js` 的 `clipKeys` / `sameClip` / `clipIndex(…, { withSrc: true })`；永久删除、清理、同步只认 `sha256`。测试用假的编码器、解码器（`tests/helpers/fakeCodec.mjs`）
+- 床头模式：引擎是 `src/core/bedside.js`（开始、采集、找片段、断了怎么接着听、写进本机，下次启动时收尾和清理也在这里），纯计算在 `nightDetect.js`（全部参数 `P`、能量门限、片段的状态机、WAV）和 `nightReport.js`（一晚的记录、「昨夜」卡片、清理计划、摘要），本机存储是 `nightStore.js`（IndexedDB `babble-night`，和录音的 `babble-audio` 分开），「留下」是 `nightKeep.js`（存 m4a 用 `m4a.js`：WebCodecs `AudioEncoder` 编 AAC-LC、自己拼成 m4a、用 `transcribe.js` 的 `decodeMono` 按 16 kHz 解码回来核对，编不了或核对不过就存 WAV）。采集在 AudioWorklet `src/worklets/capture.worklet.js` 里（48 kHz 降到 16 kHz；不能有 `import`），说话识别在模块 worker `src/workers/vad.worker.js` 里（页面这边是 `src/core/vad.js`）。界面：`src/views/bedside.js`（`#/rec?bed=1`，`record.js` 第一行交过去）、`src/views/night.js`（`#/night`，还有列表、日历上的「昨夜」卡片）
 - 说话识别的模型在 `vendor/silero-vad/`：Silero VAD v6.2 的 `silero_vad_16k_op15.onnx`（1,289,603 字节），从 PyPI `silero-vad` 6.2.3 的 wheel 里原样拷出来，和 GitHub snakers4/silero-vad tag `v6.2.3` 里的同名文件逐字节相同，MIT 许可；SHA-256 `7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49`。来源、核对和升级步骤见那里的 README。它也不进 `CORE`，由 `prepare-release` 写进 `vendor` 清单，`sw.js` 按需下载、核对后存进同一个 `VENDOR_CACHE`；忘了重新准备发布的话，线上取模型会失败（本地预览没有离线缓存，看不出来），`tests/sw.test.mjs` 会查
 - 床头模式的测试里的声音全是合成的（固定种子的噪声、正弦波、调幅的谐波「像说话」）；麦克风、AudioContext、Web Locks、计时器都是假的（`tests/helpers/fakeAudio.mjs`），`tests/vad.test.mjs` 会用真模型跑一次合成的声音。真机上的表现（整夜、各种打断）只能手动试

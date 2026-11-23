@@ -6,8 +6,8 @@
 // 自己管更新（返回 onChange）：数据变了原地重画、保留滚动；删除后正在离开时不重画。
 // 已删除的（从「最近删除」点进来）只读地看一眼原话、听一下录音，能恢复；core/purge.js 的 PURGE_ENABLED 开着时（现在开着；deps.purgeEnabled 测试用）
 // 还能在这里永久删除（同「最近删除」的确认框，删了回「最近删除」）、看到还剩几天。永久删除了的（墓碑）只说一句「已经永久删除」。
-// deps.player（测试用）换掉已删除那条的播放器。
-// 也导出给别的页面用的：readClipFiles（选来的录音文件 → 存进本机录音库）、chatView、sayNodes、clipCaption、renameClipSheet。
+// deps.player（测试用）换掉已删除那条的播放器；deps.m4a（测试用）：导入的录音转 m4a 时 importM4a 的选项。
+// 也导出给别的页面用的：readClipFiles（选来的录音文件 → 转成 m4a → 存进本机录音库）、chatView、sayNodes、clipCaption、renameClipSheet。
 // #/e/<id>/history（params.sub === 'history'）是修改记录页，在 views/history.js。
 import { h, icon, copyText, download } from '../ui/dom.js';
 import { audioPlayer } from '../ui/player.js';
@@ -18,6 +18,9 @@ import { highlight } from '../core/search.js';
 import { clipLabel, clipFileStem, ownName, origBase, renameClip, CLIP_NAME_MAX } from '../core/clips.js';
 import { readMp4Meta } from '../core/mp4meta.js';
 import { mimeForFile, baseMime, extForMime } from '../core/audioStore.js';
+import { importM4a, isAacMp4, wavDurationSec, keptKey } from '../core/importM4a.js';
+import { sha256Hex } from '../core/sha256.js';
+import { clipKeys } from '../core/store.js';
 import { splitExt, sanitizeFileName } from '../core/util.js';
 import { t } from '../i18n.js';
 import { render as renderHistory, lastEditedLine, fmtAgo } from './history.js';
@@ -122,29 +125,50 @@ export function probeDuration(blob, ms = 4000) {
 }
 
 /**
- * 选来的录音文件 → 存进本机录音库（同一段只存一份）→ [{ clip, createdAt }]
- * clip 是条目 audio 里的一项；createdAt 是文件头里的录音时间（Date | null）。不能用的文件弹提示、跳过。
+ * 选来的录音文件 → 转成 m4a（core/importM4a.js：已经是 m4a 的原样；转不了的按原来的格式存）→ 存进本机录音库（同一段只存一份）→ [{ clip, createdAt }]
+ * clip 是条目 audio 里的一项（转成 m4a 的带原文件的 srcSha256，origName 是原文件名）；createdAt 是原文件头里的录音时间（Date | null）。
+ * m4a 的 creation_time：原文件里的录音时间，没有就是文件修改时间。时长先从文件头、WAV 的头、<audio> 读（超过 30 分钟的不去解码），转成了的按解码出来的。
+ * o.have（Set，可选）：这条里已有的录音（clipKeys）：原文件或者转出来的 m4a 对得上的不再转、不再存，文件名放进 o.dups；存下的也加进去。
+ * 不能用的文件、没转成 m4a 的写成一句句提示：给了 o.notes 就放进去（调用方和别的一起说），不然自己弹。转的时候先弹一句「正在转成 m4a…」
+ * o.stop（可选）：返回 true 就不再存（编辑页：转的时候确认了离开、不要这些修改）——还没存的不存、后面的不读
+ * o.m4a：importM4a 的选项（测试用）
  */
-export async function readClipFiles(files, ctx) {
+export async function readClipFiles(files, ctx, { have = null, dups = null, notes: into = null, stop = null, m4a } = {}) {
   const out = [], notes = [];
+  const stopped = () => !!stop && !!stop();
+  let busy = null;
   for (const f of files) {
+    if (stopped()) break;
     const [, ext] = splitExt(f.name);
     if (ext === 'qta') { notes.push(t('entry.qta', { name: f.name })); continue; }
     if (!AUDIO_EXT.has(ext) && !/^audio\//.test(f.type || '')) { notes.push(t('entry.notAudio', { name: f.name })); continue; }
     try {
       const mime = mimeForFile(f);
-      const buf = await f.arrayBuffer();
+      let buf = await f.arrayBuffer();
       const meta = readMp4Meta(buf);                       // 不是 mp4 也不抛错，全是 null
+      const aac = isAacMp4(buf), src = await sha256Hex(buf);
+      if (have && have.has(src)) { if (dups) dups.push(f.name); continue; }        // 已经在这条里：不转、不存
       const blob = new Blob([buf], { type: mime });
-      const saved = await ctx.audio.putClip(blob, { mime });
-      const dur = meta.durationSec || await probeDuration(blob);
-      out.push({
-        clip: { sha256: saved.sha256, mime: saved.mime || mime, bytes: saved.bytes ?? blob.size, durationSec: dur ? Math.round(dur * 10) / 10 : null, origName: f.name, addedAt: Date.now() },
-        createdAt: meta.createdAt || null,
-      });
+      const head = meta.durationSec || wavDurationSec(buf);
+      buf = null;                                          // 转的时候别再占一份（几十 MB 的 WAV）
+      const known = head || await probeDuration(blob);     // 转之前就知道多长：超过 30 分钟的不去解码（iPhone 上内存）
+      if (!aac && !busy && !stopped()) busy = ctx.toast(t('entry.converting'), { ms: 120000 });
+      const r = await importM4a({ blob, mime, sha256: src, aac, durationSec: known, createdAt: meta.createdAt || f.lastModified || null }, m4a);
+      if (stopped()) break;
+      if (r.converted && have && have.has(r.sha256)) { if (dups) dups.push(f.name); continue; }
+      const saved = await ctx.audio.putClip(r.blob, { mime: r.mime });
+      const dur = r.converted ? r.durationSec : known;
+      const clip = { sha256: saved.sha256, ...(r.converted ? { srcSha256: r.srcSha256 } : {}), mime: saved.mime || r.mime, bytes: saved.bytes ?? r.bytes,
+        durationSec: dur ? Math.round(dur * 10) / 10 : null, origName: f.name, addedAt: Date.now() };
+      if (have) for (const k of clipKeys(clip)) have.add(k);
+      const kept = keptKey(r);
+      if (kept) notes.push(t('entry.' + kept, { name: f.name }));
+      out.push({ clip, createdAt: meta.createdAt || null });
     } catch (e) { notes.push(t('entry.audioFail', { name: f.name, msg: (e && e.message) || String(e) })); }
   }
-  if (notes.length) ctx.toast(notes.join('\n'), { ms: 9000 });
+  if (busy && typeof busy.close === 'function') busy.close();
+  if (into) into.push(...notes);
+  else if (notes.length) ctx.toast(notes.join('\n'), { ms: 9000 });
   return out;
 }
 
@@ -368,19 +392,23 @@ export function render(main, params, ctx, deps = {}) {
   }
 
   // ---------- 添加录音（文件） ----------
+  // 同一个文件（原文件或者转出来的 m4a 的 sha256 对得上，clipKeys）已经在这条里：不转、不存，说一句；在别的条目里：照样加，说一句
   async function addFiles(fl) {
-    const got = await readClipFiles(fl, ctx);
+    const e0 = ctx.entry(id), dups = [], later = [];
+    const got = await readClipFiles(fl, ctx, { have: new Set(((e0 && e0.audio) || []).flatMap(clipKeys)), dups, notes: later, m4a: deps.m4a });
     const e = ctx.entry(id);
-    if (!e || e.deleted || !got.length) return;
-    const have = new Set(e.audio.map(a => a.sha256)), notes = [];
-    const elsewhere = new Set(ctx.entries().filter(x => x.id !== id).flatMap(x => x.audio.map(a => a.sha256)));
+    if (!e || e.deleted) return;
+    const have = new Set(e.audio.flatMap(clipKeys)), notes = dups.map(name => t('entry.audioDup', { name }));
+    const elsewhere = new Set(ctx.entries().filter(x => x.id !== id).flatMap(x => x.audio.flatMap(clipKeys)));
     const fresh = got.filter(g => {
-      if (have.has(g.clip.sha256)) { notes.push(t('entry.audioDup', { name: g.clip.origName })); return false; }
-      if (elsewhere.has(g.clip.sha256)) notes.push(t('entry.audioElsewhere', { name: g.clip.origName }));
-      have.add(g.clip.sha256);
+      const keys = clipKeys(g.clip);
+      if (keys.some(k => have.has(k))) { notes.push(t('entry.audioDup', { name: g.clip.origName })); return false; }
+      if (keys.some(k => elsewhere.has(k))) notes.push(t('entry.audioElsewhere', { name: g.clip.origName }));
+      for (const k of keys) have.add(k);
       return true;
     });
-    if (!fresh.length) { ctx.toast(notes.join('\n')); return; }
+    notes.push(...later);
+    if (!fresh.length) { if (notes.length) ctx.toast(notes.join('\n'), { ms: 9000 }); return; }
     ctx.update(id, { audio: [...e.audio, ...fresh.map(g => g.clip)] });
     // 这条还不知道时间、录音文件里的时间正好是同一天 → 问一句要不要用（不自动改）
     const tz = e.tz || systemTz();
@@ -390,7 +418,7 @@ export function render(main, params, ctx, deps = {}) {
     if (p && p.date === e.date) {
       ctx.toast(msg, { ms: 10000, action: { label: t('entry.useRecTime', { time: fmtTime(p.time, ctx.lang()) }),
         run: () => ctx.update(id, { time: p.time, recordedAt: at.toISOString(), tz, timeSource: 'mp4' }) } });
-    } else ctx.toast(msg);
+    } else ctx.toast(msg, notes.length ? { ms: 9000 } : undefined);
   }
 
   // ---------- 分享 ----------

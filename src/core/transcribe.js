@@ -17,7 +17,7 @@
 //   downloadModel(o)                          只下载、载入一次模型（设置页「现在下载」）
 //   job() / onJob(fn)                         正在跑（或刚结束）的任务，页面离开再回来也能接着显示进度
 //   modelCacheInfo(model) / deleteModel(model)   transformers.js 自己的缓存（Cache Storage「transformers-cache」）里这个模型占多少、删掉
-//   probeGpu() / decode16k(blob)
+//   probeGpu() / decode16k(blob) / decodeMono(blob, { sr })
 //
 // 第三方文件在 vendor/transformers/（transformers.js 4.3.2 + onnxruntime-web 的 wasm，见那里的 README），worker 是 src/workers/transcribe.worker.js。
 // 实测（Mac 上的 WKWebView，单线程）：标准 + 处理器 + q8 下载约 80 MB、峰值内存约 0.7 GB，每个 ≤ 30 秒的片段约 2 秒（iPhone 估计 3–4 秒）；
@@ -566,21 +566,38 @@ export function errorCode(msg, engine) {
 // ---------- 浏览器：解码、显卡、缓存 ----------
 
 /** 录音 → 16 kHz 单声道（多声道取平均）。m4a、Safari 录的分片 mp4（48 kHz 立体声）都实测过 */
-export async function decode16k(blob, { AC = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext } = {}) {
+export const decode16k = (blob, { AC } = {}) => decodeMono(blob, { AC, sr: SR });
+
+/**
+ * 录音 → sr 的单声道 Float32Array（decodeAudioData 按 OfflineAudioContext 的采样率重采样；多声道取平均）。导入时转 m4a 用 24 kHz（importM4a.js）。
+ * stats（可选，导入时用）：填上 { channels, chRms: 每个声道的均方根, mixRms: 平均以后的 }——两个声道反相时平均出来是静音，导入时看这个就不转
+ */
+export async function decodeMono(blob, { AC = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext, sr = SR, stats = null } = {}) {
   if (!AC) throw new SttError('unsupported', 'OfflineAudioContext');
   let ab;
   try {
-    const ctx = new AC(1, 1, SR);
+    const ctx = new AC(1, 1, sr);
     const buf = await blob.arrayBuffer();
     ab = await new Promise((res, rej) => { const p = ctx.decodeAudioData(buf, res, rej); if (p && typeof p.then === 'function') p.then(res, rej); });
   } catch (e) { throw new SttError('decode', (e && e.message) || String(e)); }
   const ch = ab.numberOfChannels, n = ab.length;
-  if (ch === 1) return ab.getChannelData(0);
-  const out = new Float32Array(n);
-  for (let c = 0; c < ch; c++) { const x = ab.getChannelData(c); for (let i = 0; i < n; i++) out[i] += x[i]; }
+  if (ch === 1) {
+    const x = ab.getChannelData(0);
+    if (stats) { const r = rmsF32(x); Object.assign(stats, { channels: 1, chRms: [r], mixRms: r }); }
+    return x;
+  }
+  const out = new Float32Array(n), chRms = [];
+  for (let c = 0; c < ch; c++) {
+    const x = ab.getChannelData(c);
+    if (stats) { let s = 0; for (let i = 0; i < n; i++) { const v = x[i]; out[i] += v; s += v * v; } chRms.push(n ? Math.sqrt(s / n) : 0); }
+    else for (let i = 0; i < n; i++) out[i] += x[i];
+  }
   for (let i = 0; i < n; i++) out[i] /= ch;
+  if (stats) Object.assign(stats, { channels: ch, chRms, mixRms: rmsF32(out) });
   return out;
 }
+/** 均方根 */
+function rmsF32(x) { let s = 0; for (let i = 0; i < x.length; i++) s += x[i] * x[i]; return x.length ? Math.sqrt(s / x.length) : 0; }
 
 let gpuMemo = null;
 /** 有没有能用的显卡（WebGPU）、支不支持 fp16 → { gpu, f16 }（查一次记住） */

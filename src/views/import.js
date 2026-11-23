@@ -2,12 +2,17 @@
 // 两边都是「先看后写」：选文件、解析、配对都只在内存里，点最后那个按钮之前不写任何数据（录音也不存进本机）。
 // 自己管更新（返回 onChange）：同步等数据变化不会把选好的文件、贴好的笔记清掉。
 // 备忘录的条目 id 是固定的（n_<日期>_<k>）：以前永久删除过的（墓碑）算已存在、不再导入，完成页说有几条（导进来合并时墓碑也会赢）。
+// 导入录音：选来的（拖进来的）文件读好以后就转成 m4a（core/importM4a.js：已经是 m4a 的原样，转不了的按原来的格式存，那一行上说一句），
+// 一个个排着转（iPhone 上一次只解一个），上面写着还有几个；转完才能点「导入」。认同一段录音时原文件、转出来的 m4a 两个 sha256 都比
+// （以前导过的、在「最近删除」里的、这次选了两遍的）。从备忘录迁移的不转（原样存）。
+// deps.m4a（测试用）：importM4a 的选项（假的编码器、解码器、超时）。
 import { h, icon, toast } from '../ui/dom.js';
 import { audioPlayer, stopAll } from '../ui/player.js';
 import { readMp4Meta } from '../core/mp4meta.js';
 import { sha256Hex } from '../core/sha256.js';
 import { mimeForFile } from '../core/audioStore.js';
-import { clipIndex, makeEntry, newId } from '../core/store.js';
+import { importM4a, isAacMp4, wavDurationSec, keptKey } from '../core/importM4a.js';
+import { clipIndex, makeEntry, newId, sameClip } from '../core/store.js';
 import { localParts, today, systemTz, isISODate, isTime, fmtTime, fmtDate, fmtDuration } from '../core/dates.js';
 import { splitExt, fmtBytes, uniq } from '../core/util.js';
 import { firstNNLine } from '../core/dialogue.js';
@@ -28,7 +33,8 @@ const dayNum = d => { const [y, m, dd] = d.split('-').map(Number); return Date.U
 const round1 = v => (v ? Math.round(v * 10) / 10 : null);
 
 /**
- * 读一个选来的文件（只读不存）→ { name, size, lastModified, mime, sha256, blob, createdAt, durationSec } 或 { bad: 'qta'|'notAudio'|'fail', msg }
+ * 读一个选来的文件（只读不存、不转）→ { name, size, lastModified, mime, sha256, blob, createdAt, durationSec, aac } 或 { bad: 'qta'|'notAudio'|'fail', msg }
+ * aac：已经是 m4a（mp4 里的 AAC），导入时原样存；时长：文件头 → WAV 的头 → <audio> 读
  */
 export async function readAudioFile(f) {
   const [, ext] = splitExt(f.name);
@@ -38,16 +44,35 @@ export async function readAudioFile(f) {
     const mime = mimeForFile(f);
     const buf = await f.arrayBuffer();
     const meta = readMp4Meta(buf);                         // 不是 mp4 也不抛错，全是 null
+    const aac = isAacMp4(buf);
     const sha256 = await sha256Hex(buf);
     const blob = new Blob([buf], { type: mime });
-    const durationSec = round1(meta.durationSec || await probeDuration(blob));
-    return { name: nfc(f.name), size: f.size, lastModified: f.lastModified || null, mime, sha256, blob, createdAt: meta.createdAt || null, durationSec };
+    const durationSec = round1(meta.durationSec || wavDurationSec(buf) || await probeDuration(blob));
+    return { name: nfc(f.name), size: f.size, lastModified: f.lastModified || null, mime, sha256, blob, createdAt: meta.createdAt || null, durationSec, aac };
   } catch (e) { return { name: f.name, bad: 'fail', msg: (e && e.message) || String(e) }; }
 }
 
-/** 「已经在哪一条里」：条目的简称；那段录音改过名的话把名字也带上（「… · 🎙 名字」，简称里已经是这个名字就不重复） */
+/**
+ * 读好的文件 → 要导入的那份（core/importM4a.js）：转成 m4a 的换掉 blob、mime、sha256、size、时长（解码出来的），原文件的 sha256、大小记在 srcSha256 / srcSize；
+ * 已经是 m4a 的原样；转不了的原样、kept 是那一行上说的那句（imp.kept / keptLong / keptSmall，见 importM4a.js keptKey）。m4a 的 creation_time：文件里的录音时间，没有就是文件修改时间（和条目的时间同一个来源）。
+ * 名字（原文件名，带原来的扩展名）、createdAt（猜时间用：原文件里的）不变
+ */
+export async function prepareImport(info, o) {
+  const r = await importM4a({ blob: info.blob, mime: info.mime, sha256: info.sha256, durationSec: info.durationSec, aac: info.aac,
+    createdAt: info.createdAt || info.lastModified || null }, o);
+  if (!r.converted) return { ...info, kept: keptKey(r) };
+  return { ...info, blob: r.blob, mime: r.mime, sha256: r.sha256, size: r.bytes, durationSec: round1(r.durationSec) ?? info.durationSec,
+    srcSha256: r.srcSha256, srcSize: info.size, kept: null };
+}
+/** 导入的一段 → 条目 audio 里的一项（转成 m4a 的带 srcSha256） */
+const clipFrom = (info, saved, now) => ({
+  sha256: saved.sha256, ...(info.srcSha256 ? { srcSha256: info.srcSha256 } : {}), mime: saved.mime || info.mime, bytes: saved.bytes ?? info.size,
+  durationSec: info.durationSec, origName: info.name, addedAt: now,
+});
+
+/** 「已经在哪一条里」：条目的简称；那段录音改过名的话把名字也带上（「… · 🎙 名字」，简称里已经是这个名字就不重复）。sha 对上存下的或者原文件的都算 */
 function clipWhere(e, sha, speakers, lang) {
-  const c = e && (e.audio || []).find(a => a.sha256 === sha);
+  const c = e && (e.audio || []).find(a => a.sha256 === sha || a.srcSha256 === sha);
   const own = ownName(c), label = entryLabel(e, speakers, lang);
   return label + (own && !label.endsWith('🎙 ' + own) ? ' · 🎙 ' + own : '');
 }
@@ -79,19 +104,19 @@ function filePicker(onFiles) {
 }
 const metaLine = (...parts) => parts.filter(Boolean).join(' · ');
 
-export function render(main, params, ctx) {
-  return params.sub === 'notes' ? notesView(main, params, ctx) : audioView(main, params, ctx);
+export function render(main, params, ctx, deps = {}) {
+  return params.sub === 'notes' ? notesView(main, params, ctx) : audioView(main, params, ctx, deps);
 }
 
 // ======================================================================
 // 导入录音：每段建一条「待整理」，或者接到已有的一条
 // ======================================================================
-function audioView(main, params, ctx) {
+function audioView(main, params, ctx, deps = {}) {
   const lang = ctx.lang();
   const sp = () => ctx.state.settings.speakers;
   const rows = [];          // { key, info, date, time, auto: {date,time,timeSource,recordedAt,tz}, mode, attachTo }（没有标题：文件名就是录音的名字）
   const skipped = [];       // { name, why, where? }
-  let reading = 0, busy = false, done = false, players = [];
+  let reading = 0, converting = false, busy = false, done = false, closed = false, players = [], queue = Promise.resolve();   // closed：离开了这一页，排着的不再转
   ctx.guard(() => !done && rows.length > 0);
 
   const picker = filePicker(addFiles);
@@ -106,27 +131,44 @@ function audioView(main, params, ctx) {
     h('div.page.im', null, headEl, listEl, skipEl), bar, picker);
   const offDrop = catchDrops(addFiles);
 
-  function where(sha) {
-    const ids = clipIndex(ctx.state, { includeDeleted: true }).get(sha) || [];
+  /** 已经导入过（没删的、「最近删除」里的：存下的或者原文件的 sha256 对得上）、这次已经选过 → { why, where? } | null */
+  function dupOf(sha) {
+    const ids = clipIndex(ctx.state, { includeDeleted: true, withSrc: true }).get(sha) || [];
     const live = ids.map(id => ctx.entry(id)).find(e => e && !e.deleted);
     if (live) return { why: 'dup', where: clipWhere(live, sha, sp(), lang) };
-    return ids.length ? { why: 'dupDeleted' } : null;
+    if (ids.length) return { why: 'dupDeleted' };
+    return rows.some(r => r.info.sha256 === sha || r.info.srcSha256 === sha) ? { why: 'dupBatch' } : null;
   }
 
-  async function addFiles(files) {
+  // 选来的文件排着一个个处理（再选的接在后面）：读 → 查重（原文件）→ 转 m4a → 再查一次（转出来的 m4a 正好是以前导过的）
+  function addFiles(files) {
     reading += files.length; drawHead();
-    for (const f of files) {
-      const info = await readAudioFile(f);
-      reading--;
-      if (info.bad) { skipped.push({ name: info.name, why: info.bad, msg: info.msg }); drawSkipped(); drawHead(); continue; }
-      const dup = where(info.sha256);
-      if (dup) { skipped.push({ name: info.name, ...dup }); drawSkipped(); drawHead(); continue; }
-      if (rows.some(r => r.info.sha256 === info.sha256)) { skipped.push({ name: info.name, why: 'dupBatch' }); drawSkipped(); drawHead(); continue; }
-      const auto = guessTime(info);
-      rows.push({ key: info.sha256, info, auto, date: auto.date, time: auto.time || '', mode: 'new', attachTo: null });
-      rows.sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
-      drawRows(); drawHead();
-    }
+    queue = queue.then(async () => {
+      for (const f of files) {
+        try { await addOne(f); }
+        catch (e) { skipped.push({ name: f.name, why: 'fail', msg: (e && e.message) || String(e) }); drawSkipped(); }
+        finally { reading--; converting = false; drawHead(); }
+      }
+    });
+    return queue;
+  }
+  async function addOne(f) {
+    const skip = (name, x) => { skipped.push({ name, ...x }); drawSkipped(); };
+    if (closed) return;
+    const read = await readAudioFile(f);
+    if (read.bad) { skip(read.name, { why: read.bad, msg: read.msg }); return; }
+    let dup = dupOf(read.sha256);
+    if (dup) { skip(read.name, dup); return; }
+    if (!read.aac) { converting = true; drawHead(); }
+    const info = await prepareImport(read, deps.m4a);
+    converting = false;
+    dup = info.srcSha256 ? dupOf(info.sha256) || dupOf(info.srcSha256) : dupOf(info.sha256);   // 转的时候又导进来了、或者转出来的正好是以前的
+    if (dup) { skip(info.name, dup); return; }
+    if (done || closed) return;
+    const auto = guessTime(info);
+    rows.push({ key: info.sha256, info, auto, date: auto.date, time: auto.time || '', mode: 'new', attachTo: null });
+    rows.sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
+    drawRows();
   }
 
   function drawHead() {
@@ -134,12 +176,12 @@ function audioView(main, params, ctx) {
     fill(headEl,
       n ? h('div.im-addrow', null,
         h('button.btn.small', { type: 'button', onclick: () => picker.click() }, icon('plus'), t('imp.pickMore')),
-        reading ? h('span.muted.small', { role: 'status' }, t('imp.reading', { n: reading })) : null)
+        reading ? h('span.muted.small', { role: 'status' }, readingText()) : null)
         : h('section.card.im-intro', null,
           h('p', null, t('imp.audio.intro')),
           dropZone(
             h('button.btn.primary', { type: 'button', onclick: () => picker.click() }, icon('import'), t('imp.pick')),
-            h('p.im-drop-hint', null, reading ? t('imp.reading', { n: reading }) : t('imp.drop'))),
+            h('p.im-drop-hint', { role: reading ? 'status' : null }, reading ? readingText() : t('imp.drop'))),
           h('p.group-h', null, t('imp.howH')),
           h('ol.im-steps', null, h('li', null, t('imp.how1')), h('li', null, t('imp.how2')), h('li', null, t('imp.how3')))),
     );
@@ -147,6 +189,8 @@ function audioView(main, params, ctx) {
     goBtn.textContent = busy ? t('imp.importing') : t('imp.go', { n });
     goBtn.disabled = busy || reading > 0 || !n || rows.some(r => !isISODate(r.date) || (r.mode === 'attach' && !r.attachTo));
   }
+  /** 「正在读取 n 个文件…」/ 正在转 m4a 时「正在转成 m4a，还有 n 个…」 */
+  const readingText = () => (converting ? t('imp.converting', { n: reading }) : t('imp.reading', { n: reading }));
 
   function drawSkipped() {
     fill(skipEl, skipped.length ? h('section', null,
@@ -184,7 +228,8 @@ function audioView(main, params, ctx) {
     const el = h('section.card.im-row', { dataset: { key: r.key } },
       h('div.im-row-top', null, player,
         h('div.im-row-name', null, h('b', null, info.name),
-          h('p.im-meta', null, metaLine(fmtBytes(info.size), fmtDuration(info.durationSec)))),
+          h('p.im-meta', null, metaLine(info.srcSize ? t('imp.shrunk', { from: fmtBytes(info.srcSize), to: fmtBytes(info.size) }) : fmtBytes(info.size), fmtDuration(info.durationSec))),
+          info.kept ? h(info.kept === 'keptSmall' ? 'p.im-meta.im-kept.calm' : 'p.im-meta.im-kept', null, t('imp.' + info.kept)) : null),
         h('button.icon-btn.im-x', { type: 'button', 'aria-label': t('imp.remove'), title: t('imp.remove'),
           onclick: () => { rows.splice(rows.indexOf(r), 1); drawRows(); drawHead(); } }, icon('x'))),
       h('div.im-fields', null,
@@ -208,7 +253,7 @@ function audioView(main, params, ctx) {
     try {
       for (const r of rows) {
         const saved = await ctx.audio.putClip(r.info.blob, { mime: r.info.mime });
-        made.push({ r, clip: { sha256: saved.sha256, mime: saved.mime || r.info.mime, bytes: saved.bytes ?? r.info.size, durationSec: r.info.durationSec, origName: r.info.name, addedAt: now } });
+        made.push({ r, clip: clipFrom(r.info, saved, now) });
       }
     } catch (e) {
       busy = false; drawHead();
@@ -218,7 +263,7 @@ function audioView(main, params, ctx) {
     const ids = ctx.mutate(s => made.map(({ r, clip }) => {
       if (r.mode === 'attach' && r.attachTo && s.data.entries[r.attachTo] && !s.data.entries[r.attachTo].deleted) {
         const e = s.data.entries[r.attachTo];
-        if (!(e.audio || []).some(a => a.sha256 === clip.sha256)) e.audio = [...(e.audio || []), clip];
+        if (!(e.audio || []).some(a => sameClip(a, clip))) e.audio = [...(e.audio || []), clip];
         return e.id;
       }
       const e = audioEntry(r, clip, { now, batchId, tz });
@@ -236,7 +281,7 @@ function audioView(main, params, ctx) {
   drawHead();
   return {
     onChange: () => {},
-    cleanup: () => { offDrop(); for (const p of players) p.destroy(); players = []; },
+    cleanup: () => { closed = true; offDrop(); for (const p of players) p.destroy(); players = []; },
   };
 }
 
@@ -454,7 +499,7 @@ function notesView(main, params, ctx) {
       const again = !!(ex && ex.deleted && ex.source && ex.source.kind === 'apple-notes');
       return { e, date, id, again, purged, exists: purged || (!!ex && !(again && reDeleted)), existsDeleted: !!(ex && ex.deleted), slots: pairs.filter(p => p.entryKey === e.key) };
     });
-    return { entries, byKey: new Map(entries.map(x => [x.e.key, x])), clips: clipIndex(ctx.state) };
+    return { entries, byKey: new Map(entries.map(x => [x.e.key, x])), clips: clipIndex(ctx.state, { withSrc: true }) };
   }
   const isUncertain = (p) => !manual.has(p.slot) && (moved.has(p.slot) || p.conflict || p.confidence === 'weak' || !p.fileName);
 
