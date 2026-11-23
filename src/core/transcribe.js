@@ -4,12 +4,16 @@
 // 纯计算（Node 测试能 import，不碰 DOM）：
 //   MODELS / modelFiles / modelPrefix        两种模型（标准 = whisper-base，更准 = whisper-small）和各自要下载的文件
 //   isMobileDevice / modelAllowed / pickEngine   用显卡（WebGPU）还是处理器（WASM）；iPhone / iPad 只用处理器、只给标准
-//   speechSegments(pcm, sr)                   按说话分段：只把有人说话的地方交给 Whisper（静音、杂音会让它编出「谢谢观看」，
-//                                             它自带的 30 秒分块又会整句漏掉），每段 ≤ 28 秒、单独识别
+//   speechSegments(pcm, sr)                   按说话分段（按能量）：只把有人说话的地方交给 Whisper（静音、杂音会让它编出「谢谢观看」，
+//                                             它自带的 30 秒分块又会整句漏掉），每段 ≤ 28 秒、单独识别。说话识别用不了时用它
+//   findSpeech(pcm, { vad })                  用说话识别（Silero VAD，和床头模式同一个）找说话的地方，窗口和 speechSegments 一个样子；
+//                                             frameDbs / bandDbs / rollingFloor / pregate（先按能量跳过静音）、vadGainDb、speechRuns 是它的几步；
+//                                             nextTask() 让出一拍（不用计时器，m4a.js 也用）
 //   cleanText(raw, { simplify })              整理：繁→简（界面是繁体时不转）、去掉编出来的字幕套话、去掉卡住的重复、标点换成全角
 //   mergeDraft / draftToDialogue / appendText / sourceOf / parseSource   合进草稿、填进原话、草稿来源
 // 浏览器（用到时才碰 Worker / OfflineAudioContext / caches）：
-//   transcribe(o) → Promise<{ text, lines, model, engine, ms }>   一次只跑一个；cancel() 立刻结束 worker（内存马上还回去）
+//   transcribe(o) → Promise<{ text, lines, model, engine, ms, segs, finder }>   一次只跑一个；先找说话的地方（说话识别的 worker 用完就关），
+//                                             再开 Whisper 的 worker；cancel() 立刻结束正在用的 worker（内存马上还回去）
 //   downloadModel(o)                          只下载、载入一次模型（设置页「现在下载」）
 //   job() / onJob(fn)                         正在跑（或刚结束）的任务，页面离开再回来也能接着显示进度
 //   modelCacheInfo(model) / deleteModel(model)   transformers.js 自己的缓存（Cache Storage「transformers-cache」）里这个模型占多少、删掉
@@ -20,6 +24,7 @@
 // 更准在处理器上约 1.6 GB，超过 iPhone 网页的内存上限，所以只给 Mac；iPhone / iPad 也不用 WebGPU（显存算在网页头上，峰值 2.5 GB 以上）。
 import { toSimplified } from './hanzi.js';
 import { speakerOf } from './dialogue.js';
+import { createVad, STEP } from './vad.js';
 
 export const SR = 16000;
 export const HF = 'https://huggingface.co/';
@@ -119,8 +124,16 @@ export function speechSegments(pcm, sr = SR, o = {}) {
     if (cur) runs.push(cur);
     spans = runs.filter(([a, b, on]) => (b - a + 1) * frameSec >= minSec && on >= minOn).map(([a, b]) => [Math.max(0, a * F - pad), Math.min(len, (b + 1) * F + pad)]);
   }
-  // 合成识别窗口
-  const joined = [];
+  return windowsOf(spans, db, F, sr, { joinSec, windowSec, maxSec, minSec });
+}
+
+/**
+ * 有说话的地方（样本下标，已经前后留好余量、按顺序）→ 识别窗口：停顿 ≤ joinSec 且合起来 ≤ windowSec 的并成一个窗口；
+ * 超过 maxSec 的在 windowSec–maxSec 之间最安静的那帧切开（db：每帧 F 个样本的能量）；剩下不到 minSec 的丢掉。
+ * speechSegments（按能量）和 findSpeech（说话识别）共用，两边交给 Whisper 的窗口是一个样子
+ */
+function windowsOf(spans, db, F, sr, { joinSec, windowSec, maxSec, minSec }) {
+  const n = db.length, joined = [];
   for (const [s, e] of spans) {
     const last = joined[joined.length - 1];
     if (last && (s <= last[1] || (s - last[1] <= joinSec * sr && e - last[0] <= windowSec * sr))) last[1] = Math.max(last[1], e);
@@ -140,6 +153,267 @@ export function speechSegments(pcm, sr = SR, o = {}) {
     if (e - s >= minSec * sr) out.push([s, e]);
   }
   return out;
+}
+
+// ---------- 用说话识别（Silero VAD）找说话的地方 ----------
+// 只按能量分段时，鼾声、翻身、风扇里起伏的杂音也会当成说话交给 Whisper（又慢，又会编出字来）；小声嘀咕在风扇声里又容易漏掉。
+// 所以先用床头模式那个说话识别（core/vad.js + workers/vad.worker.js，1.3 MB，每 32 ms 一个概率）找说话的地方，再照 speechSegments 的规矩合成窗口。
+// 快：先按能量跳过明显的静音（门限低、余量大，宁可多跑也不漏），只在剩下的地方跑说话识别；
+// 小声：和床头模式一样，只把给识别的这份放大（噪声底拉到 −40 dBFS、最多 +30 dB、峰值不超过 −1 dBFS），交给 Whisper 的还是原来的声音。
+// 说话识别载入不了、跑到一半坏了、卡住了 → 照旧按能量分段（speechSegments）。识别用的 worker 在 Whisper 载入之前一定关掉（两个模型不同时占内存）。
+// 实测（Node，Mac M4 Max，单线程 WASM，真模型；TTS 的话 + 合成的风扇、白噪声机、鼾声）：说话识别一步约 0.15 毫秒，交给它的每分钟约 0.3 秒；
+// 先按能量挑这一步每分钟约 10 毫秒（每算 1 分钟让出一次主线程，30 分钟的录音页面最多卡 40 毫秒左右，一次算完要卡 0.4 秒）。
+// 安静的屋里、风扇、白噪声机里没人说话 → 一帧都不跑；10 分钟里说了一分钟 → 每分钟约 20–50 毫秒；
+// 一直打鼾（占 30%）→ 跑六成多，每分钟约 0.3 秒；整夜听得见呼吸声（比底噪高 6 dB；安静的屋里比宽带的底噪还低 10 dB 的也是）→ 几乎全跑，每分钟约 0.4 秒
+//（呼吸一下一下隔 1.5 秒左右，前后放宽、隔 ≤ 1 秒连起来以后就连成一整片）。和只按能量比：鼾声、风扇里送去识别的从几十秒降到 1 秒以内，
+// 白噪声机、风扇里比噪声还小声的话从找不到（0%）变成找到 80–100%。iPhone 没量过（估计一步 0.2–1 毫秒）。
+export const FIND = Object.freeze({
+  FRAME: STEP,                                            // 一帧 512 个样本（32 ms），和说话识别一步一样
+  FLOOR_SEC: 30, FLOOR_PCT: 0.10,                         // 噪声底：前后各 15 秒里每帧能量的第 10 百分位
+  PRE_BANDS: Object.freeze([[250, 700, 4], [700, 1800, 2], [1800, 4500, 1.5]].map(Object.freeze)),   // 先按能量挑：三个频带（二阶带通）里
+  PRE_EMPH: Object.freeze([0.97, 1.5]),                   //   有一个比它自己的噪声底高出门限（dB），或者预加重（y = x[i] − 0.97·x[i−1]）以后高 1.5 dB，或者本身 ≥ −30 dBFS；
+  PRE_ABS_DB: -30,                                        //   连着两帧才算（噪声偶尔一帧冒头不算）
+  PRE_PAD_SEC: 0.75, PRE_JOIN_SEC: 1,                     //   前后各放宽 0.75 秒，隔 ≤ 1 秒的连起来
+  PRE_SLICE_SEC: 60,                                      //   长录音每算 60 秒让出一次主线程（页面不卡、能取消）
+  GAIN_TARGET_DB: -40, GAIN_MAX_DB: 30, GAIN_BLOCK: 4096, // 只给识别的那份放大（和床头模式 nightDetect.js 的 VAD_GAIN_* 一样，每 4096 个样本算一次）
+  ENTER: 0.30, EXIT: 0.15,                                // 迟滞：≥ 0.30 进、< 0.15 出（和床头模式一样）
+  MERGE_SEC: 0.3, MIN_SEC: 0.25,                          // 停顿 ≤ 0.3 秒的连成一句；隔得近的几句（和下面合成窗口一个规矩）真正在说的加起来不到 0.25 秒就丢掉
+                                                          //（咔哒声、一两帧像说话的鼾声）。一句一句地看会把小声嘀咕的一串短音节（每个只有几帧）全丢掉
+  PAD_SEC: 0.25, JOIN_SEC: 1.5, WINDOW_SEC: 20, MAX_SEC: 28,   // 合成识别窗口：和 speechSegments 一样
+  IDLE_RESET_SEC: 2,                                      // 说过话以后 2 秒没听到说话 → 清一次识别的状态（大声说完以后它对紧跟着的小声会变迟钝）
+  QUIET_RESET: true,                                      // 一整块都不像说话（< 0.15）也清一次：鼾声之后它对紧跟着的小声几乎全给 0
+  CHUNK: 16384,                                           // 一次交给 worker 1 秒（32 步）
+  LOAD_MS: 60000, CHUNK_MS: 10000,                        // 载入 60 秒（第一次用要下载约 16 MB，Whisper 也要用这些）、一块 10 秒还没回 → 当识别用不了，按能量
+  SHOW_MS: 400,                                           // 找了 0.4 秒还没找完才显示「找说话的地方…」（短录音不闪一下）
+});
+
+const toDb = (e, F) => { const v = 10 * Math.log10(e / F + 1e-12); return v > -120 ? v : -120; };     // NaN 也当 −120
+
+/** 每帧（F 个样本）的能量 dBFS（≥ −120；不满一帧的尾巴不算）。给了 db、[i0, i1)：只算这几帧、写进 db（长录音分几次算） */
+export function frameDbs(pcm, F = FIND.FRAME, db = new Float32Array(Math.floor(pcm.length / F)), i0 = 0, i1 = db.length) {
+  for (let i = i0; i < i1; i++) {
+    let e = 0;
+    for (let j = i * F, end = j + F; j < end; j++) e += pcm[j] * pcm[j];
+    db[i] = toDb(e, F);
+  }
+  return db;
+}
+
+/**
+ * 每帧在几个频带里的能量（dBFS）→ Float32Array[]：bands 里每个一个（[[低 Hz, 高 Hz], …]，二阶带通，RBJ，峰值 0 dB），
+ * 给了 emph 再加一个预加重（y = x[i] − emph·x[i−1]）的。
+ * 分开看频带：白噪声机、风扇这种平稳的宽带噪声里，小声说话的整体能量几乎不变，但在它集中的那个频带里看得出来（悄悄话在预加重的高频里）；
+ * 风扇、空调、车声低频的起伏（帧和帧之间差十几 dB）也不进这几个频带
+ */
+export function bandDbs(pcm, F = FIND.FRAME, sr = SR, bands = FIND.PRE_BANDS, emph = 0) {
+  const m = bandMeter(pcm, F, sr, bands, emph);
+  m.run(0, m.out[0].length);
+  return m.out;
+}
+
+/** bandDbs 分几次算：→ { out, run(i0, i1) }，run 按顺序一段接一段（滤波器的状态接着上一段），结果和一次算完一样 */
+function bandMeter(pcm, F, sr, bands, emph) {
+  const n = Math.floor(pcm.length / F), K = bands.length, out = [...bands, ...(emph ? [0] : [])].map(() => new Float32Array(n));
+  const co = new Float64Array(K * 3);                                // 每个频带 b0（b1 = 0、b2 = −b0）、a1、a2
+  bands.forEach(([lo, hi], k) => {
+    const w = 2 * Math.PI * Math.sqrt(lo * hi) / sr, sw = Math.sin(w), al = sw * Math.sinh((Math.LN2 / 2) * Math.log2(hi / lo) * w / sw), a0 = 1 + al;
+    co.set([al / a0, -2 * Math.cos(w) / a0, (1 - al) / a0], k * 3);
+  });
+  const st = new Float64Array(K * 2), e = new Float64Array(K + 1);    // 每个频带的 y[n−1]、y[n−2]；每个频带这一帧的能量
+  let x1 = 0, x2 = 0;
+  const run = (i0, i1) => { for (let i = i0; i < i1; i++) {
+    e.fill(0);
+    for (let j = i * F, end = j + F; j < end; j++) {
+      let x = pcm[j];
+      if (!(x === x && x !== Infinity && x !== -Infinity)) x = 0;
+      const d = x - x2, h = x - emph * x1;
+      for (let k = 0, c = 0, q = 0; k < K; k++, c += 3, q += 2) {
+        const y1 = st[q], y = co[c] * d - co[c + 1] * y1 - co[c + 2] * st[q + 1];
+        st[q + 1] = y1; st[q] = y;
+        e[k] += y * y;
+      }
+      e[K] += h * h;
+      x2 = x1; x1 = x;
+    }
+    for (let k = 0; k < out.length; k++) out[k][i] = toDb(e[k], F);
+  } };
+  return { out, run };
+}
+
+/** 每帧的噪声底：以这帧为中心 win 帧里的第 pct 分位（0.5 dB 一格的直方图滑过去，长录音也快） */
+export function rollingFloor(db, win, pct = FIND.FLOOR_PCT) {
+  const m = floorMeter(db, win, pct);
+  m.run(0, db.length);
+  return m.out;
+}
+
+/** rollingFloor 分几次算：→ { out, run(i0, i1) }，run 按顺序一段接一段（db 要已经算完） */
+function floorMeter(db, win, pct) {
+  const n = db.length, half = Math.max(1, Math.floor(win / 2)), B = 242, hist = new Int32Array(B), out = new Float32Array(n);
+  const bin = (v) => Math.max(0, Math.min(B - 1, Math.floor((v + 120) * 2)));
+  let lo = 0, hi = 0, count = 0;                         // 窗口 [lo, hi)
+  const run = (i0, i1) => { for (let i = i0; i < i1; i++) {
+    const a = Math.max(0, i - half), b = Math.min(n, i + half + 1);
+    while (hi < b) { hist[bin(db[hi++])]++; count++; }
+    while (lo < a) { hist[bin(db[lo++])]--; count--; }
+    const want = Math.floor(count * pct);
+    let k = 0, c = hist[0];
+    while (c <= want && k < B - 1) c += hist[++k];
+    out[i] = k / 2 - 120 + 0.25;
+  } };
+  return { out, run };
+}
+
+/** 让出一拍、不用计时器（MessageChannel：页面在后台也不会被放慢）；没有 MessageChannel 才用 setTimeout */
+export const nextTask = () => new Promise((resolve) => {
+  if (typeof MessageChannel !== 'function') { setTimeout(resolve, 0); return; }
+  const ch = new MessageChannel();
+  ch.port1.onmessage = () => { ch.port1.close(); resolve(); };
+  ch.port2.postMessage(0);
+});
+
+/**
+ * 先按能量挑出要交给说话识别的地方 → [[起, 止), …]（样本下标，都是一帧 512 的整数倍）。
+ * 门限故意低，前后各放宽 0.75 秒，隔 ≤ 1 秒的连起来：只跳过明显的静音和平稳的底噪，有一点动静都交给说话识别去判断。
+ * 一帧算有动静：哪个频带比它自己的噪声底高出那个频带的门限，或者本身就不小声（≥ PRE_ABS_DB），而且前一帧或后一帧也是（噪声偶尔冒头的一帧不算）。
+ * 数字静音（−120）的帧不算
+ * @param {Float32Array} db   frameDbs 的结果
+ * @param {Array<{ db: Float32Array, floor: Float32Array, thr: number }>} bands   bandDbs 的结果、各自的 rollingFloor 和门限
+ */
+export function pregate(db, bands, sr = SR, o = {}) {
+  const { FRAME: F, PRE_ABS_DB, PRE_PAD_SEC, PRE_JOIN_SEC } = { ...FIND, ...o };
+  const n = db.length, pad = Math.round(PRE_PAD_SEC * sr / F), join = Math.round(PRE_JOIN_SEC * sr / F), out = [];
+  const hit = (i) => i >= 0 && i < n && db[i] > -120 && (db[i] >= PRE_ABS_DB || bands.some(b => b.db[i] >= b.floor[i] + b.thr));
+  for (let i = 0, prev = false, cur = hit(0); i < n; i++) {
+    const next = hit(i + 1), ok = cur && (prev || next);
+    prev = cur; cur = next;
+    if (!ok) continue;
+    const a = Math.max(0, i - pad), b = Math.min(n, i + pad + 1), last = out[out.length - 1];
+    if (last && a - last[1] <= join) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  return out.map(([a, b]) => [a * F, b * F]);
+}
+
+/** 只给识别的这份放大多少 dB：噪声底拉到 −40 dBFS，最多 +30 dB，峰值不超过 −1 dBFS（和床头模式一样） */
+export function vadGainDb(floorDb, peak, o = {}) {
+  const { GAIN_TARGET_DB, GAIN_MAX_DB } = { ...FIND, ...o };
+  const room = peak > 0 ? -1 - 20 * Math.log10(peak) : Infinity;
+  return Math.max(0, Math.min(GAIN_MAX_DB, GAIN_TARGET_DB - floorDb, room));
+}
+
+/**
+ * 每帧的概率 → 说话的地方 [[起帧, 止帧), …]：迟滞（≥ 0.30 进、< 0.15 出），停顿 ≤ 0.3 秒的连成一句；
+ * 隔得近的几句算一堆（前后各留 PAD_SEC 以后停顿 ≤ JOIN_SEC：和合成识别窗口一个规矩，这一堆本来就会进同一个窗口），
+ * 一堆里在说的帧加起来凑不够 0.25 秒才丢掉。小声嘀咕的「不要…嗯…不要」每个音节只有几帧，单看都太短，连在一起就留下；
+ * 单独的一两帧（咔哒声、像说话的鼾声）照样丢。实测（真模型，合成的悄悄话 + −63 dBFS 的卧室）：三个隔 0.4–0.8 秒的悄悄话音节（−46 dBFS）
+ * 找到的从 17 / 72 个变成 43 / 72；10 分钟的鼾声、风扇、翻身、呼吸声里没多出一个窗口；离说话 2 秒以内的鼾声会跟着进那个窗口（每 90 秒多送约 0.5 秒）
+ */
+export function speechRuns(probs, sr = SR, o = {}) {
+  const { FRAME: F, ENTER, EXIT, MERGE_SEC, MIN_SEC, PAD_SEC, JOIN_SEC } = { ...FIND, ...o };
+  const merge = Math.round(MERGE_SEC * sr / F), minOn = Math.ceil(MIN_SEC * sr / F), runs = [];
+  let on = false, cur = null;
+  for (let i = 0; i < probs.length; i++) {
+    const p = probs[i];
+    if (!on && p >= ENTER) on = true;
+    else if (on && !(p >= EXIT)) on = false;            // NaN 当没在说
+    if (!on) continue;
+    if (cur && i - cur[1] <= merge) { cur[1] = i + 1; cur[2]++; }
+    else { if (cur) runs.push(cur); cur = [i, i + 1, 1]; }
+  }
+  if (cur) runs.push(cur);
+  const gap = (JOIN_SEC * sr + 2 * Math.round(PAD_SEC * sr)) / F, out = [];   // 两句之间隔这么多帧以内（2 秒）：进同一个窗口
+  for (let i = 0; i < runs.length;) {
+    let j = i, on = runs[i][2];
+    while (j + 1 < runs.length && runs[j + 1][0] - runs[j][1] <= gap) on += runs[++j][2];
+    if (on >= minOn) for (let k = i; k <= j; k++) out.push([runs[k][0], runs[k][1]]);
+    i = j + 1;
+  }
+  return out;
+}
+
+const within = (p, ms, what) => new Promise((resolve, reject) => {
+  const t = setTimeout(() => reject(new Error(what + ' timeout')), ms);
+  Promise.resolve(p).then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+});
+
+/**
+ * 找说话的地方 → { segs: 识别窗口（和 speechSegments 一样）, finder: 'vad' | 'energy', ran: 交给说话识别的样本数, error }
+ * 说话识别用不了（没给、载入不了、出错、卡住、给的概率不对）→ finder 'energy'，segs = speechSegments(pcm)，error 写原因。
+ * 不管怎样结束，vad 都在返回之前 close（Whisper 载入前把内存还回去）。
+ * @param {Float32Array} pcm  16 kHz 单声道
+ * @param {object} o
+ * @param {object|null} o.vad    createVad() 那样的对象（load / push / reset / close）；null → 直接按能量
+ * @param {() => void} [o.check] 每一块之前调一次：取消了就抛出来（不当作识别坏了，原样往外抛）
+ * @param {(done: number, total: number) => void} [o.onProgress]   交给识别的样本数：做了多少 / 一共多少
+ * @param {number} [o.loadMs] [o.chunkMs]   载入、每块最多等多久
+ */
+export async function findSpeech(pcm, { vad = null, sr = SR, check = () => {}, onProgress = null, loadMs = FIND.LOAD_MS, chunkMs = FIND.CHUNK_MS, ...o } = {}) {
+  const c = { ...FIND, ...o }, F = c.FRAME;
+  const energy = (error) => ({ segs: speechSegments(pcm, sr), finder: 'energy', ran: 0, error: error || null });
+  if (!vad) return energy(null);
+  let ran = 0;
+  try {
+    const n = Math.floor(pcm.length / F);
+    if (n < 2) return { segs: [], finder: 'vad', ran: 0, error: null };
+    // 先按能量挑：长录音每算 PRE_SLICE_SEC 让出一次主线程（不然 30 分钟的录音页面要卡一两秒、也取消不了），算出来和一次算完一样
+    const slice = Math.max(1, Math.round(c.PRE_SLICE_SEC * sr / F));
+    const each = async (fn) => { for (let i = 0; i < n; i += slice) { const j = Math.min(n, i + slice); fn(i, j); if (j < n) { await nextTask(); check(); } } };
+    const db = new Float32Array(n), bm = bandMeter(pcm, F, sr, c.PRE_BANDS, c.PRE_EMPH ? c.PRE_EMPH[0] : 0);
+    await each((i, j) => { frameDbs(pcm, F, db, i, j); bm.run(i, j); });
+    const win = Math.round(c.FLOOR_SEC * sr / F), fm = [db, ...bm.out].map(x => floorMeter(x, win, c.FLOOR_PCT));
+    await each((i, j) => { for (const m of fm) m.run(i, j); });
+    const floor = fm[0].out, thr = [...c.PRE_BANDS.map(b => b[2]), ...(c.PRE_EMPH ? [c.PRE_EMPH[1]] : [])];
+    const bands = bm.out.map((b, k) => ({ db: b, floor: fm[k + 1].out, thr: thr[k] }));
+    const regions = pregate(db, bands, sr, c);
+    const total = regions.reduce((s, [a, b]) => s + b - a, 0);
+    const probs = new Float32Array(n);                    // 跳过的地方当 0（没在说）
+    if (total) {
+      check();
+      const ok = await within(vad.load(), loadMs, 'vad load');
+      check();
+      if (!ok) return energy('load');
+      const idle = Math.round(c.IDLE_RESET_SEC * sr / F);
+      for (const [a, b] of regions) {
+        vad.reset();                                      // 不连着的地方：状态和前 64 个样本从 0 开始
+        let on = false, armed = false, quiet = 0, still;
+        for (let s = a; s < b; s += c.CHUNK) {
+          check();
+          const e = Math.min(b, s + c.CHUNK), x = pcm.slice(s, e);
+          for (let k = 0; k < x.length; k += c.GAIN_BLOCK) {
+            const end = Math.min(x.length, k + c.GAIN_BLOCK);
+            let m = 0;
+            for (let i = k; i < end; i++) { const v = x[i] < 0 ? -x[i] : x[i]; if (v > m) m = v; }
+            const g = vadGainDb(floor[Math.min(n - 1, Math.floor((s + (k + end) / 2) / F))], m, c);
+            if (g > 0) { const kk = 10 ** (g / 20); for (let i = k; i < end; i++) x[i] *= kk; }
+          }
+          const want = (e - s) / F, pr = await within(vad.push(x), chunkMs, 'vad push');     // x 转交给 worker 了
+          check();
+          if (!pr || pr.length !== want) return energy('run');
+          still = true;
+          for (let i = 0; i < want; i++) {
+            const p = pr[i];
+            if (!Number.isFinite(p)) return energy('nan');
+            probs[s / F + i] = p;
+            if (!on && p >= c.ENTER) on = true; else if (on && p < c.EXIT) on = false;
+            if (on) { armed = true; quiet = 0; } else if (armed) quiet++;
+            if (p >= c.EXIT) still = false;
+          }
+          ran += e - s;
+          if ((armed && quiet >= idle) || (c.QUIET_RESET && still && !armed)) { vad.reset(); armed = false; quiet = 0; }
+          if (onProgress) onProgress(ran, total);
+        }
+      }
+    }
+    const pad = Math.round(c.PAD_SEC * sr), len = pcm.length;
+    const spans = speechRuns(probs, sr, c).map(([a, b]) => [Math.max(0, a * F - pad), Math.min(len, b * F + pad)]);
+    return { segs: windowsOf(spans, db, F, sr, { joinSec: c.JOIN_SEC, windowSec: c.WINDOW_SEC, maxSec: c.MAX_SEC, minSec: c.MIN_SEC }), finder: 'vad', ran, error: null, probs };
+  } catch (e) {
+    if (e && e.code === 'cancel') throw e;
+    return energy((e && e.message) || String(e));
+  } finally {
+    try { vad.close(); } catch (e) { /* 已经关了 */ }
+  }
 }
 
 // ---------- 整理识别出的文字 ----------
@@ -346,11 +620,14 @@ export async function deleteModel(key, { caches: cs = globalThis.caches } = {}) 
 }
 
 // ---------- 任务（一次只跑一个） ----------
-const RUNNING = ['prepare', 'download', 'load', 'run'];
+const RUNNING = ['prepare', 'vad', 'download', 'load', 'run'];
 export const isRunning = (view) => !!view && RUNNING.includes(view.phase);
 let current = null, seq = 0;
 const subs = new Set();
-/** 正在跑或刚结束的任务（只读）：{ id, kind:'run'|'download', key, model, engine, phase, pct, loaded, total, seg, segs, partial, lines, cached, error } */
+/**
+ * 正在跑或刚结束的任务（只读）：{ id, kind:'run'|'download', key, model, engine, phase, pct, loaded, total, seg, segs, partial, lines, cached, error, finder }
+ * phase：prepare（读录音）→ vad（找说话的地方，找得久才有）→ download | load → run → done | error | cancel；finder：'vad' | 'energy'（怎么找的说话）
+ */
 export const job = () => (current ? current.view : null);
 export function onJob(fn) { subs.add(fn); return () => subs.delete(fn); }
 function emit() { for (const fn of [...subs]) { try { fn(job()); } catch (e) { console.error(e); } } }
@@ -368,7 +645,8 @@ export function clearJob(id) { if (current && !isRunning(current.view) && (id ==
 const workerUrl = () => new URL('../workers/transcribe.worker.js', import.meta.url);
 
 /**
- * 识别一段录音 → Promise<{ text, lines, model, engine, ms, segs }>（text：一个窗口一行；没听出说话 → ''）
+ * 识别一段录音 → Promise<{ text, lines, model, engine, ms, segs, finder }>（text：一个窗口一行；没听出说话 → ''）
+ * 先用说话识别找说话的地方（findSpeech；用不了就按能量），它的 worker 关掉以后才开 Whisper 的 worker。
  * @param {object} o
  * @param {Blob|(() => Promise<Blob|null>)} o.blob
  * @param {string} o.model           'base' | 'small'
@@ -377,7 +655,9 @@ const workerUrl = () => new URL('../workers/transcribe.worker.js', import.meta.u
  * @param {boolean} [o.useGpu]       允许用显卡（默认 true；手机上总是不用）
  * @param {(engine: string) => void} [o.onEngine]   决定用什么跑之后（页面记下来：万一 App 被系统关掉，下次知道是显卡的问题）
  * @param {(err: Error) => void} [o.onGpuFail]      显卡出错、已经改用处理器重来
- * @param {object} [deps]            测试注入：{ Worker, decode, probeGpu, cacheInfo, mobile, now, workerUrl }
+ * @param {'auto'|'energy'} [o.finder]  'energy'：不用说话识别、按能量找（说话识别说没人说话时，页面上的「按音量再找一遍」）
+ * @param {object} [deps]            测试注入：{ Worker, decode, probeGpu, cacheInfo, mobile, now, workerUrl,
+ *                                   createVad（() → createVad() 那样的对象；null = 只按能量）, vadLoadMs, vadChunkMs, vadShowMs }
  */
 export function transcribe(o, deps) { return start({ ...o, kind: 'run' }, deps); }
 /** 只下载并载入一次模型（之后识别不用再等下载）→ Promise<{ model, engine }> */
@@ -385,9 +665,10 @@ export function downloadModel(o, deps) { return start({ ...o, kind: 'download', 
 
 async function start(o, deps = {}) {
   if (current && isRunning(current.view)) throw new SttError('busy');
-  const d = { Worker: globalThis.Worker, decode: decode16k, probeGpu, cacheInfo: modelCacheInfo, mobile: isMobileDevice(), now: () => Date.now(), workerUrl, ...deps };
+  const d = { Worker: globalThis.Worker, decode: decode16k, probeGpu, cacheInfo: modelCacheInfo, mobile: isMobileDevice(), now: () => Date.now(), workerUrl,
+    createVad: () => createVad(), vadShowMs: FIND.SHOW_MS, ...deps };
   const model = MODELS[o.model] ? o.model : DEFAULT_MODEL;
-  const j = { cancelled: false, stop: null, view: { id: ++seq, kind: o.kind, key: o.key ?? null, model, engine: null, phase: 'prepare', pct: null, loaded: 0, total: 0, seg: 0, segs: 0, partial: '', lines: [], cached: null, error: null, startedAt: d.now() } };
+  const j = { cancelled: false, stop: null, view: { id: ++seq, kind: o.kind, key: o.key ?? null, model, engine: null, phase: 'prepare', pct: null, loaded: 0, total: 0, seg: 0, segs: 0, partial: '', lines: [], cached: null, error: null, finder: null, startedAt: d.now() } };
   current = j;
   const set = (patch) => { if (current === j) { Object.assign(j.view, patch); emit(); } };
   const check = () => { if (j.cancelled) throw new SttError('cancel'); };
@@ -396,15 +677,18 @@ async function start(o, deps = {}) {
   try {
     if (typeof d.Worker !== 'function') throw new SttError('unsupported', 'Worker');
     if (!modelAllowed(model, { mobile: d.mobile })) throw new SttError('tooBig');
-    let segs = [];
+    let segs = [], finder = null;
     if (o.kind === 'run') {
       const blob = typeof o.blob === 'function' ? await o.blob() : o.blob;
       check();
       if (!blob) throw new SttError('noAudio');
       const pcm = await d.decode(blob);
       check();
-      segs = speechSegments(pcm).map(([a, b]) => pcm.slice(a, b));
-      if (!segs.length) { set({ phase: 'done', pct: 100 }); return { text: '', lines: [], model, engine: null, ms: d.now() - j.view.startedAt, segs: 0 }; }
+      const found = await (o.finder === 'energy' ? findSpeech(pcm, { vad: null }) : findFor(j, d, pcm, set, check));
+      finder = found.finder;
+      set({ finder });
+      segs = found.segs.map(([a, b]) => pcm.slice(a, b));
+      if (!segs.length) { set({ phase: 'done', pct: 100 }); return { text: '', lines: [], model, engine: null, ms: d.now() - j.view.startedAt, segs: 0, finder }; }
     }
     let engine = pickEngine(model, { mobile: d.mobile, ...(await d.probeGpu()), useGpu: o.useGpu !== false });
     check();
@@ -421,7 +705,7 @@ async function start(o, deps = {}) {
     }
     const lines = texts.map(x => cleanText(x, { simplify })).filter(Boolean);
     set({ phase: 'done', pct: 100, lines, partial: '' });
-    return { text: lines.join('\n'), lines, model, engine, ms: d.now() - j.view.startedAt, segs: segs.length };
+    return { text: lines.join('\n'), lines, model, engine, ms: d.now() - j.view.startedAt, segs: segs.length, finder };
   } catch (e) {
     const err = e instanceof SttError ? e : new SttError('failed', (e && e.message) || String(e));
     if (j.cancelled) err.code = 'cancel';
@@ -430,6 +714,30 @@ async function start(o, deps = {}) {
   } finally {
     j.stop = null;
   }
+}
+
+/**
+ * 找说话的地方（findSpeech）：开说话识别的 worker（取消时马上结束它），找完（不管成没成）一定已经关掉。
+ * 找了 vadShowMs 还没找完才显示「找说话的地方…」（phase 'vad'，pct 是交给识别的部分做了多少；载入时 pct 是 null）
+ */
+async function findFor(j, d, pcm, set, check) {
+  let vad = null;
+  if (d.createVad) { try { vad = d.createVad(); } catch (e) { console.warn('转文字：说话识别开不了，按能量找', e); vad = null; } }
+  if (!vad) return findSpeech(pcm, { vad: null });
+  let shown = false, pct = null;
+  const show = () => { shown = true; set({ phase: 'vad', pct }); };
+  const t = setTimeout(show, d.vadShowMs);
+  j.stop = () => { try { vad.close(); } catch (e) { /* 已经关了 */ } };
+  try {
+    const found = await findSpeech(pcm, { vad, check, loadMs: d.vadLoadMs, chunkMs: d.vadChunkMs, onProgress: (done, total) => {
+      const p = Math.floor((done / total) * 100);
+      if (p === pct) return;
+      pct = p;
+      if (shown) show();
+    } });
+    if (found.error) console.warn('转文字：说话识别用不了，按能量找', found.error);
+    return found;
+  } finally { clearTimeout(t); j.stop = null; }
 }
 
 /** 开一个 worker：载入模型 →（识别各段）→ 结束 worker。resolve 每段的原始文字 */

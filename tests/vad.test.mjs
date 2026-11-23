@@ -146,6 +146,21 @@ test('createVad：载入 → ready；不是 ready 时 push 马上给 null、不�
   assert.equal(s.lastError, null);
 });
 
+test('createVad：一块也可以是 512 的别的整数倍（转文字一次交 1 秒 = 32 步），回来的概率个数跟着变', async () => {
+  const { FW, made } = fakeWorkers((w, m) => {
+    if (m.type === 'load') w.emit({ type: 'ready', ms: 1 });
+    if (m.type === 'block') w.emit({ type: 'probs', seq: m.seq, probs: new Float32Array(m.pcm.length / STEP).fill(m.pcm[0]), ms: 2 });
+  });
+  const v = createVad({ Worker: FW });
+  await v.load();
+  const r = await v.push(new Float32Array(16384).fill(0.5));
+  assert.equal(r.length, 32);
+  assert.equal(r[31], 0.5);
+  assert.equal((await v.push(new Float32Array(1536).fill(0.25))).length, 3);
+  assert.deepEqual(made[0].blocks().map(s => s.m.pcm.length), [16384, 1536]);
+  assert.equal(v.stats().blocks, 2);
+});
+
 test('createVad：worker 回 null（还没好）或长度不对 → null，不算进 stats', async () => {
   let mode = 'null';
   const { FW } = fakeWorkers((w, m) => {

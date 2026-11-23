@@ -71,7 +71,7 @@ const keyOf = (id, sha) => id + '|' + sha;
 const justDone = new Set();           // 刚写进草稿的条目：草稿区展开、滚过去
 const edits = new Map();              // 条目 id → { text, a, b, focus }：正在改的草稿（页面因为同步之类重画时接着改，光标也回到原处）
 
-async function runClip(ctx, id, clip) {
+async function runClip(ctx, id, clip, { finder = 'auto' } = {}) {
   const p = prefs(ctx), key = keyOf(id, clip.sha256);
   persist();                          // 在点按里申请持久保存，iOS 不会把模型清掉
   mark(ctx, { key, model: p.model, engine: null, at: Date.now() });
@@ -79,12 +79,14 @@ async function runClip(ctx, id, clip) {
   let r;
   try {
     r = await stt.transcribe({ key, model: p.model, useGpu: p.useGpu, simplify: ctx.lang() !== 'zh-Hant-TW',
-      blob: () => ctx.clipBlob(clip.sha256),
+      blob: () => ctx.clipBlob(clip.sha256), finder,
       onEngine: (engine) => mark(ctx, { key, model: p.model, engine, at: Date.now() }),
       onGpuFail: () => setPrefs(ctx, { useGpu: false }) });
   } catch (e) {
     return;                           // 出错显示在部件里；取消就回到按钮
   } finally { mark(ctx, null); unlock(lock); refreshCache(p.model); }
+  // 说话识别说没人说话：可能是被鼾声、杂音盖住的悄悄话——给一个「按音量再找一遍」（以前的找法：杂音多的会送去更多，慢一些）
+  if (!r.text && r.finder === 'vad') { ctx.toast(t('stt.nothingVad'), { ms: 10000, action: { label: t('stt.retryEnergy'), run: () => runClip(ctx, id, clip, { finder: 'energy' }) } }); return; }
   if (!r.text) { ctx.toast(t('stt.nothing'), { ms: 7000 }); return; }
   // 识别期间这条删了、永久删除了，或者这段录音被移除 / 永久删除了：结果不写（不然拿掉的录音转出的字留在草稿里）
   const cur = ctx.entry(id), gone = ctx.goneShas ? ctx.goneShas() : null;
@@ -100,6 +102,7 @@ async function runClip(ctx, id, clip) {
 /** 进度：[主文字, 小字, 百分比（null = 不确定）] */
 function progressOf(j) {
   if (j.phase === 'download') return [t('stt.download', { pct: Math.floor(j.pct || 0) }), j.total ? t('stt.downloadSize', { loaded: fmtBytes(j.loaded), total: fmtBytes(j.total) }) : t('stt.downloadOnce'), j.pct || 0];
+  if (j.phase === 'vad') return [t('stt.vad'), '', j.pct ?? null];     // 先找说话的地方（长录音要一会儿；载入时 pct 是 null）
   if (j.phase === 'load') return [t('stt.load'), '', null];
   if (j.phase === 'run') return [j.segs > 1 ? t('stt.runN', { i: Math.min(j.seg + 1, j.segs), n: j.segs }) : t('stt.run'), '', j.segs > 1 ? j.pct : null];
   return [t('stt.prepare'), '', null];

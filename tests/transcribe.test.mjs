@@ -1,12 +1,13 @@
-// 语音转文字（core/transcribe.js）：模型表、选后端、按说话分段、整理识别结果、合进草稿、填进原话，
-// 以及在假 worker 上跑的任务流程（下载进度、识别、取消、显卡出错换处理器、内存不够）和模型缓存的大小 / 删除。
+// 语音转文字（core/transcribe.js）：模型表、选后端、按说话分段、用说话识别找说话的地方（假的说话识别 + vendor 里的真模型）、
+// 整理识别结果、合进草稿、填进原话，以及在假 worker 上跑的任务流程（下载进度、识别、取消、显卡出错换处理器、内存不够）和模型缓存的大小 / 删除。
 // 全是合成的信号和编出来的句子（仓库是公开的，不放真的梦话和录音）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as T from '../src/core/transcribe.js';
+import { createVad } from '../src/core/vad.js';
 import { T2S, toSimplified } from '../src/core/hanzi.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -134,6 +135,229 @@ test('分段：很长的一句在 20–28 秒之间最安静的地方切开', ()
   assert.ok(segs[0][1] > 23.8 && segs[0][1] < 24.3, JSON.stringify(segs));
 });
 
+// ---------- 用说话识别找说话的地方（假的说话识别：1 kHz 的正弦算「说话」，别的都不算） ----------
+const mix = (...xs) => { const o = new Float32Array(xs[0].length); for (const x of xs) for (let i = 0; i < o.length; i++) o[i] += x[i] || 0; return o; };
+/** 1 kHz 的「说话」：parts [[起秒, 止秒, dBFS]] */
+const say = (sec, parts, o) => signal(sec, parts.map(([a, b, db = -30]) => [a, b, db, 1000]), o);
+const peakOf = (x, a = 0, b = x.length) => { let m = 0; for (let i = a; i < b; i++) m = Math.max(m, Math.abs(x[i])); return m; };
+/** 低频轰轰声（风扇、空调、车声）：一阶低通的噪声 + 一点白噪声，每帧能量差十几 dB */
+function rumble(sec, db, seed = 5) {
+  const n = Math.round(sec * SR), x = new Float32Array(n), r = lcg(seed);
+  let b = 0, e = 0;
+  for (let i = 0; i < n; i++) { const w = r(); b = 0.995 * b + 0.1 * w; x[i] = b + 0.05 * w; e += x[i] * x[i]; }
+  const k = Math.pow(10, db / 20) / Math.sqrt(e / n);
+  return x.map(v => v * k);
+}
+/** 这一帧（512 个样本）里 1 kHz 占了多少能量（Goertzel） */
+function toneShare(x, off, f = 1000) {
+  const N = 512, cw = 2 * Math.cos((2 * Math.PI * f) / SR);
+  let s1 = 0, s2 = 0, e = 0;
+  for (let i = 0; i < N; i++) { const v = x[off + i], s0 = v + cw * s1 - s2; s2 = s1; s1 = s0; e += v * v; }
+  return e > 0 ? ((s1 * s1 + s2 * s2 - cw * s1 * s2) * 2) / (N * N) / (e / N) : 0;
+}
+/**
+ * 假的说话识别（和 createVad() 一样的接口）：一帧里 1 kHz 占一成以上能量 → 0.9，不然 0.02。
+ * log 按顺序记下 load / reset / push / close（events 给了也往里记一份 'vad.xxx'），pushed 记下每块的长度和峰值。
+ * load：true / false / 函数；push：替换掉算概率的办法；delay：每块晚几毫秒回；hang：一直不回，close 时给 null（和 createVad 一样）
+ */
+function fakeVad({ load = true, push = null, delay = 0, hang = false, events = null } = {}) {
+  const v = { log: [], pushed: [], pending: [], closed: false, state: 'idle' };
+  const note = (s) => { v.log.push(s); if (events) events.push('vad.' + s); };
+  v.load = () => { note('load'); if (typeof load === 'function') return load(v); v.state = load ? 'ready' : 'off'; return Promise.resolve(load); };
+  v.push = (x) => {
+    note('push');
+    v.pushed.push({ n: x.length, peak: peakOf(x) });
+    if (v.closed) return Promise.resolve(null);
+    if (hang) return new Promise(r => v.pending.push(r));
+    if (push) return push(x, v);
+    const out = Float32Array.from({ length: x.length / 512 }, (_, i) => (toneShare(x, i * 512) > 0.1 ? 0.9 : 0.02));
+    return delay ? new Promise(r => setTimeout(() => r(out), delay)) : Promise.resolve(out);
+  };
+  v.reset = () => note('reset');
+  v.close = () => { note('close'); v.closed = true; v.state = 'off'; for (const r of v.pending.splice(0)) r(null); };
+  return v;
+}
+const ops = (v) => v.log.map(s => s[0]).join('');             // 'lrpprc'：load、reset、push、push、reset、close
+
+test('找说话的地方：说话识别说是说话的地方，照 speechSegments 的规矩合成窗口（前后各留 0.25 秒、停顿 ≤ 1.5 秒并起来）', async () => {
+  const x = say(40, [[5, 7], [8, 9.2], [25, 26]], { noiseDb: -65 });
+  const v = fakeVad(), r = await T.findSpeech(x, { vad: v });
+  assert.equal(r.finder, 'vad');
+  assert.equal(r.error, null);
+  near(secs(r.segs), [[4.75, 9.45], [24.75, 26.25]]);
+  near(secs(r.segs), secs(T.speechSegments(x)), 0.06);           // 这么清楚的声音，两种找法一样
+  assert.deepEqual(v.log.filter(s => s !== 'push'), ['load', 'reset', 'reset', 'close'], '载入一次；两处有动静，各自从头开始；最后关掉');
+  assert.ok(v.pushed.every(p => p.n % 512 === 0 && p.n <= T.FIND.CHUNK), '每块是 512 的整数倍、最多 1 秒');
+  assert.equal(r.ran, v.pushed.reduce((s, p) => s + p.n, 0));
+  assert.ok(r.ran > 6 * SR && r.ran < 9 * SR, `只跑了有动静的地方（${r.ran / SR} 秒）`);
+  assert.equal(r.probs.length, Math.floor(x.length / 512));
+  assert.equal(r.probs[Math.round((15 * SR) / 512)], 0, '跳过的地方当没在说');
+  assert.equal(r.probs[Math.round((6 * SR) / 512)], Math.fround(0.9));
+});
+
+test('找说话的地方：先按能量跳过明显的静音——10 分钟里只说了一句只跑那附近；数字静音、平稳的底噪、低频轰轰声一点都不跑（也不载入）', async () => {
+  const one = fakeVad(), r = await T.findSpeech(say(600, [[300, 302, -40]]), { vad: one });
+  near(secs(r.segs), [[299.75, 302.25]]);
+  assert.ok(r.ran <= 4 * SR, `跑了 ${r.ran / SR} 秒`);
+  const loud = rumble(120, -45), db = T.frameDbs(loud), sorted = Float32Array.from(db).sort();
+  assert.ok(sorted[sorted.length - 1] - sorted[Math.floor(db.length * 0.1)] > 10, '轰轰声每帧能量差十几 dB（只看能量会当成有动静）');
+  for (const [name, x] of [['数字静音', new Float32Array(SR * 30)], ['平稳的底噪', signal(120, [], { noiseDb: -50 })], ['低频轰轰声', loud]]) {
+    const v = fakeVad(), q = await T.findSpeech(x, { vad: v });
+    assert.deepEqual(q.segs, [], name);
+    assert.equal(q.finder, 'vad', name);
+    assert.equal(q.ran, 0, name);
+    assert.deepEqual(v.log, ['close'], `${name}：没有要听的就不载入`);
+  }
+});
+
+test('找说话的地方：白噪声机（−45 dBFS）里更小声（−50）的说话：整体能量看不出来（只按能量找不到），它那个频带里看得出来，交给说话识别', async () => {
+  const x = say(60, [[20, 23, -50]], { noiseDb: -45 });
+  assert.deepEqual(T.speechSegments(x), []);
+  const v = fakeVad(), r = await T.findSpeech(x, { vad: v });
+  near(secs(r.segs), [[19.75, 23.25]]);
+  assert.ok(r.ran < 6 * SR, `只跑了说话附近（${r.ran / SR} 秒）`);
+  // 几个频带的能量：1 kHz 在 700–1800 Hz 那个频带里
+  const [lo, mid, hi] = T.bandDbs(x).map(b => b[Math.round((21 * SR) / 512)] - b[Math.round((10 * SR) / 512)]);
+  assert.ok(mid > 3 && mid > lo + 1 && hi < 1, JSON.stringify({ lo, mid, hi }));
+  const all = T.frameDbs(x);
+  assert.ok(all[Math.round((21 * SR) / 512)] - all[Math.round((10 * SR) / 512)] < 1.5, '整体能量只多了一点点');
+});
+
+test('找说话的地方：鼾声（一阵阵比底噪响 8 dB 的杂音）只按能量会每一下都送去识别；说话识别不认 → 不送，中间说的那句照样找到', async () => {
+  const snore = bursts(120, { relDb: 8, every: 4, dur: 1.2 });
+  assert.ok(T.speechSegments(snore).length >= 20, '只按能量：鼾声都送去识别');
+  const v = fakeVad(), r = await T.findSpeech(snore, { vad: v });
+  assert.deepEqual(r.segs, []);
+  assert.ok(r.ran > 0, '鼾声过了能量那一关，是说话识别说不像说话');
+  near(secs((await T.findSpeech(mix(snore, say(120, [[50, 53, -40]], { noiseDb: null })), { vad: fakeVad() })).segs), [[49.75, 53.25]]);
+});
+
+test('找说话的地方：只放大给说话识别的那份（噪声底拉到 −40 dBFS，最多 +30 dB，峰值不超过 −1 dBFS），交给 Whisper 的声音不动', async () => {
+  assert.equal(T.vadGainDb(-70, 0.01), 30);
+  assert.equal(T.vadGainDb(-120, 0), 30, '数字静音：最多 +30 dB');
+  assert.equal(T.vadGainDb(-55, 0.01), 15);
+  assert.equal(T.vadGainDb(-35, 0.01), 0, '噪声底已经比 −40 dBFS 响：不放大');
+  assert.ok(Math.abs(T.vadGainDb(-70, 0.5) - (-1 - 20 * Math.log10(0.5))) < 1e-9, '峰值顶到 −1 dBFS 为止');
+  assert.equal(T.vadGainDb(-70, 1), 0);
+  const x = say(20, [[5, 8, -50]], { noiseDb: -70 }), copy = x.slice(), v = fakeVad();
+  const r = await T.findSpeech(x, { vad: v });
+  assert.deepEqual(x, copy, '原来的声音一个样本都没改');
+  near(secs(r.segs), [[4.75, 8.25]]);
+  const boost = 20 * Math.log10(Math.max(...v.pushed.map(p => p.peak)) / peakOf(x, 5 * SR, 8 * SR));
+  assert.ok(Math.abs(boost - 30) < 0.5, `放大了 ${boost} dB`);
+  const loud = fakeVad();
+  await T.findSpeech(say(20, [[5, 8, -6]], { noiseDb: -70 }), { vad: loud });
+  const top = Math.max(...loud.pushed.map(p => p.peak));
+  assert.ok(top <= Math.pow(10, -1 / 20) + 1e-6 && top > 0.85, `大声的只放大到 −1 dBFS（${top}）`);
+});
+
+test('说话识别的概率 → 说话的地方：≥ 0.30 进、< 0.15 出；停顿 ≤ 0.3 秒连成一句；隔得近（会进同一个窗口）的几句在说的加起来不到 0.25 秒（8 帧）才丢掉', () => {
+  const P = (...parts) => Float32Array.from(parts.flatMap(([p, k]) => Array(k).fill(p)));
+  assert.deepEqual(T.speechRuns(P([0, 5], [0.29, 20], [0, 5])), [], '没到 0.30 不算');
+  assert.deepEqual(T.speechRuns(P([0, 5], [0.3, 1], [0.16, 9], [0.1, 5])), [[5, 15]], '进了以后 ≥ 0.15 一直算');
+  assert.deepEqual(T.speechRuns(P([0.9, 7], [0, 5])), [], '7 帧（0.22 秒）太短');
+  assert.deepEqual(T.speechRuns(P([0.9, 8], [0, 5])), [[0, 8]]);
+  assert.deepEqual(T.speechRuns(P([0.9, 4], [0, 9], [0.9, 4])), [[0, 17]], '停 9 帧（0.29 秒）连成一句，凑够 8 帧');
+  assert.deepEqual(T.speechRuns(P([0.9, 4], [0, 10], [0.9, 4])), [[0, 4], [14, 18]], '停 10 帧就是两句；各自太短，但隔得近，合起来凑够 8 帧 → 都留下');
+  assert.deepEqual(T.speechRuns(P([0.9, 3], [0, 10], [0.9, 4])), [], '合起来 7 帧：还是太短');
+  // 小声嘀咕的一串短音节（每个 3 帧，p 只有 0.3–0.5，隔 0.5 秒）：一个个看都太短，连在一起留下
+  const murmur = P([0, 20], [0.4, 3], [0.05, 16], [0.35, 3], [0.1, 16], [0.5, 3], [0, 20]);
+  assert.deepEqual(T.speechRuns(murmur), [[20, 23], [39, 42], [58, 61]]);
+  // 隔得远（停顿加前后各 0.25 秒的余量超过 1.5 秒，进不了同一个窗口）：各算各的，都丢掉；正好 62 帧还算近
+  assert.deepEqual(T.speechRuns(P([0.9, 4], [0, 63], [0.9, 4])), []);
+  assert.deepEqual(T.speechRuns(P([0.9, 4], [0, 62], [0.9, 4])), [[0, 4], [66, 70]]);
+  // 够长的一句旁边隔得近的一两帧跟着留下（反正在同一个窗口里）
+  assert.deepEqual(T.speechRuns(P([0.9, 8], [0, 30], [0.9, 1], [0, 5])), [[0, 8], [38, 39]]);
+  assert.deepEqual(T.speechRuns(P([0.9, 10], [NaN, 3], [0.9, 10])), [[0, 23]], 'NaN 当没在说');
+  assert.deepEqual(T.speechRuns(P([0.9, 10], [0.2, 40])), [[0, 50]], '一直 ≥ 0.15 就一直算（迟滞）');
+});
+
+test('找说话的地方：小声嘀咕的一串短音节（每个 0.15 秒、识别只给 0.4，隔 0.5 秒）：一个个都太短，连在一起送去识别；单独的一个、隔得远的几个照样不送', async () => {
+  const soft = (x) => Float32Array.from({ length: x.length / 512 }, (_, i) => (toneShare(x, i * 512) > 0.1 ? 0.4 : 0.02));
+  const x = say(12, [[3, 3.15, -40], [3.65, 3.8, -40], [4.3, 4.45, -40]], { noiseDb: -63 });
+  const r = await T.findSpeech(x, { vad: fakeVad({ push: async (pcm) => soft(pcm) }) });
+  assert.equal(r.finder, 'vad');
+  near(secs(r.segs), [[2.75, 4.7]], 0.1);
+  const runs = T.speechRuns(r.probs);
+  assert.equal(runs.length, 3);
+  assert.ok(runs.every(([a, b]) => b - a < 8), '每个都不到 8 帧：以前一个个看全丢了');
+  for (const parts of [[[3, 3.15, -40]], [[3, 3.15, -40], [6, 6.15, -40], [9, 9.15, -40]]]) {
+    const q = await T.findSpeech(say(12, parts, { noiseDb: -63 }), { vad: fakeVad({ push: async (pcm) => soft(pcm) }) });
+    assert.deepEqual(q.segs, [], JSON.stringify(parts));
+  }
+});
+
+test('找说话的地方：长录音先按能量挑时每算 1 分钟让出一次主线程（页面不卡）、能取消；分几次算出来的和一次算完一样', async () => {
+  const x = say(600, [[100, 102, -40], [430, 433, -45]], { noiseDb: -60 });
+  let ticks = 0, at = null, stop = false;
+  const tick = () => { if (!stop) { ticks++; setImmediate(tick); } };
+  setImmediate(tick);
+  const v = fakeVad({ load: (vv) => { at = ticks; vv.state = 'ready'; return Promise.resolve(true); } });
+  const r = await T.findSpeech(x, { vad: v });
+  stop = true;
+  near(secs(r.segs), [[99.75, 102.25], [429.75, 433.25]]);
+  assert.ok(at >= 10, `载入之前让出了 ${at} 次`);
+  // 一样：每 7 秒让一次 / 一次算完
+  const a = fakeVad(), b = fakeVad();
+  const ra = await T.findSpeech(x, { vad: a, PRE_SLICE_SEC: 7 }), rb = await T.findSpeech(x, { vad: b, PRE_SLICE_SEC: 1e9 });
+  assert.deepEqual(ra.segs, rb.segs);
+  assert.deepEqual(ra.probs, rb.probs);
+  assert.deepEqual(a.pushed, b.pushed, '交给识别的地方一样');
+  assert.deepEqual(rb.segs, r.segs);
+  // 取消：挑到一半就停（不载入），也关掉
+  let n = 0;
+  const c = fakeVad();
+  await assert.rejects(T.findSpeech(x, { vad: c, check: () => { if (++n === 3) throw new T.SttError('cancel'); } }), e => e.code === 'cancel');
+  assert.deepEqual(c.log, ['close']);
+  // 1 分钟以内的不让（短录音不多等）：check 的次数和从来不让的一样
+  const calls = async (o) => { let m = 0; await T.findSpeech(say(60, [[20, 22]]), { vad: fakeVad(), check: () => { m++; }, ...o }); return m; };
+  assert.equal(await calls({}), await calls({ PRE_SLICE_SEC: 1e9 }));
+  assert.ok(await calls({ PRE_SLICE_SEC: 10 }) > await calls({}));
+});
+
+test('找说话的地方：每处有动静的地方从头开始；一整块（1 秒）都不像说话、说完 2 秒以后也清一次状态', async () => {
+  // 一直有动静（−28 dBFS 的底噪）：只有一处；2–4 秒说话
+  const x = say(12, [[2, 4, -10]], { noiseDb: -28 });
+  const v = fakeVad(), r = await T.findSpeech(x, { vad: v });
+  near(secs(r.segs), [[1.75, 4.25]]);
+  // 第 0 块不像说话 → 清；第 1–3 块在说；说完到第 5 块满 2 秒 → 清；之后每块都不像说话 → 每块之后清
+  assert.equal(ops(v), 'lr' + 'pr' + 'ppppp' + 'r' + 'pr'.repeat(6) + 'c');
+  const w = fakeVad();
+  await T.findSpeech(x, { vad: w, QUIET_RESET: false });
+  assert.equal(ops(w), 'lr' + 'pppppp' + 'r' + 'pppppp' + 'c', '只有说完 2 秒那一次');
+});
+
+test('找说话的地方：说话识别用不了（载入不了、出错、给的不对、卡住）→ 照旧按能量分段；不管怎样都关掉', async () => {
+  const x = say(30, [[5, 7]]), want = T.speechSegments(x);
+  const cases = [
+    ['load', fakeVad({ load: false }), {}],
+    ['run', fakeVad({ push: async () => null }), {}],
+    ['run', fakeVad({ push: async () => new Float32Array(3) }), {}],
+    ['nan', fakeVad({ push: async (pcm) => new Float32Array(pcm.length / 512).fill(NaN) }), {}],
+    [/bad output NaN/, fakeVad({ push: async () => { throw new Error('vad: bad output NaN'); } }), {}],
+    [/boom/, fakeVad({ load: () => { throw new Error('boom'); } }), {}],
+    [/vad load timeout/, fakeVad({ load: () => new Promise(() => {}) }), { loadMs: 20 }],
+    [/vad push timeout/, fakeVad({ push: () => new Promise(() => {}) }), { chunkMs: 20 }],
+  ];
+  for (const [why, v, o] of cases) {
+    const r = await T.findSpeech(x, { vad: v, ...o });
+    assert.equal(r.finder, 'energy', String(why));
+    assert.deepEqual(r.segs, want, String(why));
+    if (why instanceof RegExp) assert.match(r.error, why); else assert.equal(r.error, why);
+    assert.equal(v.log.filter(s => s === 'close').length, 1, String(why));
+    assert.equal(v.log.at(-1), 'close', String(why));
+  }
+  assert.deepEqual(await T.findSpeech(x, { vad: null }), { segs: want, finder: 'energy', ran: 0, error: null }, '没给说话识别');
+});
+
+test('找说话的地方：取消（check 抛出 cancel）原样往外抛，不当作识别坏了；也关掉', async () => {
+  const v = fakeVad();
+  let n = 0;
+  await assert.rejects(T.findSpeech(say(30, [[5, 7], [20, 22]]), { vad: v, check: () => { if (++n > 3) throw new T.SttError('cancel'); } }), e => e.code === 'cancel');
+  assert.equal(v.log.at(-1), 'close');
+  assert.ok(v.log.includes('push'));
+});
+
 test('简繁转换是一个字换一个字（去掉套话时靠这个对齐位置）', () => {
   for (const [k, v] of T2S) { assert.equal(k.length, 1, k); assert.equal(v.length, 1, k); }
   const s = '媽媽，我不要去上學 😴 𠀀';
@@ -247,7 +471,8 @@ const okScript = (w, m) => {
   }
 };
 const threeSays = () => signal(24, [[1, 3], [8, 10], [16, 18]]);
-const deps = (extra = {}) => ({ decode: async () => threeSays(), probeGpu: async () => ({ gpu: false, f16: false }), cacheInfo: async () => ({ bytes: 0, files: [], complete: { wasm: false, webgpu: false } }), mobile: false, workerUrl: () => 'x.js', ...extra });
+// 这些流程测试按能量分段（createVad: null）；先用说话识别找说话的地方见后面「识别：先找说话的地方」那几个
+const deps = (extra = {}) => ({ decode: async () => threeSays(), probeGpu: async () => ({ gpu: false, f16: false }), cacheInfo: async () => ({ bytes: 0, files: [], complete: { wasm: false, webgpu: false } }), mobile: false, workerUrl: () => 'x.js', createVad: null, ...extra });
 const tick = () => new Promise(r => setTimeout(r, 0));
 async function waitFor(fn, ms = 2000) { const t0 = Date.now(); while (!fn()) { if (Date.now() - t0 > ms) throw new Error('waitFor timeout'); await tick(); } }
 
@@ -293,6 +518,18 @@ test('识别：没听出说话 → 不开 worker、不下载模型，结果是�
   const r = await T.transcribe({ blob: new Blob(['x']), model: 'base' }, deps({ Worker: FW, decode: async () => signal(10, [], { noiseDb: -56 }) }));
   assert.equal(r.text, '');
   assert.equal(made.length, 0);
+});
+
+test('识别：finder energy（「按音量再找一遍」）→ 不开说话识别，按能量找；说话识别说没人说话时结果写着 finder vad', async () => {
+  const { FW } = fakeWorkers(okScript);
+  let made = 0;
+  const v = () => { made++; return fakeVad({ push: async (pcm) => new Float32Array(pcm.length / 512).fill(0.01) }); };   // 说话识别：哪儿都没人说话
+  const r1 = await T.transcribe({ blob: new Blob(['x']), model: 'base' }, deps({ Worker: FW, createVad: v }));
+  assert.deepEqual([r1.text, r1.finder, made], ['', 'vad', 1], '说话识别没找到：结果是空的、finder vad（页面给「按音量再找一遍」）');
+  const r2 = await T.transcribe({ blob: new Blob(['x']), model: 'base', finder: 'energy' }, deps({ Worker: FW, createVad: v }));
+  assert.equal(made, 1, '按音量：没再开说话识别');
+  assert.equal(r2.finder, 'energy');
+  assert.ok(r2.text.length > 0, '按能量找到了、识别了');
 });
 
 test('识别：显卡出错 → 换一个新 worker 用处理器重来（片段发的是副本）', async () => {
@@ -381,6 +618,89 @@ test('只下载模型：载入一次就结束 worker，不识别', async () => {
   assert.equal(T.job().key, 'download:small');
 });
 
+// ---------- 识别：先用说话识别找说话的地方 ----------
+/** 两分钟的鼾声里 50–53 秒说了一句（1 kHz）：只按能量 20 多段，说话识别 1 段 */
+const snoreTalk = () => mix(bursts(120, { relDb: 8, every: 4, dur: 1.2 }), say(120, [[50, 53, -40]], { noiseDb: null }));
+
+test('识别：先找说话的地方（鼾声不送去识别），说话识别关掉以后才开 Whisper 的 worker', async () => {
+  const events = [];
+  const { FW, made } = fakeWorkers(okScript);
+  class Logged extends FW { constructor(...a) { super(...a); events.push('whisper.new'); } }
+  const v = fakeVad({ events });
+  const r = await T.transcribe({ blob: new Blob(['x']), model: 'base' }, deps({ Worker: Logged, decode: async () => snoreTalk(), createVad: () => v }));
+  assert.equal(r.finder, 'vad');
+  assert.equal(r.segs, 1);
+  assert.equal(T.job().finder, 'vad');
+  assert.equal(made[0].sent[1].m.segments.length, 1);
+  near(secs([[0, made[0].sent[1].m.segments[0].length]]), [[0, 3.5]]);
+  assert.ok(T.speechSegments(snoreTalk()).length >= 20, '只按能量：鼾声每一下都要识别');
+  assert.equal(events.filter(e => e === 'vad.close').length, 1);
+  assert.ok(events.indexOf('vad.close') < events.indexOf('whisper.new'), events.join(' '));
+  assert.equal(events.at(-1), 'whisper.new', '开 Whisper 以后说话识别什么都不做了');
+  assert.ok(made[0].terminated);
+});
+
+test('识别：找说话的地方要一会儿 → 显示「找说话的地方…」（phase vad）和进度；很快就找完的不显示', async () => {
+  const { FW } = fakeWorkers(okScript);
+  const views = [];
+  const off = T.onJob(j => { if (j) views.push([j.phase, j.pct]); });
+  const r = await T.transcribe({ blob: new Blob(['x']), model: 'base' }, deps({ Worker: FW, decode: async () => snoreTalk(), createVad: () => fakeVad({ delay: 1 }), vadShowMs: 0 }));
+  off();
+  assert.equal(r.finder, 'vad');
+  const phases = views.map(v => v[0]).filter((p, i, a) => p !== a[i - 1]);
+  assert.deepEqual(phases, ['prepare', 'vad', 'download', 'run', 'done']);
+  assert.ok(T.isRunning({ phase: 'vad' }), '找说话的地方也算在跑（床头模式不会这时开始、可以取消）');
+  const pcts = views.filter(v => v[0] === 'vad').map(v => v[1]).filter(p => p != null);
+  assert.ok(pcts.length > 3 && pcts.every((p, i) => !i || p >= pcts[i - 1]) && pcts.at(-1) === 100, JSON.stringify(pcts));
+  const quick = new Set();
+  const off2 = T.onJob(j => j && quick.add(j.phase));
+  await T.transcribe({ blob: new Blob(['x']), model: 'base' }, deps({ Worker: FW, decode: async () => snoreTalk(), createVad: () => fakeVad() }));
+  off2();
+  assert.ok(!quick.has('vad'), '不到 0.4 秒就找完了：不闪一下');
+});
+
+test('识别：找说话的地方时取消 → 马上关掉说话识别，不开 Whisper', async () => {
+  const { FW, made } = fakeWorkers(okScript);
+  const v = fakeVad({ hang: true });
+  const p = T.transcribe({ blob: new Blob(['x']), model: 'base' }, deps({ Worker: FW, decode: async () => snoreTalk(), createVad: () => v, vadShowMs: 0 }));
+  await waitFor(() => T.job() && T.job().phase === 'vad' && v.pending.length);
+  assert.equal(T.cancel(), true);
+  await assert.rejects(p, e => e.code === 'cancel');
+  assert.ok(v.closed);
+  assert.equal(made.length, 0);
+  assert.equal(T.job().phase, 'cancel');
+  // 载入时取消也一样
+  const w = fakeVad({ load: () => new Promise(() => {}) });
+  const q = T.transcribe({ blob: new Blob(['x']), model: 'base' }, deps({ Worker: FW, decode: async () => snoreTalk(), createVad: () => w }));
+  await waitFor(() => w.log.includes('load'));
+  T.cancel();
+  await assert.rejects(q, e => e.code === 'cancel');
+  assert.ok(w.closed);
+  assert.equal(made.length, 0);
+});
+
+test('识别：说话识别没找到说话 → 不开 Whisper；说话识别用不了 → 照旧按能量识别（也是先关掉它）', async () => {
+  const { FW, made } = fakeWorkers(okScript);
+  const v = fakeVad();
+  const r = await T.transcribe({ blob: new Blob(['x']), model: 'base' }, deps({ Worker: FW, decode: async () => bursts(60, { relDb: 8, every: 4, dur: 1.2 }), createVad: () => v }));
+  assert.deepEqual([r.text, r.segs, r.finder], ['', 0, 'vad']);
+  assert.ok(v.closed);
+  assert.equal(made.length, 0);
+  const events = [];
+  class Logged extends FW { constructor(...a) { super(...a); events.push('whisper.new'); } }
+  const bad = fakeVad({ load: false, events });
+  const e = await T.transcribe({ blob: new Blob(['x']), model: 'base' }, deps({ Worker: Logged, createVad: () => bad }));
+  assert.deepEqual([e.finder, e.segs, e.lines.length], ['energy', 3, 2]);
+  assert.deepEqual(events, ['vad.load', 'vad.close', 'whisper.new']);
+  const t = await T.transcribe({ blob: new Blob(['x']), model: 'base' }, deps({ Worker: FW, createVad: () => { throw new Error('no'); } }));
+  assert.deepEqual([t.finder, t.segs], ['energy', 3]);
+  // 不注入：用真的 createVad()，Node 里没有 Worker → 载入不了 → 按能量
+  const dd = deps({ Worker: FW });
+  delete dd.createVad;
+  const u = await T.transcribe({ blob: new Blob(['x']), model: 'base' }, dd);
+  assert.deepEqual([u.finder, u.segs], ['energy', 3]);
+});
+
 // ---------- 模型缓存 ----------
 function fakeCaches(sizes) {
   const store = new Map(Object.entries(sizes));
@@ -445,4 +765,105 @@ test('CSP：允许 wasm，只多放 Hugging Face 的下载地址；worker 只能
   assert.deepEqual(dir['connect-src'], ["'self'", 'https://api.github.com', 'https://huggingface.co', 'https://*.hf.co']);
   assert.deepEqual(dir['worker-src'], ["'self'"]);
   assert.deepEqual(dir['default-src'], ["'self'"]);
+});
+
+// ---------- 真模型：vendor 里的 Silero VAD 在 Node 里找说话的地方 ----------
+// 和 tests/vad.test.mjs 一样：打包版 transformers.js 用打包进来的 onnxruntime-web（import 时让它以为不是 Node），模型从磁盘读（不联网）；
+// worker 脚本在这个进程里 import（self 是个假的），InProc 当 Worker 交给 createVad，消息照样转交、异步送达。
+const norm = (x, db) => { let e = 0; for (const v of x) e += v * v; const k = Math.pow(10, db / 20) / Math.sqrt(e / x.length + 1e-20); return x.map(v => v * k); };
+/** 共振峰合成的「元音」（和 tests/vad.test.mjs 一样）：基频 150–245 Hz 起伏的脉冲列过三个共振器，一个音节 220 ms、停 60 ms */
+function vowels(sec, db, seed) {
+  const F = [[800, 1200, 2500], [300, 2300, 3000], [350, 800, 2400], [500, 1800, 2600], [600, 1000, 2500]];
+  const n = Math.round(sec * SR), x = new Float32Array(n), r = lcg(seed), res = [[0, 0], [0, 0], [0, 0]];
+  let ph = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / SR, syl = Math.floor(t / 0.28), st = t - syl * 0.28;
+    if (st > 0.22) continue;
+    ph += (190 + 40 * Math.sin(2 * Math.PI * 0.7 * t) + 15 * Math.sin(6 * Math.PI * t)) / SR;
+    let src = r() * 0.02;
+    if (ph >= 1) { ph -= 1; src += 1; }
+    let y = 0;
+    F[syl % 5].forEach((f, k) => {
+      const R = Math.exp(-Math.PI * (80 + 40 * k) / SR), c = 2 * R * Math.cos(2 * Math.PI * f / SR), s = res[k], o = src + c * s[0] - R * R * s[1];
+      s[1] = s[0]; s[0] = o; y += o / (k + 1);
+    });
+    x[i] = y * Math.sin(Math.PI * st / 0.22);
+  }
+  return norm(x, db);
+}
+/** 风扇似的底噪：白噪声 + 低频轰轰 */
+function hum(sec, db, seed) { const n = Math.round(sec * SR), x = new Float32Array(n), r = lcg(seed); let b = 0; for (let i = 0; i < n; i++) { const w = r(); b = 0.995 * b + 0.05 * w; x[i] = b + 0.2 * w; } return norm(x, db); }
+/** 鼾声似的：每 4 秒一下、每下 1–1.4 秒（占 25–35%），200 Hz 左右的低通噪声带 30 Hz 上下的颤动，比底噪响 rel dB */
+function snores(sec, floorDb, { rel = 8, every = 4, seed = 3 } = {}) {
+  const n = Math.round(sec * SR), x = new Float32Array(n), r = lcg(seed), r2 = lcg(seed + 1);
+  for (let t = 1; t + 1.4 < sec; t += every) {
+    const D = Math.round((1.2 + 0.2 * r()) * SR), s0 = Math.round(t * SR), b = new Float32Array(D), fl = 30 + 5 * r();
+    let y1 = 0, y2 = 0, e = 0;
+    for (let i = 0; i < D; i++) { y1 += 0.08 * (r2() - y1); y2 += 0.08 * (y1 - y2); b[i] = y2 * Math.sin(Math.PI * i / D) ** 0.7 * (0.6 + 0.4 * Math.sin(2 * Math.PI * fl * i / SR)); e += b[i] * b[i]; }
+    const k = Math.pow(10, (floorDb + rel) / 20) / Math.sqrt(e / D);
+    for (let i = 0; i < D; i++) x[s0 + i] += b[i] * k;
+  }
+  return x;
+}
+const place = (sec, x, total) => { const o = new Float32Array(Math.round(total * SR)); o.set(x, Math.round(sec * SR)); return o; };
+/** [a, b) 秒里有多少被这些窗口盖住了（0..1） */
+const covered = (segs, [a, b]) => segs.reduce((s, [x, y]) => s + Math.max(0, Math.min(b * SR, y) - Math.max(a * SR, x)), 0) / ((b - a) * SR);
+const sentSec = (segs) => segs.reduce((s, [a, b]) => s + b - a, 0) / SR;
+
+test('真模型：风扇声里一阵阵的鼾声不送去识别（只按能量会送）；鼾声中间、很小声的「元音」都找得到；说话识别关掉以后才开 Whisper', async (t) => {
+  const rel = Object.getOwnPropertyDescriptor(process, 'release');
+  let tf;
+  Object.defineProperty(process, 'release', { value: { name: 'browser' }, configurable: true });
+  try { tf = await import(pathToFileURL(path.join(root, 'vendor/transformers/transformers.min.js')).href); }
+  finally { Object.defineProperty(process, 'release', rel); }
+  if (!(tf.env.backends && tf.env.backends.onnx && tf.env.backends.onnx.wasm)) { t.skip('这一版 transformers.js 在 Node 里不用 onnxruntime-web'); return; }
+  tf.env.logLevel = 40;
+  tf.env.fetch = async (u) => {
+    const s = String(u);
+    if (!s.startsWith('file:')) throw new Error('测试里不联网：' + s);
+    try { return new Response(fs.readFileSync(fileURLToPath(s))); } catch (e) { return new Response('', { status: 404 }); }
+  };
+  const events = [];
+  let cur = null;
+  const deliver = (to, m, transfer) => { const got = transfer && transfer.length ? structuredClone(m, { transfer }) : m; setTimeout(() => to(got), 0); };
+  globalThis.self = { postMessage: (m, transfer) => { const w = cur; deliver((d) => { if (w && !w.terminated && w.onmessage) w.onmessage({ data: d }); }, m, transfer); }, addEventListener() {} };
+  class InProc {
+    constructor(url) { this.url = String(url); this.terminated = false; cur = this; events.push('vad.new'); }
+    postMessage(m, transfer) { deliver((d) => { if (!this.terminated) self.onmessage({ data: d }); }, m, transfer); }
+    terminate() { this.terminated = true; if (cur === this) cur = null; events.push('vad.terminate'); }
+  }
+  try {
+    await import(pathToFileURL(path.join(root, 'src/workers/vad.worker.js')).href);
+    const real = () => createVad({ Worker: InProc, url: 'vad.worker.js' });
+    // 40 秒：风扇似的底噪 −50 dBFS + 鼾声（比底噪响 8 dB）；8–11 秒、25–28 秒是「元音」（−45 dBFS）
+    const noisy = mix(hum(40, -50, 1), snores(40, -50));
+    const talk = mix(noisy, place(8, vowels(3, -45, 8), 40), place(25, vowels(3, -45, 9), 40));
+    const a = await T.findSpeech(noisy, { vad: real() });
+    assert.equal(a.finder, 'vad', a.error);
+    assert.deepEqual(a.segs, [], '只有鼾声：不识别');
+    assert.ok(T.speechSegments(noisy).length >= 5, '只按能量：鼾声都送去识别');
+    const b = await T.findSpeech(talk, { vad: real() });
+    assert.equal(b.finder, 'vad', b.error);
+    assert.equal(b.segs.length, 2, JSON.stringify(secs(b.segs)));
+    assert.ok(covered(b.segs, [8, 11]) > 0.9 && covered(b.segs, [25, 28]) > 0.9, JSON.stringify(secs(b.segs)));
+    // 说完 2 秒以内的一下鼾声会跟着进那个窗口（隔得近的几句一起算够不够长）：每个窗口多一两秒，还是比只按能量少一半多
+    assert.ok(sentSec(b.segs) < 12, `送去识别 ${sentSec(b.segs)} 秒`);
+    assert.ok(sentSec(T.speechSegments(talk)) > 20, '只按能量：大半段都送去识别');
+    assert.ok(b.ran < talk.length, '底噪那几秒没跑');
+    // 很安静的屋里（底噪 −75 dBFS）很小声的「元音」（−60 dBFS）：放大了给识别，找得全；只按能量只找到一点
+    const soft = mix(hum(40, -75, 1), place(8, vowels(3, -60, 8), 40), place(25, vowels(3, -60, 9), 40));
+    const c = await T.findSpeech(soft, { vad: real() });
+    assert.ok(covered(c.segs, [8, 11]) > 0.95 && covered(c.segs, [25, 28]) > 0.95, JSON.stringify(secs(c.segs)));
+    const e = T.speechSegments(soft);
+    assert.ok(covered(e, [8, 11]) < 0.5 && covered(e, [25, 28]) < 0.5, JSON.stringify(secs(e)));
+    // 整个识别：真的说话识别 + 假的 Whisper worker
+    events.length = 0;
+    const { FW, made } = fakeWorkers(okScript);
+    class Logged extends FW { constructor(...x) { super(...x); events.push('whisper.new'); } }
+    const r = await T.transcribe({ blob: new Blob(['x']), model: 'base' }, deps({ Worker: Logged, decode: async () => talk, createVad: real }));
+    assert.equal(r.finder, 'vad');
+    assert.equal(r.segs, 2);
+    assert.deepEqual(events, ['vad.new', 'vad.terminate', 'whisper.new']);
+    assert.ok(made[0].terminated);
+  } finally { delete globalThis.self; }
 });

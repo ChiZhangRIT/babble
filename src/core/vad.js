@@ -67,7 +67,8 @@ const msgOf = (e) => (e && (e.message || e.name)) || String(e);
  * @returns {{ readonly state: 'idle'|'loading'|'ready'|'off', load(): Promise<boolean>,
  *   push(pcm: Float32Array): Promise<Float32Array|null>, reset(): void, restart(): Promise<boolean>, close(): void,
  *   stats(): { blocks: number, msAvg: number|null, loadMs: number|null, lastError: string|null } }}
- *   push：pcm 4096 个样本（转交，之后别再用）→ 8 个概率；load：false = 用不了；msAvg：worker 里每块实际算了多少毫秒（平均）
+ *   push：pcm 4096 个样本（转交，之后别再用）→ 8 个概率（512 的别的整数倍也行：转文字一次交 1 秒 = 32 步）；load：false = 用不了；
+ *   msAvg：worker 里每块实际算了多少毫秒（平均）
  */
 export function createVad({ Worker: W = globalThis.Worker, url = new URL('../workers/vad.worker.js', import.meta.url) } = {}) {
   let state = 'idle', w = null, loading = null, loaded = null, closed = false, t0 = 0, seq = 0;

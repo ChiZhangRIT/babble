@@ -7,8 +7,10 @@ import { blankState, makeEntry, normalizeEntry, goneShas } from '../src/core/sto
 import { wavBlob } from '../src/core/nightDetect.js';
 import { recTimeFields } from '../src/core/drafts.js';
 import { sha256Hex } from '../src/core/sha256.js';
+import { extForMime } from '../src/core/audioStore.js';
 
-// 床头模式的「留下」：候选片段 → 录音库里的 WAV → 一条待整理。声音全是编的数字序列（仓库是公开的），不是录音
+// 床头模式的「留下」：候选片段 → 录音库里的 m4a（编不了是 WAV）→ 一条待整理。声音全是编的数字序列（仓库是公开的），不是录音。
+// Node 里没有 AudioEncoder：不给 toM4a 时走 WAV（下面前一半的测试）；m4a 的用假的 toM4a（后面「m4a」开头的测试）
 const SR = 16000;
 const TZ = 'America/Los_Angeles';
 const T0 = Date.UTC(2026, 10, 18, 10, 13, 5);          // 洛杉矶 11月18日 凌晨2:13:05（算 11月17日那一夜）
@@ -274,6 +276,10 @@ test('itemFor：§4.5 的字段；时长按 samples，WAV 短了按 WAV；合成
   assert.equal(itemFor({ sha256: sha, mime: 'audio/wav', bytes: 44 + SR * 2 }, cand, { tz: TZ }).durationSec, 1);    // 分片缺了
   assert.equal(itemFor({ sha256: sha, mime: 'audio/wav', bytes: null }, cand, { tz: TZ }).durationSec, 24.5);
   assert.equal(itemFor({ sha256: sha, bytes: 100 }, cand, { tz: TZ }).mime, 'audio/wav');
+  // m4a：时长按 PCM（给了 samples 按它，不然按 cand.samples），和文件多大无关
+  assert.equal(itemFor({ sha256: sha, mime: 'audio/mp4', bytes: 1000 }, cand, { tz: TZ }).durationSec, 24.5);
+  assert.equal(itemFor({ sha256: sha, mime: 'audio/mp4', bytes: 1000 }, cand, { tz: TZ, samples: 2 * SR }).durationSec, 2);
+  assert.equal(itemFor({ sha256: sha, mime: 'audio/mp4', bytes: 1000 }, cand, { tz: TZ }).mime, 'audio/mp4');
   // 存进条目时这些新字段不会被整理掉
   const e = normalizeEntry({ id: 'e1', audio: [itemFor({ sha256: sha, mime: 'audio/wav', bytes: 1000 }, cand, { merged: true, tz: TZ, now: 7000 })] }, 'e1');
   assert.deepEqual([e.audio[0].startedAt, e.audio[0].name], [T0, '02:13']);
@@ -295,4 +301,210 @@ test('entryFieldsFor：最早一段的开头、它那一晚的时区和日期；
 
   const lost = entryFieldsFor([{ id: 'c_3', s: 'n_x', startAt: T0 }], SESSIONS);
   assert.deepEqual([lost.status, lost.source, lost.timeSource], ['inbox', { kind: 'app', night: null }, 'recorder']);
+});
+
+// ---------- m4a ----------
+
+/** 假的 toM4a：每次编出来都不一样（编号不同 → sha256 不同，像不保证一模一样的编码器）；same：同样的 PCM 编出来一样；off：编不了（null） */
+function fakeM4a({ off = false, same = false } = {}) {
+  const calls = [];
+  let k = 0;
+  const fn = async (p, o) => {
+    calls.push({ pcm: p, ...o });
+    if (off) return null;
+    return new Blob([same ? 'm4a ' : `m4a #${++k} `, p.slice().buffer], { type: 'audio/mp4' });
+  };
+  return Object.assign(fn, { calls });
+}
+/** 「撤销」：候选去掉链接（sha256 留着），条目进「最近删除」 */
+async function unkeep(night, s, entryId, ids, at = 9100) {
+  for (const id of ids) await night.patchCand(id, { entryId: null, keptAt: null });
+  s.data.entries[entryId] = { ...s.data.entries[entryId], deleted: true, deletedAt: at };
+}
+const restorer = (s) => (id) => { const { deleted, deletedAt, ...e } = s.data.entries[id]; s.data.entries[id] = e; return e; };
+
+test('m4a：能编就存 audio/mp4（同步传成 .m4a），时长按 PCM；编码器收到这段的 PCM、采样率和开始时刻；新编的先给候选记下 sha256', async () => {
+  const { night, audio, s, putClips, deps } = setup();
+  deps.toM4a = fakeM4a();
+  const samples = 2.5 * SR;
+  const { c, pcm: p } = await seedCand(night, 'c_1', { startAt: T0, samples, have: 3 * SR });
+  const e = await keepClips(deps, [c], SESSIONS, { now: 9000 });
+  const [a] = e.audio;
+  const stored = await audio.getClip(a.sha256);
+  assert.deepEqual([a.mime, a.durationSec, a.bytes, a.startedAt], ['audio/mp4', 2.5, stored.blob.size, T0]);
+  assert.deepEqual([putClips.length, putClips[0].opts.mime, stored.mime, extForMime(stored.mime)], [1, 'audio/mp4', 'audio/mp4', 'm4a']);
+  assert.equal(a.sha256, await sha256Hex(stored.blob));
+  assert.equal(deps.toM4a.calls.length, 1);
+  const call = deps.toM4a.calls[0];
+  assert.ok(call.pcm instanceof Int16Array);
+  assert.deepEqual(call.pcm, p);                                         // 只到 samples（分片多出来的半秒不要）
+  assert.deepEqual([call.sr, call.createdAt], [SR, T0]);
+  const c2 = await night.getCand('c_1');
+  assert.deepEqual([c2.entryId, c2.sha256, c2.keptAt], [e.id, a.sha256, 9000]);
+  assert.equal(night.calls.filter(x => x === 'patchCand').length, 2);     // 先记 sha256，再记进了哪一条
+  assert.equal(audio.clips.size, 1, '不另存 WAV');
+});
+
+test('m4a：几段一起留，每段各编一份；编不了的那段存 WAV（一条里两种都行）', async () => {
+  const { night, deps } = setup();
+  const m = fakeM4a();
+  let n = 0;
+  deps.toM4a = (p, o) => (++n === 2 ? Promise.resolve(null) : m(p, o));
+  const { c: c1 } = await seedCand(night, 'c_1', { startAt: T0, samples: 2 * SR, seed: 1 });
+  const { c: c2 } = await seedCand(night, 'c_2', { startAt: T0 + 60e3, samples: 3 * SR, seed: 2 });
+  const { c: c3 } = await seedCand(night, 'c_3', { startAt: T0 + 120e3, samples: SR, seed: 3 });
+  const e = await keepClips(deps, [c3, c2, c1], SESSIONS, { now: 9000 });
+  assert.deepEqual(e.audio.map(a => [a.mime, a.durationSec, a.name]), [['audio/mp4', 2, '02:13'], ['audio/wav', 3, '02:14'], ['audio/mp4', 1, '02:15']]);
+  assert.equal(e.audio[1].bytes, 44 + 3 * SR * 2);
+});
+
+test('m4a：编不了（不支持、出错、核对不过 → toM4a 给 null）→ 照旧存 WAV，候选只改一次', async () => {
+  const { night, audio, deps } = setup();
+  deps.toM4a = fakeM4a({ off: true });
+  const { c, pcm: p } = await seedCand(night, 'c_1', { startAt: T0, samples: 2 * SR });
+  const e = await keepClips(deps, [c], SESSIONS, { now: 9000 });
+  assert.deepEqual([e.audio[0].mime, e.audio[0].bytes, e.audio[0].durationSec], ['audio/wav', 44 + 2 * SR * 2, 2]);
+  const buf = new Uint8Array(await (await audio.getClip(e.audio[0].sha256)).blob.arrayBuffer());
+  assert.deepEqual(new Int16Array(buf.slice(44).buffer), p);
+  assert.equal(deps.toM4a.calls.length, 1);
+  assert.equal(night.calls.filter(x => x === 'patchCand').length, 1);
+});
+
+test('m4a：toM4a 自己抛错（注入的）也只记日志、存 WAV', async () => {
+  const { night, deps } = setup();
+  deps.toM4a = async () => { throw new Error('boom (injected)'); };
+  const { c } = await seedCand(night, 'c_1', { startAt: T0, samples: 2 * SR });
+  const [e, warned] = await quiet(() => keepClips(deps, [c], SESSIONS, { now: 9000 }));
+  assert.equal(e.audio[0].mime, 'audio/wav');
+  assert.equal(warned.length, 1);
+});
+
+test('m4a：留下、撤销、再留同样这几段 → 用录音库里记着的那份（不重编，sha256 不变），恢复「最近删除」里的那条', async () => {
+  const { night, audio, s, puts, deps } = setup();
+  deps.toM4a = fakeM4a();
+  deps.restore = restorer(s);
+  const { c: c1 } = await seedCand(night, 'c_1', { startAt: T0, samples: 2 * SR, seed: 1 });
+  const { c: c2 } = await seedCand(night, 'c_2', { startAt: T0 + 60e3, samples: 2 * SR, seed: 2 });
+  const e1 = await keepClips(deps, [c1, c2], SESSIONS, { now: 9000 });
+  const shas = e1.audio.map(a => a.sha256);
+  await unkeep(night, s, e1.id, ['c_1', 'c_2']);
+  const again = [await night.getCand('c_1'), await night.getCand('c_2')];
+  assert.deepEqual(again.map(c => c.sha256), shas);
+  const e2 = await keepClips(deps, again, SESSIONS, { now: 9400 });
+  assert.equal(e2.id, e1.id);
+  assert.deepEqual(e2.audio.map(a => a.sha256), shas);
+  assert.equal(deps.toM4a.calls.length, 2, '没有重编');
+  assert.deepEqual([puts.length, audio.clips.size], [1, 2]);
+  assert.equal((await night.getCand('c_1')).entryId, e1.id);
+
+  // 记着的那份已经不在录音库里（也不是永久删除了）：重编一份（编出来不一样 → 新建一条）
+  await unkeep(night, s, e1.id, ['c_1'], 9500);
+  audio.clips.delete(shas[0]);
+  const e3 = await keepClips(deps, [await night.getCand('c_1')], SESSIONS, { now: 9600 });
+  assert.notEqual(e3.audio[0].sha256, shas[0]);
+  assert.equal(e3.audio[0].mime, 'audio/mp4');
+  assert.equal(deps.toM4a.calls.length, 3);
+  assert.equal((await night.getCand('c_1')).sha256, e3.audio[0].sha256);
+});
+
+test('m4a：存好条目、候选的链接没改上（被打断）→ 再留一次只补链接（新编的已经先记下了 sha256，不重编），不建第二条', async () => {
+  const { night, s, puts, deps } = setup();
+  deps.toM4a = fakeM4a();
+  const put = deps.put;
+  deps.put = (e, o) => { night.fail.patchCand = 2; return put(e, o); };   // 先记 sha256 成功，之后两次改链接失败
+  const { c: c1 } = await seedCand(night, 'c_1', { startAt: T0, samples: 2 * SR, seed: 1 });
+  const { c: c2 } = await seedCand(night, 'c_2', { startAt: T0 + 60e3, samples: 2 * SR, seed: 2 });
+  const [e1, warned] = await quiet(() => keepClips(deps, [c1, c2], SESSIONS, { now: 9000 }));
+  assert.equal(warned.length, 2);
+  const half = await night.getCand('c_1');
+  assert.deepEqual([half.entryId, half.sha256], [undefined, e1.audio[0].sha256]);
+  deps.put = put;
+  const e2 = await keepClips(deps, [half, await night.getCand('c_2')], SESSIONS, { now: 9500 });
+  assert.equal(e2.id, e1.id);
+  assert.deepEqual([puts.length, entriesOf(s).length, deps.toM4a.calls.length], [1, 1, 2]);
+  assert.equal((await night.getCand('c_2')).entryId, e1.id);
+});
+
+test('m4a：新编的先给候选记下 sha256 再存进录音库；记不上 → 抛出去，录音库里不放、条目不建（不会有一份谁都不认得的 m4a）；再点一次照常留下', async () => {
+  const { night, audio, s, puts, putClips, deps } = setup({ fail: { patchCand: 1 } });
+  deps.toM4a = fakeM4a();
+  const order = [], realPatch = night.patchCand, realPut = audio.putClip;
+  night.patchCand = (id, p) => { order.push('patch:' + Object.keys(p).join(',')); return realPatch(id, p); };
+  audio.putClip = (b, o) => { order.push('putClip'); return realPut(b, o); };
+  const { c } = await seedCand(night, 'c_1', { startAt: T0, samples: 2 * SR });
+  await assert.rejects(keepClips(deps, [c], SESSIONS, { now: 9000 }), /patchCand \(injected\)/);
+  assert.deepEqual([putClips.length, audio.clips.size, puts.length, entriesOf(s).length], [0, 0, 0, 0]);
+  assert.equal((await night.getCand('c_1')).sha256, undefined);
+  order.length = 0;
+  const e = await keepClips(deps, [await night.getCand('c_1')], SESSIONS, { now: 9100 });
+  assert.deepEqual(order, ['patch:sha256', 'putClip', 'patch:entryId,sha256,keptAt']);
+  assert.equal(e.audio[0].mime, 'audio/mp4');
+  const c2 = await night.getCand('c_1');
+  assert.deepEqual([c2.sha256, c2.entryId], [e.audio[0].sha256, e.id]);
+  assert.ok(audio.clips.has(c2.sha256));
+  // WAV（编不了）不用先记：WAV 的 sha256 总能从 PCM 算出来
+  const { c: w } = await seedCand(night, 'c_2', { startAt: T0 + 60e3, samples: SR, seed: 2 });
+  deps.toM4a = fakeM4a({ off: true });
+  order.length = 0;
+  await keepClips(deps, [w], SESSIONS, { now: 9200 });
+  assert.deepEqual(order, ['putClip', 'patch:entryId,sha256,keptAt']);
+});
+
+test('m4a：以前的版本留下的 WAV 原样用——候选记着 WAV 的 sha256、或者这段的 WAV 已经在录音库里 → 不编 m4a、不另存一份', async () => {
+  const { night, audio, s, puts, deps } = setup({ fail: { patchCand: 1 } });
+  deps.restore = restorer(s);
+  deps.toM4a = fakeM4a({ off: true });                                   // 「以前的版本」：只存 WAV
+  const { c: c1 } = await seedCand(night, 'c_1', { startAt: T0, samples: 2 * SR, seed: 1 });
+  const { c: c2 } = await seedCand(night, 'c_2', { startAt: T0 + 600e3, samples: 2 * SR, seed: 2 });
+  const [w2] = await quiet(() => keepClips(deps, [c2], SESSIONS, { now: 8000 }));   // 这次改链接失败：候选没记下 sha256
+  assert.equal((await night.getCand('c_2')).sha256, undefined);
+  const w1 = await keepClips(deps, [c1], SESSIONS, { now: 8500 });
+  await unkeep(night, s, w1.id, ['c_1']);
+  assert.equal(audio.clips.size, 2);
+
+  deps.toM4a = fakeM4a();                                                // 更新到这一版
+  const e1 = await keepClips(deps, [await night.getCand('c_1')], SESSIONS, { now: 9000 });
+  assert.equal(e1.id, w1.id, '恢复了那条');
+  assert.equal(e1.audio[0].mime, 'audio/wav');
+  const e2 = await keepClips(deps, [await night.getCand('c_2')], SESSIONS, { now: 9100 });
+  assert.equal(e2.id, w2.id, '只补链接');
+  assert.deepEqual([e2.audio[0].mime, (await night.getCand('c_2')).sha256], ['audio/wav', w2.audio[0].sha256]);
+  assert.deepEqual([deps.toM4a.calls.length, audio.clips.size, puts.length], [0, 2, 2]);
+});
+
+test('m4a：永久删除了的录音不能再留——编出来的 m4a、这段的 WAV（以前的版本留下的）正好是它，或者存的时候同步来了 → purged，什么都不存', async () => {
+  const { night, audio, s, puts, putClips, deps } = setup();
+  deps.toM4a = fakeM4a({ same: true });
+  // 编出来的 m4a 正好是永久删除了的
+  const { c: c1, pcm: p1 } = await seedCand(night, 'c_1', { startAt: T0, samples: 2 * SR, seed: 1 });
+  const M = await sha256Hex(await deps.toM4a(p1, {}));
+  purgeIt(s, 't_m4a', [M]);
+  await assert.rejects(keepClips(deps, [c1], SESSIONS), (err) => err.code === 'purged' && err.candId === 'c_1');
+  assert.deepEqual([putClips.length, audio.clips.size, puts.length], [0, 0, 0]);
+  assert.equal((await night.getCand('c_1')).sha256, M, '记下 sha256：昨夜页、清理认得出它');
+
+  // 这段的 WAV 是永久删除了的（以前的版本留下过、候选没记上 sha256）：不编就停
+  const { c: c2 } = await seedCand(night, 'c_2', { startAt: T0 + 60e3, samples: 2 * SR, seed: 2 });
+  const W = await sha256Hex(wavBlob([pcm(2 * SR, 2).buffer], 2 * SR, SR));
+  purgeIt(s, 't_wav', [W]);
+  const n = deps.toM4a.calls.length;
+  await assert.rejects(keepClips(deps, [c2], SESSIONS), (err) => err.code === 'purged' && err.candId === 'c_2');
+  assert.equal(deps.toM4a.calls.length, n);
+  assert.equal((await night.getCand('c_2')).sha256, W);
+
+  // 存 m4a 的时候同步来了它的永久删除：不建条目，候选记下 sha256
+  const { c: c3 } = await seedCand(night, 'c_3', { startAt: T0 + 120e3, samples: 2 * SR, seed: 3 });
+  const real = audio.putClip;
+  audio.putClip = async (blob, opts) => { const r = await real(blob, opts); purgeIt(s, 't_late', [r.sha256]); return r; };
+  await assert.rejects(keepClips(deps, [c3], SESSIONS), (err) => err.code === 'purged' && err.candId === 'c_3');
+  assert.equal(puts.length, 0);
+  const c3b = await night.getCand('c_3');
+  assert.ok(c3b.sha256 && goneShas(s).has(c3b.sha256));
+  assert.equal(c3b.entryId, undefined);
+
+  // 记着的 m4a sha256 永久删除了：什么都不读、不编
+  audio.putClip = real;
+  const gets = night.calls.filter(x => x === 'getParts').length, m = deps.toM4a.calls.length;
+  await assert.rejects(keepClips(deps, [c3b], SESSIONS), (err) => err.code === 'purged');
+  assert.deepEqual([night.calls.filter(x => x === 'getParts').length, deps.toM4a.calls.length], [gets, m]);
 });
