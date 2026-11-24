@@ -286,3 +286,13 @@ test('keptKey：已经是 m4a、转成了 → null；超过 30 分钟 → keptLo
   assert.equal(keptKey({ converted: false, why: 'bigger' }), 'keptSmall');
   for (const w of ['big', 'unsupported', 'decode', 'timeout', 'check', 'error']) assert.equal(keptKey({ converted: false, why: w }), 'kept', w);
 });
+
+
+test('移动设备按展开后的 PCM 内存预估跳过转换，不会先解码再发现太大；桌面正常转换路径仍可用', async () => {
+  const b = fakeBrowser(), blob = wavBlob([tone(24000)], 24000);
+  const r = await importM4a({ blob, durationSec: 1200 }, { ...b.opts, mobile: true });
+  assert.deepEqual([r.why, r.detail, r.blob], ['big', 'decoded-memory', blob]);
+  assert.equal(b.ac.decoded, 0, '在任何大内存解码之前就拦截');
+  const desktop = await importM4a({ blob, durationSec: 1200 }, { ...b.opts, mobile: false });
+  assert.notEqual(desktop.why, 'big'); assert.ok(b.ac.decoded > 0);
+});

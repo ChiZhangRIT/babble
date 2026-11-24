@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readMp4Meta, parseDay } from '../src/core/mp4meta.js';
+import { readMp4Meta, parseDay, readAudioHeader, AUDIO_HEAD_BYTES } from '../src/core/mp4meta.js';
 
 // ---------- 拼盒子 ----------
 const enc = new TextEncoder();
@@ -159,4 +159,48 @@ test('真的碎片化 m4a（ffmpeg empty_moov）', { skip: !existsSync(frag) && 
   const m = readMp4Meta(readFileSync(frag));
   assert.equal(m.fragmented, true);
   assert.equal(m.durationSec, null);
+});
+
+
+test('大 MP4 随机读取：跳过 512 MB 音频，尾部 moov 的时间、时长、AAC 编码仍保留（32 / 64 位盒子）', async () => {
+  const when = '2026-01-02T03:04:05Z';
+  const track = box('trak', box('mdia', mdhd0(mac(when), 16000, 16000 * 90), hdlr('soun'),
+    box('minf', box('stbl', full('stsd', 0, u32(1), box('mp4a', new Uint8Array(28)))))));
+  const moov = box('moov', mvhd0(mac(when), 1000, 90000), track), ft = ftyp();
+  for (const wide of [false, true]) {
+    const mdatSize = 512 * 1024 * 1024 + (wide ? 16 : 8);
+    const header = wide ? cat(u32(1), type4('mdat'), u64(mdatSize)) : cat(u32(mdatSize), type4('mdat'));
+    const ranges = [[0, ft], [ft.length, header], [ft.length + mdatSize, moov]], reads = [];
+    const blob = { size: ft.length + mdatSize + moov.length,
+      arrayBuffer() { assert.fail('不得整份读入'); },
+      slice(a, b) {
+        b = Math.min(b, this.size); reads.push(b-a);
+        const out = new Uint8Array(b-a);
+        for (const [off, bytes] of ranges) {
+          const lo = Math.max(a, off), hi = Math.min(b, off + bytes.length);
+          if (hi > lo) out.set(bytes.subarray(lo-off, hi-off), lo-a);
+        }
+        return new Blob([out]);
+      }
+    };
+    const r = await readAudioHeader(blob);
+    assert.equal(r.meta.createdAt.toISOString(), new Date(when).toISOString());
+    assert.equal(r.meta.durationSec, 90); assert.equal(r.aac, true);
+    assert.ok(Math.max(...reads) <= AUDIO_HEAD_BYTES);
+    assert.ok(reads.reduce((a,b)=>a+b,0) < 70000, '只读几十 KB，不随音频大小增加');
+  }
+});
+
+test('大文件元数据盒子声明过大或长度损坏：不分配声明的空间，也不会无限扫描', async () => {
+  const prefix = cat(ftyp(), u32(16*1024*1024), type4('moov'));
+  let reads = 0;
+  const blob = { size: 32*1024*1024, slice(a,b) {
+    reads++; assert.ok(b-a <= AUDIO_HEAD_BYTES);
+    const out = new Uint8Array(Math.min(b, this.size)-a);
+    if (a < prefix.length) out.set(prefix.subarray(a, Math.min(b,prefix.length)));
+    return new Blob([out]);
+  } };
+  const r = await readAudioHeader(blob);
+  assert.equal(r.aac, false); assert.equal(r.meta.durationSec, null);
+  assert.ok(reads < 10);
 });

@@ -50,7 +50,10 @@ export function idbNightStore(getIDB = () => globalThis.indexedDB) {
       req.onerror = () => { opening = null; reject(req.error || new Error('idb-open')); };
       req.onblocked = () => { /* 旧连接还开着：等它们关掉后会继续 */ };
     });
-    return opening;
+    const pending = opening;
+    // getIDB / open 也可能同步抛错；拒绝的 Promise 不能永久充当连接缓存。
+    pending.catch(() => { if (opening === pending) opening = null; });
+    return pending;
   }
 
   /** 跑一个事务（同 audioStore）：fn(tx) 发请求，返回「取结果」的函数；complete 了才 resolve。InvalidStateError 重开一次再试 */

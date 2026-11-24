@@ -2,7 +2,25 @@
 // 有 crypto.subtle（https、localhost、Node ≥ 20）就用它；没有（比如用局域网 http 地址打开）退回下面的纯 JS 实现，结果一样。
 
 /** @param {Blob|ArrayBuffer|ArrayBufferView} input → Promise<string> 64 位小写十六进制 */
+export const HASH_CHUNK_BYTES = 1024 * 1024;
+const BLOB_HASH_THRESHOLD = 4 * HASH_CHUNK_BYTES;
+
 export async function sha256Hex(input) {
+  if (input && typeof input.slice === 'function' && Number.isFinite(input.size) && input.size > BLOB_HASH_THRESHOLD) {
+    const state = sha256State();
+    for (let off = 0; off < input.size; off += HASH_CHUNK_BYTES) {
+      const bytes = new Uint8Array(await input.slice(off, off + HASH_CHUNK_BYTES).arrayBuffer());
+      state.update(bytes);
+      // 大文件分块计算，避免整份读进内存，也给取消、导航等事件留机会。
+      if (off + bytes.length < input.size) await new Promise(resolve => {
+        if (typeof MessageChannel !== 'function') { setTimeout(resolve, 0); return; }
+        const ch = new MessageChannel();
+        ch.port1.onmessage = () => { ch.port1.close(); ch.port2.close(); resolve(); };
+        ch.port2.postMessage(0);
+      });
+    }
+    return state.digest();
+  }
   const bytes = await bytesOf(input);
   const subtle = globalThis.crypto && globalThis.crypto.subtle;
   if (subtle) {
@@ -35,16 +53,17 @@ const ror = (x, n) => (x >>> n) | (x << (32 - n));
 
 /** @param {Uint8Array} bytes → 64 位小写十六进制（同步；导出给测试用） */
 export function sha256Js(bytes) {
-  const n = bytes.length;
-  const total = Math.ceil((n + 9) / 64) * 64;          // 补 0x80、补零、末尾 8 字节位长
-  const m = new Uint8Array(total);
-  m.set(bytes); m[n] = 0x80;
-  const dv = new DataView(m.buffer);
-  dv.setUint32(total - 8, Math.floor(n / 0x20000000)); // 位长高 32 位 = n * 8 / 2^32
-  dv.setUint32(total - 4, (n * 8) >>> 0);
+  const state = sha256State();
+  state.update(bytes);
+  return state.digest();
+}
+
+// 增量 SHA-256：最多保留一个 64 字节尾块，Blob 调用方一次只提供 1 MB。
+function sha256State() {
   const H = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
-  const W = new Uint32Array(64);
-  for (let off = 0; off < total; off += 64) {
+  const W = new Uint32Array(64), tail = new Uint8Array(64), tailView = new DataView(tail.buffer);
+  let used = 0, length = 0;
+  function block(dv, off) {
     for (let i = 0; i < 16; i++) W[i] = dv.getUint32(off + i * 4);
     for (let i = 16; i < 64; i++) {
       const a = W[i - 15], b = W[i - 2];
@@ -58,7 +77,27 @@ export function sha256Js(bytes) {
     }
     H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
   }
-  const out = new Uint8Array(32), ov = new DataView(out.buffer);
-  for (let i = 0; i < 8; i++) ov.setUint32(i * 4, H[i]);
-  return hex(out);
+  function update(bytes) {
+    length += bytes.byteLength;
+    let off = 0;
+    if (used) {
+      const n = Math.min(64 - used, bytes.length);
+      tail.set(bytes.subarray(0, n), used); used += n; off += n;
+      if (used === 64) { block(tailView, 0); used = 0; }
+    }
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (; off + 64 <= bytes.length; off += 64) block(dv, off);
+    if (off < bytes.length) { tail.set(bytes.subarray(off), used); used += bytes.length - off; }
+  }
+  function digest() {
+    const end = new Uint8Array(used < 56 ? 64 : 128), dv = new DataView(end.buffer);
+    end.set(tail.subarray(0, used)); end[used] = 0x80;
+    dv.setUint32(end.length - 8, Math.floor(length / 0x20000000));
+    dv.setUint32(end.length - 4, (length * 8) >>> 0);
+    for (let off = 0; off < end.length; off += 64) block(dv, off);
+    const out = new Uint8Array(32), ov = new DataView(out.buffer);
+    for (let i = 0; i < 8; i++) ov.setUint32(i * 4, H[i]);
+    return hex(out);
+  }
+  return { update, digest };
 }

@@ -1098,104 +1098,19 @@ test('旧版本的设备记进同步的 data.oldSeen：没正好拉到那一版�
   assert.equal(gh.writes().length, n, '之后谁都不再传');
 });
 
-test('清理云端历史：只剩一个根提交；永久删除了又被放回来的文件不带上；别的设备拿旧 sha 照样能传；commits() 只剩一个', async () => {
-  const { gh, A, B, e, sha } = await twoDevices();
-  const keep = await A.record('留着的');
-  await A.run(); await B.run();
-  A.trash(e.id); await A.run(); A.purge(e.id); await A.run(); await B.run();
-  assert.ok(!gh.files.has(clipPath(sha)));
-  let lists = 0, markAtPatch;
-  const realFetch = gh.fetch;
-  gh.fetch = async (url, opt = {}) => {
-    if ((opt.method || 'GET') === 'GET' && url.includes('/git/ref/') && ++lists === 2) gh.putFile(clipPath(sha), new TextEncoder().encode('旧版本又传上来的'));   // 清理那一刻有人放回来
-    if (opt.method === 'PATCH' && !markAtPatch) { markAtPatch = A.local.squashMark; await B.run(); }   // B 在强制更新前一刻拉到了 A 刚强制传的那份
-    return realFetch(url, opt);
-  };
-  const before = gh.chain().length;
-  assert.ok(before > 3);
-  const r = await A.sync.squash();
-  assert.equal(r.ok, true, JSON.stringify(r));
-  assert.equal(r.branch, 'main');
-  assert.equal(r.commit, gh.head);
-  assert.deepEqual(r.missing, []);
-  assert.ok(markAtPatch && markAtPatch.R === r.commit, '强制更新之前记下了 squashMark');
-  assert.deepEqual(gh.objs.get(gh.head).parents, [], '根提交');
-  assert.equal(gh.chain().length, 1);
-  assert.ok(!gh.files.has(clipPath(sha)), '放回来的那段不在新的历史里');
-  assert.ok(gh.files.has(clipPath(keep.audio[0].sha256)));
-  assert.match(gh.objs.get(gh.head).message, /^清理历史（Mac）$/);
-  assert.equal((await A.sync.commits()).length, 1);
-  assert.equal(gh.json().device, 'Mac', 'babble.json 是刚强制传的那份');
-  // B 带着清理前拿到的 sha 传：babble.json 的内容没变、blob sha 也没变，照样成功
-  B.put({ id: 'e_after', text: '清理以后记的' });
-  const bsha = B.cfg.sha;
-  assert.equal(bsha, gh.files.get(SYNC_FILE).sha);
-  gh.log.length = 0;
-  assert.equal((await B.run()).ok, true);
-  assert.equal(gh.log.filter(l => l === 'PUT /repos/me/data/contents/babble.json').length, 1, '一次就传上去了（没有 409）');
-  assert.ok(gh.json().state.data.entries.e_after);
-  // 再清理一次：已经只有一个提交（B 刚传的不算根提交 → 又能清理）
-  gh.fetch = realFetch;
-  const again = await A.sync.squash();
-  assert.equal(again.ok, true);
-  const third = await A.sync.squash();
-  assert.deepEqual({ ok: third.ok, already: third.already }, { ok: true, already: true });
-});
-
-test('清理云端历史时发现 babble.json 被别人（旧版本）改过：先合并、再强制传一遍才清理', async () => {
+test('暂停云端历史重写：直接调用也不发任何请求、不覆盖另一台设备的新提交，普通同步照常', async () => {
   const gh = mockGitHub(), A = device(gh, 'Mac');
-  A.put({}); await A.run(); A.put({}); await A.run();
-  let lists = 0;
-  const realFetch = gh.fetch;
-  gh.fetch = async (url, opt = {}) => {
-    if ((opt.method || 'GET') === 'GET' && url.includes('/git/ref/') && ++lists === 2) gh.pushJson(s => { s.data.entries.e_old = makeEntry({ id: 'e_old', text: '旧版本刚记的' }); });
-    return realFetch(url, opt);
-  };
-  const r = await A.sync.squash();
-  assert.equal(r.ok, true, JSON.stringify(r));
-  assert.ok(gh.json().state.data.entries.e_old, '旧版本的修改合并进来了');
-  assert.deepEqual(gh.json().features, ['purge1'], '根提交里是新版本传的那份');
-  assert.equal(gh.chain().length, 1);
-  assert.ok(A.entry('e_old'));
-});
-
-test('清理云端历史的那一刻别人传的录音丢了：看到 cloudResetAt 后对账，重新传上去', async () => {
-  const { gh, A, B } = await twoDevices();
-  const e2 = await B.record('清理时传的');
-  const s2 = e2.audio[0].sha256, bytes = new Uint8Array(await (await B.audio.getClip(s2)).blob.arrayBuffer());
-  gh.faults.push({ method: 'PATCH', path: '/git/refs/', before: () => { gh.putFile(clipPath(s2), bytes, '添加录音（iPad）'); B.audio.markUploaded(s2, true); } });
-  const r = await A.sync.squash();
-  assert.equal(r.ok, true, JSON.stringify(r));
-  assert.ok(!gh.files.has(clipPath(s2)), '那一刻传的被清理冲掉了');
-  assert.equal((await B.audio.getClip(s2)).uploaded, true, 'B 以为传好了');
-  // app.js：清理成功后写同步的 cloudResetAt
-  A.state.settings.cloudResetAt = Date.now(); A.state.settingsAt.cloudResetAt = Date.now(); A.version++; A.cfg.dirty = true;
-  await A.run();
-  await B.run();
-  assert.ok(gh.files.has(clipPath(s2)), 'B 看到 cloudResetAt，对账后重传');
-  assert.ok(gh.json().state.data.entries[e2.id]);
-});
-
-test('清理云端历史：分支有保护 → protected，什么都没变；还有录音没传完 → squashPending，不碰提交历史', async () => {
-  const gh = mockGitHub(), A = device(gh, 'Mac');
-  A.put({}); await A.run(); A.put({}); await A.run();
-  gh.protected = true;
-  const head = gh.head;
-  const r = await A.sync.squash();
-  assert.deepEqual(r, { ok: false, error: { code: 'protected', vars: { branch: 'main' } } });
-  assert.ok(gh.chain().length > 1, '历史没变');
-  assert.ok(gh.chain().includes(head));
-  assert.equal(A.local.squashMark, null, '明确没改成：记号清掉');
-  gh.protected = false;
-  await A.record('传不上去');
-  gh.faults.push({ method: 'PUT', path: '/contents/audio/', status: 500, times: 9 });
-  gh.log.length = 0;
-  const p = await A.sync.squash();
-  assert.deepEqual(p, { ok: false, error: { code: 'squashPending', vars: {} } });
-  assert.equal(gh.log.filter(l => l.startsWith('POST') || l.startsWith('PATCH')).length, 0, '不碰提交历史');
-  assert.equal(A.cfg.err, null, '清理的错误不记进同步状态');
-  const off = device(gh, 'Off'); off.cfg = null;
-  assert.deepEqual(await off.sync.squash(), { ok: false, skipped: true });
+  A.put({ id: 'local', text: '编的本机记录' }); await A.run();
+  gh.pushJson(s => { s.data.entries.remote = makeEntry({ id: 'remote', text: '编的另一台设备记录' }); }, { device: 'iPhone', features: FEATURES });
+  const head = gh.head, log = gh.log.length;
+  assert.deepEqual(await A.sync.squash(), { ok: false, error: { code: 'squashDisabled', vars: {} } });
+  assert.equal(gh.log.length, log, '包括旧页面直接调用也不发强制更新请求');
+  assert.equal(gh.head, head);
+  assert.ok(gh.json().state.data.entries.remote);
+  assert.equal((await A.run()).ok, true);
+  assert.ok(A.entry('remote'), '普通同步仍能拉到另一台设备的记录');
+  A.cfg = null;
+  assert.deepEqual(await A.sync.squash(), { ok: false, skipped: true });
 });
 
 test('两台设备同时永久删除同一条：合并到一样；只有一次删除提交生效', async () => {
@@ -1348,7 +1263,7 @@ test('historyInfo：提交数（Link rel="last"）、默认分支、别的分支
   assert.equal(await A.sync.historyInfo(), null);
 });
 
-test('默认分支不是 main（名字里有 /）：删录音、清理历史都改那个分支', async () => {
+test('默认分支不是 main（名字里有 /）：删录音改那个分支，历史重写仍暂停', async () => {
   const gh = mockGitHub();
   gh.branch = 'data/live'; gh.branches = ['data/live'];
   const A = device(gh, 'Mac');
@@ -1357,8 +1272,9 @@ test('默认分支不是 main（名字里有 /）：删录音、清理历史都�
   A.trash(e.id); await A.run(); A.purge(e.id); await A.run();
   assert.ok(gh.log.some(l => l.startsWith('PATCH /repos/me/data/git/refs/heads/data/live')));
   assert.ok(!gh.files.has(clipPath(e.audio[0].sha256)));
-  assert.equal((await A.sync.squash()).ok, true);
-  assert.equal(gh.chain().length, 1);
+  const head = gh.head;
+  assert.equal((await A.sync.squash()).error.code, 'squashDisabled');
+  assert.equal(gh.head, head);
 });
 
 test('旧版本在墓碑上点了「恢复」（没有 deleted）：传一份改回墓碑的，旧版本那边又回到「最近删除」', async () => {

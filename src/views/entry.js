@@ -16,9 +16,9 @@ import { fmtEntryDate, fmtDate, fmtTime, fmtYear, fmtInstant, localParts, system
 import { parseDialogue, firstNNLine, segments, isDescOnly } from '../core/dialogue.js';
 import { highlight } from '../core/search.js';
 import { clipLabel, clipFileStem, ownName, origBase, renameClip, CLIP_NAME_MAX } from '../core/clips.js';
-import { readMp4Meta } from '../core/mp4meta.js';
+import { readAudioHeader } from '../core/mp4meta.js';
 import { mimeForFile, baseMime, extForMime } from '../core/audioStore.js';
-import { importM4a, isAacMp4, wavDurationSec, keptKey } from '../core/importM4a.js';
+import { importM4a, wavDurationSec, keptKey } from '../core/importM4a.js';
 import { sha256Hex } from '../core/sha256.js';
 import { clipKeys } from '../core/store.js';
 import { splitExt, sanitizeFileName } from '../core/util.js';
@@ -144,13 +144,11 @@ export async function readClipFiles(files, ctx, { have = null, dups = null, note
     if (!AUDIO_EXT.has(ext) && !/^audio\//.test(f.type || '')) { notes.push(t('entry.notAudio', { name: f.name })); continue; }
     try {
       const mime = mimeForFile(f);
-      let buf = await f.arrayBuffer();
-      const meta = readMp4Meta(buf);                       // 不是 mp4 也不抛错，全是 null
-      const aac = isAacMp4(buf), src = await sha256Hex(buf);
+      const { head: header, meta, aac } = await readAudioHeader(f);
+      const src = await sha256Hex(f);
       if (have && have.has(src)) { if (dups) dups.push(f.name); continue; }        // 已经在这条里：不转、不存
-      const blob = new Blob([buf], { type: mime });
-      const head = meta.durationSec || wavDurationSec(buf);
-      buf = null;                                          // 转的时候别再占一份（几十 MB 的 WAV）
+      const blob = f.slice(0, f.size, mime);
+      const head = meta.durationSec || wavDurationSec(header, f.size);
       const known = head || await probeDuration(blob);     // 转之前就知道多长：超过 30 分钟的不去解码（iPhone 上内存）
       if (!aac && !busy && !stopped()) busy = ctx.toast(t('entry.converting'), { ms: 120000 });
       const r = await importM4a({ blob, mime, sha256: src, aac, durationSec: known, createdAt: meta.createdAt || f.lastModified || null }, m4a);

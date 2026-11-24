@@ -69,24 +69,30 @@ export function pcmOf(parts, samples) {
  *   restore?: (id) => 恢复了的条目 | null（恢复「最近删除」里的条目；不给就照样新建）,
  *   toM4a?: (pcm, { sr, createdAt }) => Promise<Blob|null>（默认 core/m4a.js 的 pcmToM4a；null → 存 WAV） }
  * undoLabel 交给 put（给了外壳弹 10 秒「撤销」；昨夜页不给，自己弹）。
- * 有一段的声音已经清掉了（7 天到期、或者分片一片都没有）→ 抛 code 'gone' 的错，什么都还没存；
- * 有一段是永久删除了的录音 → 抛 code 'purged' 的错（candId 是哪一段），什么都没存；putClip 出错照样抛，条目不建；
- * 新编的 m4a 给候选记 sha256 时出错也照样抛，什么都没存
+ * 预检查发现有一段的声音已经清掉了 → 抛 code 'gone'，什么都还没存；处理途中被清掉则不建条目，已准备的文件保留供重试。
+ * 有一段是永久删除了的录音 → 抛 code 'purged' 的错（candId 是哪一段），不建条目；putClip 出错照样抛，条目不建；
+ * 新编的 m4a 给候选记 sha256 失败也抛错，不建条目；前几段已准备好的文件留在本机，重试复用。
  */
 export async function keepClips(deps, cands, sessionsById, { undoLabel, now = Date.now() } = {}) {
   const { night, audio, getState, put, newEntry = makeEntry, restore = null, toM4a = pcmToM4a } = deps;
   const list = [...cands].sort(byStart);
   if (!list.length) return null;
+  // 上一次批量处理可能只完成前几段；重新读取候选身份，重试不用依赖调用方刷新页面。
+  if (night.getCand) for (let i = 0; i < list.length; i++) {
+    const latest = await night.getCand(list[i].id);
+    if (!latest) throw gone(list[i]);
+    list[i] = { ...list[i], ...latest };
+  }
   // 0. 记着的 sha256 已经永久删除了（留下、撤销，那条后来永久删除了）：不读声音，直接不做
   const G0 = goneShas(getState()), had = list.find(c => c.sha256 && G0.has(c.sha256));
   if (had) throw purged(had);
-  // 1. 先把每段的声音（PCM）都读出来：哪一段没了就整个不做
-  const pcms = [];
+  // 1. 逐段检查声音仍在，只保留长度；不把整晚 PCM 同时放进内存。
+  const lens = [];
   for (const c of list) {
     const parts = c.gone ? [] : await night.getParts(c.id);
-    const pcm = parts.length ? pcmOf(parts.map(x => x.b), c.samples) : null;
-    if (!pcm || !pcm.length) throw gone(c);
-    pcms.push(pcm);
+    const samples = Math.min(c.samples ?? Infinity, parts.reduce((n, p) => n + Math.floor(p.b.byteLength / 2), 0));
+    if (!(samples > 0)) throw gone(c);
+    lens.push(samples);
   }
   // 要存的正好是永久删除了的录音（没记下 sha256 的、或者读的时候、编码的时候永久删除了）：存进录音库之前就停（不然录音库里又多一份）；
   // 候选记下 sha256，昨夜页把它当成已经永久删除了，清理也删得掉它的片段
@@ -97,35 +103,33 @@ export async function keepClips(deps, cands, sessionsById, { undoLabel, now = Da
   };
   // 2. 每段存哪个文件：记着的 sha256 那份还在录音库里（留下又撤销了的）→ 用它；这段的 WAV 已经在录音库里（以前的版本留下的）→ 用它；
   //    都没有 → 编 m4a（核对过的），编不了存 WAV。WAV 的 sha256 总要查：以前的版本存的就是它
-  const files = [], lens = pcms.map(p => p.length);
+  const saved = [];
   for (let i = 0; i < list.length; i++) {
-    const c = list[i], sr = c.sr || P.SR, pcm = pcms[i];
-    pcms[i] = null;                                       // 用完就放掉（10 分钟的一段 PCM 19 MB）
+    const c = list[i], sr = c.sr || P.SR;
+    let file;
     const old = c.sha256 ? await audio.getClip(c.sha256) : null;
     if (old && old.blob) {
       await refuse(c, c.sha256);
-      files.push({ blob: old.blob, mime: old.mime || baseMime(old.blob.type) || 'audio/wav' });
-      continue;
+      file = { blob: old.blob, mime: old.mime || baseMime(old.blob.type) || 'audio/wav' };
+    } else {
+      const parts = await night.getParts(c.id), pcm = pcmOf(parts.map(x => x.b), c.samples);
+      if (!pcm.length) throw gone(c);
+      lens[i] = pcm.length;
+      const wav = wavBlob([pcm], pcm.length, sr), W = await sha256Hex(wav);
+      await refuse(c, W);
+      let m4a = null;
+      if (!(await audio.hasClip(W))) {
+        try { m4a = await toM4a(pcm, { sr, createdAt: c.startAt }); } catch (e) { console.warn('night keep: m4a', e); }
+      }
+      const M = m4a ? await sha256Hex(m4a) : null;
+      if (M) await refuse(c, M);
+      file = M ? { blob: m4a, mime: 'audio/mp4', fresh: true, sha: M } : { blob: wav, mime: 'audio/wav' };
     }
-    const wav = wavBlob([pcm], pcm.length, sr), W = await sha256Hex(wav);
-    await refuse(c, W);
-    let m4a = null;
-    if (!(await audio.hasClip(W))) {
-      try { m4a = await toM4a(pcm, { sr, createdAt: c.startAt }); } catch (e) { console.warn('night keep: m4a', e); }
-    }
-    const M = m4a ? await sha256Hex(m4a) : null;
-    if (M) await refuse(c, M);
-    files.push(M ? { blob: m4a, mime: 'audio/mp4', fresh: true, sha: M } : { blob: wav, mime: 'audio/wav' });
+    // 每段先记身份、再存盘，随后放掉声音；下一段失败时不建条目，重试会复用已存好的文件。
+    if (file.fresh && c.sha256 !== file.sha) await night.patchCand(c.id, { sha256: file.sha });
+    saved.push(await audio.putClip(file.blob, { mime: file.mime }));
   }
-  // 3. 新编的 m4a 先给候选记下 sha256，再存进录音库（同样内容只存一份）：存好条目、还没改候选就被打断时，再留一次直接用这份（重编不一定是同一个 sha256），
-  //    第 4 步认得出已经在那条里；那条后来永久删除了，清理、昨夜页也认得出这段。记不上就抛出去，什么都不存
-  //   （先存后记的话，两次都记不上时录音库里就有一份谁都不认得的：再留一次重编出另一个 sha256，等于把永久删除了的录音找回来）
-  for (let i = 0; i < list.length; i++) {
-    if (files[i].fresh && list[i].sha256 !== files[i].sha) await night.patchCand(list[i].id, { sha256: files[i].sha });
-  }
-  const saved = [];
-  for (const f of files) saved.push(await audio.putClip(f.blob, { mime: f.mime }));
-  // 4. 这几段都已经在同一条（没删的）里：上次存好条目、还没来得及改候选就被打断了 → 只补链接；
+  // 3. 这几段都已经在同一条（没删的）里：上次存好条目、还没来得及改候选就被打断了 → 只补链接；
   //    不然「最近删除」里有正好是这几段的一条（留下以后撤销了）→ 恢复它（新删的优先），不建重复的。
   //    存的时候（上面在等）同步来了这几段的永久删除：不建（和下面 put 在同一拍里查，中间插不进合并）
   const state = getState(), idx = clipIndex(state), ids = saved.map(x => idx.get(x.sha256) || []);
@@ -147,7 +151,7 @@ export async function keepClips(deps, cands, sessionsById, { undoLabel, now = Da
     const audioItems = list.map((c, i) => itemFor(saved[i], c, { merged, tz: (sessionOf(sessionsById, c.s) || {}).tz, now, samples: lens[i] }));
     entry = put(newEntry({ ...entryFieldsFor(list, sessionsById), audio: audioItems }), { undoLabel });
   }
-  // 5. 候选记下进了哪一条。改不进去只记日志：条目已经建好、「撤销」也弹了；片段会显示成还没留，再点「留下」走第 4 步补上
+  // 4. 候选记下进了哪一条。改不进去只记日志：条目已经建好、「撤销」也弹了；片段会显示成还没留，再点「留下」走第 3 步补上
   for (let i = 0; i < list.length; i++) {
     try { await night.patchCand(list[i].id, { entryId: entry.id, sha256: saved[i].sha256, keptAt: now }); }
     catch (e) { console.warn('night keep: patchCand', e); }

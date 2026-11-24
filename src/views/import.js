@@ -8,10 +8,10 @@
 // deps.m4a（测试用）：importM4a 的选项（假的编码器、解码器、超时）。
 import { h, icon, toast } from '../ui/dom.js';
 import { audioPlayer, stopAll } from '../ui/player.js';
-import { readMp4Meta } from '../core/mp4meta.js';
+import { readAudioHeader } from '../core/mp4meta.js';
 import { sha256Hex } from '../core/sha256.js';
 import { mimeForFile } from '../core/audioStore.js';
-import { importM4a, isAacMp4, wavDurationSec, keptKey } from '../core/importM4a.js';
+import { importM4a, wavDurationSec, keptKey } from '../core/importM4a.js';
 import { clipIndex, makeEntry, newId, sameClip } from '../core/store.js';
 import { localParts, today, systemTz, isISODate, isTime, fmtTime, fmtDate, fmtDuration } from '../core/dates.js';
 import { splitExt, fmtBytes, uniq } from '../core/util.js';
@@ -42,12 +42,10 @@ export async function readAudioFile(f) {
   if (!AUDIO_EXT.has(ext) && !/^audio\//.test(f.type || '')) return { name: f.name, bad: 'notAudio' };
   try {
     const mime = mimeForFile(f);
-    const buf = await f.arrayBuffer();
-    const meta = readMp4Meta(buf);                         // 不是 mp4 也不抛错，全是 null
-    const aac = isAacMp4(buf);
-    const sha256 = await sha256Hex(buf);
-    const blob = new Blob([buf], { type: mime });
-    const durationSec = round1(meta.durationSec || wavDurationSec(buf) || await probeDuration(blob));
+    const { head, meta, aac } = await readAudioHeader(f);
+    const sha256 = await sha256Hex(f);
+    const blob = f.slice(0, f.size, mime);
+    const durationSec = round1(meta.durationSec || wavDurationSec(head, f.size) || await probeDuration(blob));
     return { name: nfc(f.name), size: f.size, lastModified: f.lastModified || null, mime, sha256, blob, createdAt: meta.createdAt || null, durationSec, aac };
   } catch (e) { return { name: f.name, bad: 'fail', msg: (e && e.message) || String(e) }; }
 }

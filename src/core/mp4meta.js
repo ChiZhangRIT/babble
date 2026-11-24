@@ -9,6 +9,35 @@ const MAC_EPOCH = 2082844800;                       // 1904-01-01 到 1970-01-01
 const MIN_MS = Date.UTC(2000, 0, 1), MAX_MS = Date.UTC(2100, 0, 1);
 const MAX_BOXES = 4096;                             // 每层最多看这么多个盒子（防坏文件）
 
+export const AUDIO_HEAD_BYTES = 65536;
+const META_MAX_BYTES = 8 * 1024 * 1024;
+/** 文件只读头部和 MP4 元数据盒子；跳过 mdat，moov 在尾部也不用读整份声音。 */
+export async function readAudioHeader(blob) {
+  const head = await blob.slice(0, AUDIO_HEAD_BYTES).arrayBuffer();
+  if (blob.size <= AUDIO_HEAD_BYTES) return { head, meta: readMp4Meta(head), aac: mp4AudioCodec(head) === 'aac' };
+  const selected = [];
+  let read = 0;
+  for (let pos = 0, n = 0; pos + 8 <= blob.size && n < MAX_BOXES; n++) {
+    const bytes = await blob.slice(pos, pos + 16).arrayBuffer(), dv = new DataView(bytes);
+    if (dv.byteLength < 8) break;
+    const type = String.fromCharCode(...new Uint8Array(bytes, 4, 4));
+    let size = dv.getUint32(0), header = 8;
+    if (size === 1) { if (dv.byteLength < 16) break; size = dv.getUint32(8) * 4294967296 + dv.getUint32(12); header = 16; }
+    else if (size === 0) size = blob.size - pos;
+    if (!Number.isSafeInteger(size) || size < header || pos + size > blob.size) break;
+    if (type === 'ftyp' || type === 'moov') {
+      if (read + size > META_MAX_BYTES) break;
+      selected.push(await blob.slice(pos, pos + size).arrayBuffer()); read += size;
+    } else if (type === 'moof') {
+      // readMp4Meta 只需知道存在碎片，避免读取碎片里的音频。
+      selected.push(Uint8Array.of(0, 0, 0, 8, 109, 111, 111, 102));
+    }
+    pos += size;
+  }
+  const metadata = await new Blob(selected).arrayBuffer();
+  return { head, meta: readMp4Meta(metadata), aac: mp4AudioCodec(metadata) === 'aac' };
+}
+
 /**
  * @param {ArrayBuffer|ArrayBufferView} buf  整个文件（moov 在文件末尾也能读到）
  * @returns {{ createdAt: Date|null, durationSec: number|null, brand: string|null, fragmented: boolean,

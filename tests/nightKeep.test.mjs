@@ -508,3 +508,37 @@ test('m4a：永久删除了的录音不能再留——编出来的 m4a、这段�
   await assert.rejects(keepClips(deps, [c3b], SESSIONS), (err) => err.code === 'purged');
   assert.deepEqual([night.calls.filter(x => x === 'getParts').length, deps.toM4a.calls.length], [gets, m]);
 });
+
+
+test('批量留下：先逐段检查，再逐段读取、处理、存盘；不把后面片段的 PCM 提前读入', async () => {
+  const { night, audio, deps } = setup();
+  const cands = [];
+  for (let i = 0; i < 3; i++) cands.push((await seedCand(night, 'seq_' + i, { startAt: T0 + i * 60000, samples: SR, seed: i })).c);
+  const events = [], read = night.getParts, write = audio.putClip;
+  night.getParts = async id => { events.push('read:' + id); return read(id); };
+  audio.putClip = async (b, o) => { events.push('write'); return write(b, o); };
+  const entry = await keepClips(deps, cands, SESSIONS);
+  assert.equal(entry.audio.length, 3);
+  assert.deepEqual(events, ['read:seq_0','read:seq_1','read:seq_2', 'read:seq_0','write','read:seq_1','write','read:seq_2','write']);
+});
+
+
+test('批量中途存候选身份失败：不建半条记录，使用原选择重试也复用前一段的 m4a', async () => {
+  const { night, audio, s, puts, deps } = setup();
+  const cands = [];
+  for (let i=0;i<2;i++) cands.push((await seedCand(night, 'retry_'+i, { startAt:T0+i*60000, samples:SR, seed:i })).c);
+  deps.toM4a = fakeM4a();
+  const patch = night.patchCand; let fail = true;
+  night.patchCand = (id, value) => {
+    if (fail && id==='retry_1' && value.sha256 && !value.entryId) { fail=false; throw new Error('second identity failed'); }
+    return patch(id,value);
+  };
+  await assert.rejects(keepClips(deps,cands,SESSIONS), /second identity failed/);
+  assert.equal(puts.length,0); assert.equal(entriesOf(s).length,0);
+  assert.equal(audio.clips.size,1);
+  const firstSha=(await night.getCand('retry_0')).sha256;
+  const entry=await keepClips(deps,cands,SESSIONS);
+  assert.equal(entry.audio[0].sha256,firstSha);
+  assert.equal(deps.toM4a.calls.length,3,'第二次只编第二段，第一段不重编');
+  assert.equal(audio.clips.size,2); assert.equal(puts.length,1);
+});

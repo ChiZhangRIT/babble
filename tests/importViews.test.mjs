@@ -4,8 +4,8 @@
 // 最小 DOM + 真的 state.js、memoryStore（录音库）、真的 importM4a / m4a.js；编码器、解码器是假的（tests/helpers/fakeCodec.mjs），声音、文件名都是编的。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { render as renderImport } from '../src/views/import.js';
-import { render as renderEntry } from '../src/views/entry.js';
+import { render as renderImport, readAudioFile } from '../src/views/import.js';
+import { render as renderEntry, readClipFiles } from '../src/views/entry.js';
 import { render as renderEditor } from '../src/views/editor.js';
 import { memoryStore } from '../src/core/audioStore.js';
 import * as state from '../src/core/state.js';
@@ -537,4 +537,22 @@ test('srcSha256：整理时改小写、坏的去掉；clipKeys / sameClip / clip
   assert.deepEqual(clipIndex(s, { withSrc: true }).get(B.toLowerCase()), ['x']);
   assert.deepEqual(clipIndex(s, { withSrc: true }).get(A), ['x']);
   assert.deepEqual(clipIndex(s, { withSrc: true, includeDeleted: true }).get(A), ['x', 'y']);
+});
+
+
+test('两个录音导入入口：大 WAV 不整份 arrayBuffer，不复制文件，哈希和原始声音保持一致', async () => {
+  const f=wavFile('合成大文件.wav',7,30), expected=await sha256Hex(f), nativeSlice=f.slice.bind(f), readSizes=[];
+  f.arrayBuffer=()=>assert.fail('不得读取整个大文件');
+  f.slice=(a,b,type)=>{
+    const blob=nativeSlice(a,b,type), read=blob.arrayBuffer.bind(blob);
+    blob.arrayBuffer=()=>{ readSizes.push(blob.size); assert.ok(blob.size<=1024*1024); return read(); };
+    return blob;
+  };
+  const info=await readAudioFile(f);
+  assert.equal(info.bad,undefined); assert.equal(info.sha256,expected);
+  assert.equal(info.durationSec,30); assert.equal(info.blob.size,f.size);
+  const audio=memoryStore(), notes=[];
+  const clips=await readClipFiles([f],{audio,toast:()=>({close(){}})}, {notes,m4a:{AudioEncoder:null,AudioData:null}});
+  assert.equal(clips.length,1); assert.equal(clips[0].clip.sha256,expected);
+  assert.ok(readSizes.length>2 && readSizes.every(n=>n<=1024*1024));
 });

@@ -277,3 +277,23 @@ test('启动时的读法：recovery.test.mjs 里的假 indexedDB（只有 open �
   assert.equal(opens, 1);
   assert.deepEqual(seen, ['sessions', 'cands']);
 });
+
+
+test('IndexedDB 打开时同步失败或接口暂不可用：环境恢复后可重试，重试并发共用新连接', () => withKeyRange(async () => {
+  for (const mode of ['getter', 'missing', 'open']) {
+    const env = fakeIDB(); let failed = true;
+    const st = idbNightStore(() => {
+      if (failed) {
+        if (mode === 'getter') throw new Error('temporary getter');
+        if (mode === 'missing') return undefined;
+        return { open() { throw Object.assign(new Error('temporary open'), { name: 'SecurityError' }); } };
+      }
+      return env.factory;
+    });
+    await assert.rejects(st.listSessions());
+    failed = false;
+    await Promise.all([st.putSession(sess('recovered', 1)), st.listCands()]);
+    assert.ok(await st.getSession('recovered'), mode);
+    assert.equal(env.opens, 1, mode + ': 重试后的并发请求共用连接');
+  }
+}));

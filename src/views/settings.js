@@ -373,7 +373,6 @@ function syncPage(main, params, ctx, purgeOn) {
     h('span.nb-title', null, t('set.sync')), h('span')), page);
   const form = { repo: '', token: '', code: '', exp: '' };
   let busy = false, error = null, renew = false, newToken = '', newExp = '';
-  let squashing = false, squashErr = null, hist = null;              // 清理云端历史：正在清理、出的错、仓库有几个提交 / 别的分支（historyInfo，尽力）
   const expInput = (value, onchange) => h('input.set-exp', { type: 'date', value, 'aria-label': t('set.tokenExpLabel'), onchange: (e) => onchange(e.target.value) });
 
   function draw() {
@@ -439,48 +438,10 @@ function syncPage(main, params, ctx, purgeOn) {
         h('p.f-help', null, t('sync.devicesFoot'))));
   }
 
-  // ---------- 清理云端历史（开关开着时） ----------
-  function squashSec(st) {
-    const wait = busy || squashing || st.running || st.offline || !!st.err || !!st.pendingUp || !!st.pendingPurge;
-    const last = Number(ctx.local.lastBackupAt) || 0, stale = !last || Date.now() - last > DAY;
+  // 暂停重写远端提交历史：现有 REST 接口无法原子地核对并替换分支。
+  function squashSec() {
     return h('section.set-sec.set-squash', null, h('h2.group-h', null, t('sync.squashH')),
-      h('div.card', null,
-        h('p.small', null, t('sync.squashLead')),
-        hist && hist.commits ? h('p.small.muted', null, t('sync.squashCount', { n: hist.commits })) : null,
-        h('p.small' + (stale ? '.set-warn' : '.muted'), null, last ? t('sync.lastBackup', { time: fmtInstant(last, lang) }) : t('sync.noBackup'),
-          stale ? [' ', h('a', { href: '#/settings?focus=backup' }, t('sync.backupFirst'))] : null),
-        squashErr ? h('p.err.small', { role: 'alert' }, squashErr) : null,
-        h('div.row.set-btns', null, h('button.btn.danger', { type: 'button', disabled: wait, onclick: squash }, squashing ? t('sync.squashing') : t('sync.squashBtn'))),
-        wait && !squashing ? h('p.f-help', null, t('sync.squashWait')) : null));
-  }
-  /** 清理云端历史：先确认（说清楚留下什么：最近删除里的、没有条目在用的、别的分支；旧版本的设备；24 小时内没备份），再交给 ctx.sync.squash */
-  async function squash() {
-    if (squashing) return;
-    squashErr = null;
-    hist = (await within(ctx.sync.historyInfo ? ctx.sync.historyInfo() : null, 8000, null)) || hist || {};
-    const st = ctx.sync.status(), n = deletedEntries(ctx.state).length, clips = removedList(ctx).length, orphans = foundInRepo(ctx), old = oldDevices(ctx);
-    const others = (hist.others || []).filter(Boolean), last = Number(ctx.local.lastBackupAt) || 0;
-    const parts = [t('sync.squashConfirm', { repo: st.repo || '' }),
-      n || clips ? t('sync.squashTrash', { n, clips }) : null,
-      orphans ? t('sync.squashOrphans', { n: orphans }) : null,
-      old ? t('sync.squashOld', { devices: old }) : null,
-      Date.now() - last > DAY ? t('sync.squashNoBackup') : null,
-      others.length ? t('sync.squashExtra', { names: others.join(lang === 'en' ? ', ' : '、') }) : null,
-      t('sync.squashPoints')];
-    if (!(await ctx.confirm({ title: t('sync.squashConfirmT'), message: parts.filter(Boolean).join('\n\n'), confirmLabel: t('sync.squashGo'), danger: true }))) { draw(); return; }
-    squashing = true; draw();
-    let r;
-    try { r = await ctx.sync.squash(); } catch (e) { r = { ok: false, error: { code: (e && e.code) || 'unknown', vars: (e && e.vars) || {} } }; }
-    squashing = false;
-    if (r && r.ok) {
-      const missing = (r.missing || []).length;
-      hist = null;
-      ctx.toast([t(r.already ? 'sync.squashAlready' : 'sync.squashDone'), missing ? t('sync.squashMissing', { n: missing }) : null].filter(Boolean).join('\n'), { ms: 8000 });
-    } else if (r && !r.skipped) {
-      const e = r.error || { code: 'unknown' };
-      squashErr = t('syncErr.' + (e.code || 'unknown'), e.vars || {});
-    }
-    draw();
+      h('div.card', null, h('p.small', null, t('syncErr.squashDisabled'))));
   }
   /** 清理以后：Mac 上的 babble-data 文件夹怎么换成新的（「知道了」才收起） */
   function macSec(st) {
@@ -602,7 +563,6 @@ function syncPage(main, params, ctx, purgeOn) {
   const redraw = quietRedraw(main, draw);
   draw();
   // 清理云端历史的那张卡写上仓库有几个提交（尽力，打开时读一次）
-  if (purgeOn && ctx.sync.status().on && ctx.sync.historyInfo) Promise.resolve(ctx.sync.historyInfo()).then(i => { if (i && !hist) { hist = i; redraw.soon(); } }, () => {});
   ctx.on('sync', () => { if (!busy) redraw.soon(); });
   return { onChange: () => { if (!busy) redraw.soon(); }, cleanup: () => redraw.off() };
 }

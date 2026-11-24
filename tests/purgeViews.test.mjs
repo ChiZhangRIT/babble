@@ -324,29 +324,16 @@ test('设置 → 同步：都报到了 → 写一句「都报到了」；停止�
   } finally { env.close(); }
 });
 
-test('设置 → 同步（开放以后）：「清理云端历史」——同步没完成时不能点；能点时先确认（说清楚留下什么、没备份），清理完提示', async () => {
-  const busy = syncSetup({ purge: true, st: { pendingPurge: 1 } });
-  try {
-    await settle();
-    const card = byCls(busy.main, 'set-squash');
-    assert.equal(btn(card, t('sync.squashBtn')).disabled, true);
-    assert.ok(card.textContent.includes(t('sync.squashWait')));
-    assert.ok(card.textContent.includes(t('sync.squashCount', { n: 42 })));
-    assert.ok(busy.main.textContent.includes(t('sync.historyNotePurge')));
-  } finally { busy.close(); }
+test('设置 → 同步：云端历史清理暂停，不提供可触发的按钮、不弹确认，也不影响普通同步入口', async () => {
   const env = syncSetup({ purge: true });
   try {
-    state.mutate(s => { s.data.entries.b = deletedRecord(makeEntry({ id: 'b', date: '2026-11-03', text: '删掉的' })); });
-    env.handle.onChange({}); await settle();
+    await settle();
     const card = byCls(env.main, 'set-squash');
-    assert.ok(card.textContent.includes(t('sync.noBackup')) && card.textContent.includes(t('sync.backupFirst')));
-    await btn(card, t('sync.squashBtn')).fire('click'); await settle();
-    const c = env.confirms[0];
-    assert.deepEqual([c.title, c.confirmLabel, c.danger], [t('sync.squashConfirmT'), t('sync.squashGo'), true]);
-    assert.deepEqual(c.message.split('\n\n').slice(0, 3), [t('sync.squashConfirm', { repo: 'me/dreams' }), t('sync.squashTrash', { n: 1, clips: 0 }), t('sync.squashNoBackup')]);
-    assert.ok(c.message.endsWith(t('sync.squashPoints')));
-    assert.equal(env.squashed, 1);
-    assert.equal(env.toasts.at(-1).msg, t('sync.squashDone'));
+    assert.ok(card.textContent.includes(t('syncErr.squashDisabled')));
+    assert.equal(btn(card, t('sync.squashBtn')), undefined);
+    assert.equal(env.squashed, 0);
+    assert.equal(env.confirms.length, 0);
+    assert.ok(btn(env.main, t('sync.now')));
   } finally { env.close(); }
 });
 

@@ -878,71 +878,9 @@ export function createSync(o) {
     }
     return false;
   }
-  /**
-   * 提交历史换成一个新的根提交，只留现在的内容（永久删除了的文件也不带上；D14）：
-   * 先同步一轮、马上对一遍录音（少了的这一轮就重传）→ 已经只有一个干净的根提交 → already → 强制传一遍 babble.json
-   * （根提交里要正是这台设备整理过的这一份，旧版本留下的内容都不带上）→ 列文件、建根提交、分支没动才强制更新、再核对
-   */
-  async function doSquash() {
-    const cfg = o.getConfig();
-    if (!cfg) return { ok: false, skipped: true };
-    const ready = async () => {                    // 录音都传完、该删的都删了、本机没有没传的改动
-      if (cfg.dirty || pendingN(cfg)) return false;
-      const refs = referencedClips(o.getState());
-      return !store || !(await store.pendingUploads()).some(c => refs.has(c.sha256));
-    };
-    let r = await run({ forceAudit: true });
-    if (!r.ok) return r;
-    if (stopped(cfg)) return { ok: false, skipped: true };
-    if (!(await ready())) return failed('squashPending');
-    try {
-      await ensurePrivate(cfg, true);
-      const name = branch.name, L0 = await listHead(cfg), gone0 = goneShas(o.getState());
-      if (!L0 || (!L0.parents.length && L0.jsonSha === cfg.sha && !L0.files.some(f => gone0.has(f.sha256)))) return { ok: true, already: true, branch: name };
-      r = await run({ forcePush: true });
-      if (!r.ok) return r;
-      if (stopped(cfg)) return { ok: false, skipped: true };
-      if (!(await ready())) return failed('squashPending');
-      for (let i = 0; i < 3; i++) {
-        if (stopped(cfg)) return { ok: false, skipped: true };
-        const L = await listHead(cfg);
-        if (!L) return { ok: true, already: true, branch: name };
-        if (L.jsonSha !== cfg.sha) {                 // 有设备（可能是旧版本）刚传过 babble.json：合并以后再强制传一遍干净的
-          r = await run({ forcePush: true });
-          if (!r.ok) return r;
-          continue;
-        }
-        const gone = goneShas(o.getState()), drop = L.files.filter(f => gone.has(f.sha256));
-        if (!L.parents.length && !drop.length) return { ok: true, already: true, branch: name };
-        let tree = L.treeSha;
-        if (drop.length) {                           // 永久删除了、又被放回来的文件：新的根提交里也不要
-          const t = await gh(cfg, 'POST', git(cfg, 'trees'), { body: { base_tree: L.treeSha, tree: drop.map(f => ({ path: f.path, mode: '100644', type: 'blob', sha: null })) }, timeout: 60000 });
-          if (t.status === 422) continue;
-          if (!t.ok) throw httpError(t);
-          tree = (await json(t)).sha;
-        }
-        const c = await gh(cfg, 'POST', git(cfg, 'commits'), { body: { message: `清理历史（${device()}）`, tree, parents: [] } });
-        if (!c.ok) throw httpError(c);
-        const R = (await json(c)).sha;
-        if (await refHead(cfg, L.ref) !== L.head) continue;            // 这中间有人提交了：重来
-        setMark({ R, at: Date.now() });              // 强制更新之前记下：之后崩了，下次启动也会写 cloudResetAt
-        const p = await gh(cfg, 'PATCH', git(cfg, 'refs/' + L.ref), { body: { sha: R, force: true } });
-        if (!p.ok) {
-          const j = await p.json().catch(() => null), msg = String((j && j.message) || '');
-          if (p.status === 422 || p.status === 403 || p.status === 409) setMark(null);   // 明确没改成：什么都没变
-          if ((p.status === 422 || p.status === 403) && /protect|rule|force.?push/i.test(msg)) return failed('protected', { branch: name });
-          throw httpError(p);
-        }
-        if (!(await reaches(cfg, L.ref, R))) return failed('squashRace');   // 记号留着：各设备照样对一遍录音
-        cfg.etag = null;
-        o.saveConfig(cfg);
-        const have = new Set(L.files.filter(f => !drop.includes(f)).map(f => f.sha256));
-        return { ok: true, commit: R, branch: name, missing: [...referencedClips(o.getState()).keys()].filter(sha => !have.has(sha)) };
-      }
-      return failed('squashRace');
-    } catch (e) { return caught(e); }
-  }
-  const squash = () => queue(doSquash);
+  // GitHub refs 的 force 更新没有 expected-head 条件；检查后再更新仍可能覆盖别的设备。
+  // 暂停整个操作（包括直接调用 API），不能仅禁用按钮。历史查看、普通同步和录音永久删除照常。
+  const squash = async () => o.getConfig() ? failed('squashDisabled') : { ok: false, skipped: true };
 
   /** 仓库里没有条目在用、也没永久删除的录音（只读）。先同步一轮，拿最新的条目；24 小时内传上来的只计数不列出（条目可能还在路上） */
   async function scanOrphans() {

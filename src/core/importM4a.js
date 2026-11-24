@@ -19,8 +19,8 @@
 // 低码率的（8 kHz 的 MP3、AAC 的 CAF）编出来反而大、或者只小 6–8 %：按上面的规矩原样存。内存没在 iPhone 上量过（30 分钟 48 kHz 立体声 WAV 解出来几百 MB）。
 // 依赖都能注入（AudioEncoder、AudioData、OfflineAudioContext、decode），Node 里用假的测。import 时什么都不做。
 import { pcmToM4a, pickConfig, budgetMs, QUIET } from './m4a.js';
-import { decodeMono } from './transcribe.js';
-import { mp4AudioCodec } from './mp4meta.js';
+import { decodeMono, isMobileDevice } from './transcribe.js';
+import { mp4AudioCodec, readAudioHeader } from './mp4meta.js';
 import { sha256Hex } from './sha256.js';
 import { baseMime } from './audioStore.js';
 
@@ -109,7 +109,10 @@ export async function importM4a(src, o = {}) {
   };
   try {
     let aac = src.aac, buf = src.buf || null;
-    if (aac == null) { buf = buf || await blob.arrayBuffer(); aac = isAacMp4(buf); }
+    if (aac == null) {
+      if (buf) aac = isAacMp4(buf);
+      else { const h = await readAudioHeader(blob); buf = h.head; aac = h.aac; }
+    }
     if (aac) return await keep('m4a');
     const wav = wavFormat(buf || await blob.slice(0, 65536).arrayBuffer(), blob.size);
     buf = null;
@@ -126,14 +129,21 @@ export async function importM4a(src, o = {}) {
     const AC = 'OfflineAudioContext' in o ? o.OfflineAudioContext : (globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext);
     if (!cfg || (!o.decode && !AC)) return await keep('unsupported');
     if (!sha256) sha256 = await sha256Hex(blob);
-    return await oneAtATime(() => convert(cfg, AC, sec));
+    return await oneAtATime(() => convert(cfg, AC, sec, (wav && wav.channels) || 2));
   } catch (e) {
     console.warn('importM4a', e);
     return keep('error', { error: (e && e.message) || String(e) });
   }
 
   // 解码 → 看多声道抵消了没有 → 编码、核对（排着队，一次一个）
-  async function convert({ sr, bitrate }, AC, sec) {
+  async function convert({ sr, bitrate }, AC, sec, channels) {
+    // 解码器会同时保留各声道和混音；按实际设备限制展开后的 PCM，而非仅限制压缩文件大小。
+    const mobile = o.mobile ?? isMobileDevice();
+    const maxDecoded = o.maxDecodedBytes ?? (mobile ? 96 : 384) * 1024 * 1024;
+    const estimated = sec == null ? null : sec * sr * 4 * (channels === 1 ? 1 : channels + 1);
+    if ((estimated != null && estimated > maxDecoded) || (mobile && sec == null && blob.size > 4 * 1024 * 1024)) {
+      return keep('big', { durationSec: sec, detail: 'decoded-memory' });
+    }
     const stats = {};
     const decode = o.decode ? (b) => o.decode(b, sr) : (b) => decodeMono(b, { AC, sr });
     const decodeSrc = o.decode ? (b) => o.decode(b, sr, stats) : (b) => decodeMono(b, { AC, sr, stats });
